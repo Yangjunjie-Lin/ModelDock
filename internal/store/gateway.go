@@ -122,7 +122,7 @@ func (s *Store) UpdateAPIKeyStatus(ctx context.Context, keyID, status string) er
 }
 
 func (s *Store) InsertRequestLog(ctx context.Context, l domain.RequestLog) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO request_logs(id,request_id,user_id,api_key_id,provider_id,credential_id,requested_model,resolved_model,endpoint,status_code,streaming,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost,latency_ms,ttft_ms,upstream_request_id,error_code,scheduler_reason,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,COALESCE($22,now()))`, id.UUID(), l.RequestID, nullString(l.UserID), nullString(l.APIKeyID), nullString(l.ProviderID), nullString(l.CredentialID), l.RequestedModel, l.ResolvedModel, l.Endpoint, l.StatusCode, l.Streaming, l.InputTokens, l.CachedInputTokens, l.OutputTokens, l.TotalTokens, l.EstimatedCost, l.LatencyMS, l.TTFTMS, nullString(l.UpstreamRequestID), nullString(l.ErrorCode), jsonBytes(l.SchedulerReason), nullableTime(l.CreatedAt))
+	_, err := s.pool.Exec(ctx, `INSERT INTO request_logs(id,request_id,user_id,api_key_id,provider_id,credential_id,requested_model,resolved_model,endpoint,status_code,streaming,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost,reference_cost,savings_amount,latency_ms,ttft_ms,upstream_request_id,error_code,scheduler_reason,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,COALESCE($24,now()))`, id.UUID(), l.RequestID, nullString(l.UserID), nullString(l.APIKeyID), nullString(l.ProviderID), nullString(l.CredentialID), l.RequestedModel, l.ResolvedModel, l.Endpoint, l.StatusCode, l.Streaming, l.InputTokens, l.CachedInputTokens, l.OutputTokens, l.TotalTokens, l.EstimatedCost, l.ReferenceCost, l.SavingsAmount, l.LatencyMS, l.TTFTMS, nullString(l.UpstreamRequestID), nullString(l.ErrorCode), jsonBytes(l.SchedulerReason), nullableTime(l.CreatedAt))
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offs
 	q := `SELECT request_id,COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),organization_id::text,project_id::text,
 		COALESCE(route_id::text,''),COALESCE(provider_id::text,''),COALESCE(credential_id::text,''),
 		COALESCE(requested_model,''),COALESCE(resolved_model,''),endpoint,status_code,streaming,input_tokens,
-		cached_input_tokens,output_tokens,total_tokens,estimated_cost::float8,latency_ms,ttft_ms,
+		cached_input_tokens,output_tokens,total_tokens,estimated_cost::float8,reference_cost::float8,savings_amount::float8,latency_ms,ttft_ms,
 		COALESCE(upstream_request_id,''),COALESCE(error_code,''),scheduler_reason,created_at FROM request_logs`
 	args := []any{}
 	if userID != nil {
@@ -156,7 +156,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offs
 		if err := rows.Scan(&l.RequestID, &l.UserID, &l.APIKeyID, &l.OrganizationID, &l.ProjectID, &l.RouteID,
 			&l.ProviderID, &l.CredentialID, &l.RequestedModel, &l.ResolvedModel, &l.Endpoint, &l.StatusCode,
 			&l.Streaming, &l.InputTokens, &l.CachedInputTokens, &l.OutputTokens, &l.TotalTokens,
-			&l.EstimatedCost, &l.LatencyMS, &l.TTFTMS, &l.UpstreamRequestID, &l.ErrorCode, &reason, &l.CreatedAt); err != nil {
+			&l.EstimatedCost, &l.ReferenceCost, &l.SavingsAmount, &l.LatencyMS, &l.TTFTMS, &l.UpstreamRequestID, &l.ErrorCode, &reason, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(reason, &l.SchedulerReason)
@@ -212,7 +212,25 @@ func (s *Store) Dashboard(ctx context.Context, userID *string) (map[string]any, 
 			return nil, err
 		}
 	}
-	return map[string]any{"total_requests": requests, "requests_today": today, "input_tokens": input, "total_input_tokens": input, "cached_input_tokens": cached, "total_cached_tokens": cached, "output_tokens": output, "total_output_tokens": output, "estimated_cost": cost, "errors": errorsCount, "success_rate": success, "average_latency_ms": avgLatency, "p95_latency_ms": p95Latency, "active_credentials": active, "healthy_credentials": healthy, "rate_limited_credentials": rateLimited, "request_trend": requestTrend, "token_trend": tokenTrend, "model_distribution": modelDistribution, "status_code_distribution": statusDistribution, "alerts": alerts}, nil
+	var todayTokens int64
+	var todayCost, savings float64
+	todayQuery := `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(estimated_cost),0)::float8,
+		COALESCE(sum(savings_amount),0)::float8 FROM request_logs WHERE created_at>=date_trunc('day',now())`
+	todayArgs := []any{}
+	if userID != nil {
+		todayQuery += ` AND user_id=$1`
+		todayArgs = append(todayArgs, *userID)
+	}
+	if err := s.pool.QueryRow(ctx, todayQuery, todayArgs...).Scan(&todayTokens, &todayCost, &savings); err != nil {
+		return nil, err
+	}
+	return map[string]any{"total_requests": requests, "requests_today": today, "today_tokens": todayTokens,
+		"today_cost": todayCost, "savings_amount": savings, "input_tokens": input, "total_input_tokens": input,
+		"cached_input_tokens": cached, "total_cached_tokens": cached, "output_tokens": output, "total_output_tokens": output,
+		"estimated_cost": cost, "errors": errorsCount, "success_rate": success, "average_latency_ms": avgLatency,
+		"p95_latency_ms": p95Latency, "active_credentials": active, "healthy_credentials": healthy,
+		"rate_limited_credentials": rateLimited, "request_trend": requestTrend, "token_trend": tokenTrend,
+		"model_distribution": modelDistribution, "status_code_distribution": statusDistribution, "alerts": alerts}, nil
 }
 
 func (s *Store) dashboardHourly(ctx context.Context, userID *string) ([]map[string]any, []map[string]any, error) {

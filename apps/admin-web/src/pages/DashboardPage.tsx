@@ -24,6 +24,9 @@ export function DashboardPage() {
           <Metric label="Success rate" value={data.success_rate === undefined ? '—' : `${Number(data.success_rate).toFixed(2)}%`} icon={<ShieldCheck size={16} />} hint="Completed without gateway or upstream errors" />
           <Metric label="Active credentials" value={formatNumber(data.active_credentials, false)} icon={<KeyRound size={16} />} hint={<span>{`${formatNumber(data.healthy_credentials, false)} healthy · ${formatNumber(data.rate_limited_credentials, false)} limited`}</span>} />
           <Metric label="Estimated cost" value={formatMoney(data.estimated_cost)} icon={<Coins size={16} />} hint="RelayDock configured pricing" />
+          <Metric label="Tokens today" value={formatNumber(data.today_tokens)} icon={<Activity size={16} />} hint="Current UTC day" />
+          <Metric label="Cost today" value={formatMoney(data.today_cost)} icon={<Coins size={16} />} hint="Configured model pricing" />
+          <Metric label="Estimated savings" value={formatMoney(data.savings_amount)} icon={<Coins size={16} />} hint="Smart routes vs highest-cost eligible model" />
           <Metric label="Average latency" value={data.average_latency_ms === undefined ? '—' : `${formatNumber(data.average_latency_ms, false)} ms`} icon={<Zap size={16} />} hint={`P95 ${data.p95_latency_ms === undefined ? '—' : `${formatNumber(data.p95_latency_ms, false)} ms`}`} />
           <Metric label="Total requests" value={formatNumber(data.total_requests)} icon={<Clock3 size={16} />} hint="All recorded gateway traffic" />
           <Metric label="Input tokens" value={formatNumber(data.total_input_tokens)} icon={<Activity size={16} />} hint="All recorded input tokens" />

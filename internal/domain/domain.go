@@ -73,6 +73,7 @@ type CredentialGroup struct {
 type Model struct {
 	ID               string         `json:"id"`
 	ProviderID       string         `json:"provider_id"`
+	ProviderName     string         `json:"provider_name,omitempty"`
 	ProviderModelID  string         `json:"provider_model_id"`
 	DisplayName      string         `json:"display_name"`
 	ModelType        string         `json:"model_type"`
@@ -80,6 +81,11 @@ type Model struct {
 	Capabilities     []string       `json:"capabilities"`
 	CapabilitySource string         `json:"capability_source"`
 	ContextWindow    *int           `json:"context_window,omitempty"`
+	LatencyScore     float64        `json:"latency_score"`
+	QualityScore     float64        `json:"quality_score"`
+	InputPrice       float64        `json:"input_price"`
+	OutputPrice      float64        `json:"output_price"`
+	PriceCurrency    string         `json:"price_currency,omitempty"`
 	Metadata         map[string]any `json:"metadata"`
 	CreatedAt        time.Time      `json:"created_at"`
 	UpdatedAt        time.Time      `json:"updated_at"`
@@ -119,6 +125,7 @@ type APIKey struct {
 	UserID            string     `json:"user_id"`
 	OrganizationID    string     `json:"organization_id,omitempty"`
 	ProjectID         string     `json:"project_id,omitempty"`
+	TeamID            string     `json:"team_id,omitempty"`
 	Name              string     `json:"name"`
 	Environment       string     `json:"environment"`
 	KeyPrefix         string     `json:"key_prefix"`
@@ -155,6 +162,8 @@ type RequestLog struct {
 	OutputTokens      int64          `json:"output_tokens"`
 	TotalTokens       int64          `json:"total_tokens"`
 	EstimatedCost     float64        `json:"estimated_cost"`
+	ReferenceCost     float64        `json:"reference_cost"`
+	SavingsAmount     float64        `json:"savings_amount"`
 	LatencyMS         int64          `json:"latency_ms"`
 	TTFTMS            *int64         `json:"ttft_ms,omitempty"`
 	UpstreamRequestID string         `json:"upstream_request_id,omitempty"`
@@ -229,6 +238,7 @@ type ProjectModelRoute struct {
 	Enabled           bool           `json:"enabled"`
 	RoutingConfig     map[string]any `json:"routing_config"`
 	ProviderID        string         `json:"provider_id,omitempty"`
+	ProviderType      string         `json:"provider_type,omitempty"`
 	ProviderBaseURL   string         `json:"provider_base_url,omitempty"`
 	UpstreamModel     string         `json:"upstream_model,omitempty"`
 	CredentialGroupID string         `json:"credential_group_id,omitempty"`
@@ -237,6 +247,98 @@ type ProjectModelRoute struct {
 	FallbackConfig    map[string]any `json:"fallback_config,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+type RoutingRule struct {
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organization_id"`
+	ProjectID      string         `json:"project_id"`
+	Name           string         `json:"name"`
+	Alias          string         `json:"alias"`
+	Strategy       string         `json:"strategy"`
+	QualityWeight  float64        `json:"quality_weight"`
+	PriceWeight    float64        `json:"price_weight"`
+	LatencyWeight  float64        `json:"latency_weight"`
+	Enabled        bool           `json:"enabled"`
+	Config         map[string]any `json:"config"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+type RoutingDecision struct {
+	Route      ProjectModelRoute `json:"route"`
+	Strategy   string            `json:"strategy"`
+	Score      float64           `json:"score"`
+	Candidates int               `json:"candidates"`
+}
+
+type MarketplaceListing struct {
+	ID              string         `json:"id"`
+	ProviderID      string         `json:"provider_id"`
+	ProviderName    string         `json:"provider_name,omitempty"`
+	Endpoint        string         `json:"endpoint"`
+	SupportedModels []string       `json:"supported_models"`
+	Price           map[string]any `json:"price"`
+	Status          string         `json:"status"`
+	Uptime          float64        `json:"uptime"`
+	Verified        bool           `json:"verified"`
+	Metadata        map[string]any `json:"metadata"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+}
+
+type Team struct {
+	ID                string         `json:"id"`
+	OrganizationID    string         `json:"organization_id"`
+	Name              string         `json:"name"`
+	Slug              string         `json:"slug"`
+	Status            string         `json:"status"`
+	MonthlyTokenLimit *int64         `json:"monthly_token_limit,omitempty"`
+	MonthlyCostLimit  *float64       `json:"monthly_cost_limit,omitempty"`
+	Metadata          map[string]any `json:"metadata"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+type TeamMembership struct {
+	TeamID         string    `json:"team_id"`
+	OrganizationID string    `json:"organization_id"`
+	UserID         string    `json:"user_id"`
+	Email          string    `json:"email,omitempty"`
+	DisplayName    string    `json:"display_name,omitempty"`
+	Role           string    `json:"role"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type Wallet struct {
+	ID               string    `json:"id"`
+	OrganizationID   string    `json:"organization_id"`
+	OrganizationName string    `json:"organization_name,omitempty"`
+	Currency         string    `json:"currency"`
+	BillingMode      string    `json:"billing_mode"`
+	AvailableBalance float64   `json:"available_balance"`
+	ReservedBalance  float64   `json:"reserved_balance"`
+	CreditLimit      float64   `json:"credit_limit"`
+	Status           string    `json:"status"`
+	Version          int64     `json:"version"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type WalletTransaction struct {
+	ID              string         `json:"id"`
+	WalletID        string         `json:"wallet_id"`
+	UsageRecordID   *string        `json:"usage_record_id,omitempty"`
+	TransactionType string         `json:"transaction_type"`
+	Amount          float64        `json:"amount"`
+	BalanceAfter    float64        `json:"balance_after"`
+	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
+	Reference       string         `json:"reference,omitempty"`
+	Metadata        map[string]any `json:"metadata"`
+	CreatedBy       *string        `json:"created_by,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
 }
 
 type ProjectBudgetPolicy struct {

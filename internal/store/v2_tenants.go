@@ -405,7 +405,7 @@ func scanProjectRoute(row pgx.Row) (domain.ProjectModelRoute, error) {
 	var out domain.ProjectModelRoute
 	var routeConfig, fallbackConfig []byte
 	err := row.Scan(&out.ID, &out.OrganizationID, &out.ProjectID, &out.ModelRouteID, &out.Alias, &out.Enabled,
-		&routeConfig, &out.ProviderID, &out.ProviderBaseURL, &out.UpstreamModel, &out.CredentialGroupID,
+		&routeConfig, &out.ProviderID, &out.ProviderType, &out.ProviderBaseURL, &out.UpstreamModel, &out.CredentialGroupID,
 		&out.FallbackGroupID, &out.RoutingPolicy, &fallbackConfig, &out.CreatedAt, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
@@ -425,13 +425,13 @@ func scanProjectRoute(row pgx.Row) (domain.ProjectModelRoute, error) {
 }
 
 const projectRouteSelect = `SELECT pmr.id,p.organization_id,pmr.project_id,pmr.model_route_id,pmr.alias,pmr.enabled,
-	pmr.routing_config,r.provider_id,pr.base_url,r.upstream_model,r.credential_group_id,r.fallback_group_id,
+	pmr.routing_config,r.provider_id,pr.provider_type,pr.base_url,r.upstream_model,r.credential_group_id,r.fallback_group_id,
 	r.routing_policy,r.fallback_config,pmr.created_at,pmr.updated_at
 	FROM project_model_routes pmr JOIN projects p ON p.id=pmr.project_id
 	JOIN model_routes r ON r.id=pmr.model_route_id JOIN providers pr ON pr.id=r.provider_id`
 
 func (s *Store) ProjectRouteByAlias(ctx context.Context, projectID, alias string) (domain.ProjectModelRoute, error) {
-	return scanProjectRoute(s.pool.QueryRow(ctx, projectRouteSelect+` WHERE pmr.project_id=$1 AND pmr.alias=$2 AND pmr.deleted_at IS NULL AND pmr.enabled AND r.enabled`, projectID, alias))
+	return scanProjectRoute(s.pool.QueryRow(ctx, projectRouteSelect+` WHERE pmr.project_id=$1 AND pmr.alias=$2 AND pmr.deleted_at IS NULL AND pmr.enabled AND r.enabled AND pr.enabled`, projectID, alias))
 }
 
 func (s *Store) ListProjectRoutes(ctx context.Context, projectID string) ([]domain.ProjectModelRoute, error) {

@@ -188,7 +188,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		}
 		p.ProviderType, _ = normalizeProviderType(p.ProviderType)
 		if p.ProviderType == "" {
-			openAIError(c, 400, "invalid_request", "provider_type must be openai, deepseek, or openrouter.")
+			openAIError(c, 400, "invalid_request", "provider_type is not supported by the ModelDock provider registry.")
 			return
 		}
 		p.Enabled = true
@@ -203,6 +203,11 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 			return
 		}
 		p.ID = c.Param("id")
+		p.ProviderType, _ = normalizeProviderType(p.ProviderType)
+		if p.ProviderType == "" {
+			openAIError(c, 400, "invalid_request", "provider_type is not supported by the ModelDock provider registry.")
+			return
+		}
 		v, err := d.Store.UpdateProvider(c.Request.Context(), p)
 		audit(c, d, "provider.update", "provider", p.ID, v)
 		respond(c, v, err)
@@ -262,7 +267,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 					continue
 				}
 				ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-				err = d.OpenAI.HealthCheck(ctx, provider.BaseURL, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
+				err = healthCheckProvider(ctx, d, provider, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
 				cancel()
 				if err == nil {
 					d.Store.MarkCredentialSuccess(c.Request.Context(), credentialID)
@@ -305,6 +310,39 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		respond(c, gin.H{"status": in.Status}, err)
 	})
 	g.POST("/providers/:id/sync-models", func(c *gin.Context) { syncModels(c, d) })
+	g.GET("/marketplace/providers", func(c *gin.Context) {
+		v, err := d.Store.ListMarketplaceListings(c.Request.Context())
+		respondList(c, v, err)
+	})
+	g.POST("/marketplace/providers", func(c *gin.Context) {
+		var listing domain.MarketplaceListing
+		if c.ShouldBindJSON(&listing) != nil || listing.ProviderID == "" || !validBaseURL(listing.Endpoint) ||
+			!validMarketplaceStatus(listing.Status) || listing.Uptime < 0 || listing.Uptime > 100 {
+			openAIError(c, 400, "invalid_request", "provider_id, endpoint, valid status, and uptime between 0 and 100 are required.")
+			return
+		}
+		listing.ID = ""
+		out, err := d.Store.UpsertMarketplaceListing(c.Request.Context(), listing)
+		audit(c, d, "marketplace_listing.create", "marketplace_listing", out.ID, out)
+		respondCreated(c, out, err)
+	})
+	g.PUT("/marketplace/providers/:id", func(c *gin.Context) {
+		var listing domain.MarketplaceListing
+		if c.ShouldBindJSON(&listing) != nil || listing.ProviderID == "" || !validBaseURL(listing.Endpoint) ||
+			!validMarketplaceStatus(listing.Status) || listing.Uptime < 0 || listing.Uptime > 100 {
+			openAIError(c, 400, "invalid_request", "provider_id, endpoint, valid status, and uptime between 0 and 100 are required.")
+			return
+		}
+		listing.ID = c.Param("id")
+		out, err := d.Store.UpsertMarketplaceListing(c.Request.Context(), listing)
+		audit(c, d, "marketplace_listing.update", "marketplace_listing", out.ID, out)
+		respond(c, out, err)
+	})
+	g.DELETE("/marketplace/providers/:id", func(c *gin.Context) {
+		err := d.Store.DeleteMarketplaceListing(c.Request.Context(), c.Param("id"))
+		audit(c, d, "marketplace_listing.delete", "marketplace_listing", c.Param("id"), nil)
+		respondNoContent(c, err)
+	})
 
 	g.GET("/credential-groups", func(c *gin.Context) { v, err := d.Store.ListGroups(c.Request.Context()); respondList(c, v, err) })
 	g.POST("/credential-groups", func(c *gin.Context) {
@@ -348,6 +386,42 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 	})
 
 	g.GET("/models", func(c *gin.Context) { v, err := d.Store.ListModels(c.Request.Context()); respondList(c, v, err) })
+	g.POST("/models", func(c *gin.Context) {
+		var model domain.Model
+		if c.ShouldBindJSON(&model) != nil || model.ProviderID == "" || strings.TrimSpace(model.ProviderModelID) == "" ||
+			!validModelScore(model.LatencyScore) || !validModelScore(model.QualityScore) {
+			openAIError(c, 400, "invalid_request", "provider_id, provider_model_id, and scores between 0 and 100 are required.")
+			return
+		}
+		model.Enabled = true
+		out, err := d.Store.CreateModel(c.Request.Context(), model)
+		if err == nil && (model.InputPrice > 0 || model.OutputPrice > 0) {
+			_, err = d.Store.CreateModelPrice(c.Request.Context(), domain.ModelPrice{ModelID: out.ID, InputPrice: model.InputPrice,
+				OutputPrice: model.OutputPrice, Currency: firstNonEmpty(model.PriceCurrency, "USD"), Source: "manual"})
+			if err == nil {
+				out, err = d.Store.ModelByID(c.Request.Context(), out.ID)
+			}
+		}
+		audit(c, d, "model.create", "model", out.ID, out)
+		respondCreated(c, out, err)
+	})
+	g.PUT("/models/:id", func(c *gin.Context) {
+		var model domain.Model
+		if c.ShouldBindJSON(&model) != nil || model.ProviderID == "" || strings.TrimSpace(model.ProviderModelID) == "" ||
+			!validModelScore(model.LatencyScore) || !validModelScore(model.QualityScore) {
+			openAIError(c, 400, "invalid_request", "provider_id, provider_model_id, and scores between 0 and 100 are required.")
+			return
+		}
+		model.ID = c.Param("id")
+		out, err := d.Store.UpdateModel(c.Request.Context(), model)
+		audit(c, d, "model.update", "model", model.ID, out)
+		respond(c, out, err)
+	})
+	g.DELETE("/models/:id", func(c *gin.Context) {
+		err := d.Store.DisableModel(c.Request.Context(), c.Param("id"))
+		audit(c, d, "model.disable", "model", c.Param("id"), nil)
+		respondNoContent(c, err)
+	})
 	g.GET("/models/:id/prices", func(c *gin.Context) {
 		v, err := d.Store.ListModelPrices(c.Request.Context(), c.Param("id"))
 		respondList(c, v, err)
@@ -365,6 +439,69 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 	})
 	g.GET("/model-routes", func(c *gin.Context) { v, err := d.Store.ListRoutes(c.Request.Context()); respondList(c, v, err) })
 	g.GET("/routes", func(c *gin.Context) { v, err := d.Store.ListRoutes(c.Request.Context()); respondList(c, v, err) })
+	g.GET("/routing-rules", func(c *gin.Context) {
+		v, err := d.Store.ListRoutingRules(c.Request.Context(), c.Query("project_id"))
+		respondList(c, v, err)
+	})
+	g.POST("/routing-rules", func(c *gin.Context) { upsertRoutingRule(c, d, true) })
+	g.PUT("/routing-rules/:id", func(c *gin.Context) { upsertRoutingRule(c, d, false) })
+	g.DELETE("/routing-rules/:id", func(c *gin.Context) {
+		err := d.Store.DeleteRoutingRule(c.Request.Context(), c.Param("id"))
+		audit(c, d, "routing_rule.delete", "routing_rule", c.Param("id"), nil)
+		respondNoContent(c, err)
+	})
+
+	g.GET("/teams", func(c *gin.Context) {
+		v, err := d.Store.ListTeams(c.Request.Context(), c.Query("organization_id"))
+		respondList(c, v, err)
+	})
+	g.POST("/teams", func(c *gin.Context) { upsertTeam(c, d, true) })
+	g.PUT("/teams/:id", func(c *gin.Context) { upsertTeam(c, d, false) })
+	g.DELETE("/teams/:id", func(c *gin.Context) {
+		err := d.Store.DeleteTeam(c.Request.Context(), c.Param("id"))
+		audit(c, d, "team.archive", "team", c.Param("id"), nil)
+		respondNoContent(c, err)
+	})
+	g.GET("/teams/:id/members", func(c *gin.Context) {
+		v, err := d.Store.ListTeamMembers(c.Request.Context(), c.Param("id"))
+		respondList(c, v, err)
+	})
+	g.PUT("/teams/:id/members/:userID", func(c *gin.Context) {
+		var member domain.TeamMembership
+		if c.ShouldBindJSON(&member) != nil {
+			openAIError(c, 400, "invalid_request", "A valid team membership body is required.")
+			return
+		}
+		member.TeamID, member.UserID = c.Param("id"), c.Param("userID")
+		out, err := d.Store.UpsertTeamMember(c.Request.Context(), member)
+		audit(c, d, "team.member_set", "team", member.TeamID, out)
+		respond(c, out, err)
+	})
+	g.DELETE("/teams/:id/members/:userID", func(c *gin.Context) {
+		err := d.Store.DeleteTeamMember(c.Request.Context(), c.Param("id"), c.Param("userID"))
+		audit(c, d, "team.member_delete", "team", c.Param("id"), gin.H{"user_id": c.Param("userID")})
+		respondNoContent(c, err)
+	})
+
+	g.GET("/wallets", func(c *gin.Context) { v, err := d.Store.ListWallets(c.Request.Context()); respondList(c, v, err) })
+	g.PUT("/wallets/:id", func(c *gin.Context) {
+		var wallet domain.Wallet
+		if c.ShouldBindJSON(&wallet) != nil || !validBillingMode(wallet.BillingMode) || !validWalletStatus(wallet.Status) || wallet.CreditLimit < 0 {
+			openAIError(c, 400, "invalid_request", "billing_mode, status, and a non-negative credit_limit are required.")
+			return
+		}
+		wallet.ID = c.Param("id")
+		out, err := d.Store.UpdateWallet(c.Request.Context(), wallet)
+		audit(c, d, "wallet.update", "wallet", wallet.ID, out)
+		respond(c, out, err)
+	})
+	g.GET("/wallets/:id/transactions", func(c *gin.Context) {
+		limit, offset := page(c)
+		v, err := d.Store.ListWalletTransactions(c.Request.Context(), c.Param("id"), limit, offset)
+		respondList(c, v, err)
+	})
+	g.POST("/wallets/:id/topups", func(c *gin.Context) { createWalletAdjustment(c, d, "TOPUP") })
+	g.POST("/wallets/:id/adjustments", func(c *gin.Context) { createWalletAdjustment(c, d, "ADJUSTMENT") })
 	g.POST("/model-routes", func(c *gin.Context) {
 		var v domain.ModelRoute
 		if c.ShouldBindJSON(&v) != nil || v.Alias == "" || v.ProviderID == "" || v.UpstreamModel == "" || v.CredentialGroupID == "" {
@@ -742,7 +879,7 @@ func createCredential(c *gin.Context, d Dependencies) {
 		p, err := d.Store.ProviderByID(c.Request.Context(), in.ProviderID)
 		if err == nil {
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-			err = d.OpenAI.HealthCheck(ctx, p.BaseURL, providers.Credential{Secret: strings.TrimSpace(in.Secret), OrganizationID: deref(in.OrganizationID), ProjectID: deref(in.ProjectID)})
+			err = healthCheckProvider(ctx, d, p, providers.Credential{Secret: strings.TrimSpace(in.Secret), OrganizationID: deref(in.OrganizationID), ProjectID: deref(in.ProjectID)})
 			cancel()
 		}
 		if err != nil && status != "DISABLED" {
@@ -807,7 +944,7 @@ func importCredentials(c *gin.Context, d Dependencies) {
 			provider, err := d.Store.ProviderByID(c.Request.Context(), candidate.ProviderID)
 			if err == nil {
 				ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-				err = d.OpenAI.HealthCheck(ctx, provider.BaseURL, providers.Credential{Secret: candidate.APIKey, OrganizationID: deref(candidate.OrganizationID), ProjectID: deref(candidate.ProjectID)})
+				err = healthCheckProvider(ctx, d, provider, providers.Credential{Secret: candidate.APIKey, OrganizationID: deref(candidate.OrganizationID), ProjectID: deref(candidate.ProjectID)})
 				cancel()
 			}
 			if err != nil {
@@ -908,7 +1045,7 @@ func testCredential(c *gin.Context, d Dependencies, credentialID string) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
-	err = d.OpenAI.HealthCheck(ctx, provider.BaseURL, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
+	err = healthCheckProvider(ctx, d, provider, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
 	if err != nil {
 		var upstreamHTTP *provideropenai.HTTPError
 		if errors.As(err, &upstreamHTTP) && upstreamHTTP.StatusCode == http.StatusUnauthorized {
@@ -947,7 +1084,13 @@ func syncModels(c *gin.Context, d Dependencies) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-	models, err := d.OpenAI.ListModels(ctx, p.BaseURL, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
+	adapter, adapterErr := providerAdapter(d, p.ProviderType)
+	if adapterErr != nil {
+		cancel()
+		openAIError(c, 422, "provider_adapter_unavailable", "The configured provider adapter is unavailable.")
+		return
+	}
+	models, err := adapter.ListModels(ctx, p.BaseURL, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
 	cancel()
 	if err != nil {
 		openAIError(c, 502, "provider_error", safeProviderError(err))
@@ -969,6 +1112,7 @@ func createAPIKey(c *gin.Context, d Dependencies, admin bool) {
 		UserID            string   `json:"user_id"`
 		OrganizationID    string   `json:"organization_id"`
 		ProjectID         string   `json:"project_id"`
+		TeamID            string   `json:"team_id"`
 		Name              string   `json:"name"`
 		Environment       string   `json:"environment"`
 		ExpiresAt         string   `json:"expires_at"`
@@ -1022,7 +1166,7 @@ func createAPIKey(c *gin.Context, d Dependencies, admin bool) {
 		respond(c, nil, err)
 		return
 	}
-	k := domain.APIKey{UserID: in.UserID, OrganizationID: in.OrganizationID, ProjectID: in.ProjectID, Name: in.Name, Environment: in.Environment, KeyPrefix: prefix, KeyHash: hash, ExpiresAt: expiresAt, RateLimitRPM: in.RateLimitRPM, RateLimitTPM: in.RateLimitTPM, MonthlyTokenLimit: in.MonthlyTokenLimit, MonthlyCostLimit: in.MonthlyCostLimit, AllowedModels: in.AllowedModels}
+	k := domain.APIKey{UserID: in.UserID, OrganizationID: in.OrganizationID, ProjectID: in.ProjectID, TeamID: in.TeamID, Name: in.Name, Environment: in.Environment, KeyPrefix: prefix, KeyHash: hash, ExpiresAt: expiresAt, RateLimitRPM: in.RateLimitRPM, RateLimitTPM: in.RateLimitTPM, MonthlyTokenLimit: in.MonthlyTokenLimit, MonthlyCostLimit: in.MonthlyCostLimit, AllowedModels: in.AllowedModels}
 	out, err := d.Store.CreateProjectAPIKey(c.Request.Context(), k)
 	if err != nil {
 		respond(c, nil, err)
@@ -1141,17 +1285,123 @@ func validBaseURL(v string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
+func upsertRoutingRule(c *gin.Context, d Dependencies, create bool) {
+	var rule domain.RoutingRule
+	if c.ShouldBindJSON(&rule) != nil || rule.ProjectID == "" || strings.TrimSpace(rule.Name) == "" ||
+		strings.TrimSpace(rule.Alias) == "" || !validIntelligentStrategy(rule.Strategy) || rule.QualityWeight < 0 ||
+		rule.PriceWeight < 0 || rule.LatencyWeight < 0 {
+		openAIError(c, 400, "invalid_request", "project_id, name, alias, strategy, and non-negative weights are required.")
+		return
+	}
+	if !create {
+		rule.ID = c.Param("id")
+	} else {
+		rule.ID = ""
+		rule.Enabled = true
+	}
+	out, err := d.Store.UpsertRoutingRule(c.Request.Context(), rule)
+	action := "routing_rule.update"
+	if create {
+		action = "routing_rule.create"
+	}
+	audit(c, d, action, "routing_rule", out.ID, out)
+	if create {
+		respondCreated(c, out, err)
+	} else {
+		respond(c, out, err)
+	}
+}
+
+func upsertTeam(c *gin.Context, d Dependencies, create bool) {
+	var team domain.Team
+	if c.ShouldBindJSON(&team) != nil || team.OrganizationID == "" || strings.TrimSpace(team.Name) == "" ||
+		(team.Status != "" && team.Status != "ACTIVE" && team.Status != "DISABLED") {
+		openAIError(c, 400, "invalid_request", "organization_id, name, and a valid status are required.")
+		return
+	}
+	if !create {
+		team.ID = c.Param("id")
+	} else {
+		team.ID = ""
+	}
+	out, err := d.Store.UpsertTeam(c.Request.Context(), team)
+	action := "team.update"
+	if create {
+		action = "team.create"
+	}
+	audit(c, d, action, "team", out.ID, out)
+	if create {
+		respondCreated(c, out, err)
+	} else {
+		respond(c, out, err)
+	}
+}
+
+func createWalletAdjustment(c *gin.Context, d Dependencies, transactionType string) {
+	var in struct {
+		Amount         float64        `json:"amount"`
+		IdempotencyKey string         `json:"idempotency_key"`
+		Reference      string         `json:"reference"`
+		Metadata       map[string]any `json:"metadata"`
+	}
+	if c.ShouldBindJSON(&in) != nil || in.Amount == 0 || (transactionType == "TOPUP" && in.Amount < 0) {
+		openAIError(c, 400, "invalid_request", "A non-zero amount is required; topups must be positive.")
+		return
+	}
+	if in.IdempotencyKey == "" {
+		in.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	}
+	if in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200 {
+		openAIError(c, 400, "invalid_request", "An Idempotency-Key of at most 200 characters is required.")
+		return
+	}
+	claims := claimsFrom(c)
+	var actor *string
+	if claims != nil {
+		actor = &claims.Subject
+	}
+	out, err := d.Store.CreateWalletTransaction(c.Request.Context(), domain.WalletTransaction{WalletID: c.Param("id"),
+		TransactionType: transactionType, Amount: in.Amount, IdempotencyKey: in.IdempotencyKey, Reference: in.Reference,
+		Metadata: in.Metadata, CreatedBy: actor})
+	if errors.Is(err, store.ErrWalletUnavailable) {
+		openAIError(c, http.StatusPaymentRequired, "insufficient_balance", "The wallet is unavailable or the adjustment exceeds its credit limit.")
+		return
+	}
+	audit(c, d, "wallet."+strings.ToLower(transactionType), "wallet", c.Param("id"), out)
+	respondCreated(c, out, err)
+}
+
+func validModelScore(value float64) bool { return value >= 0 && value <= 100 }
+func validIntelligentStrategy(value string) bool {
+	return value == "cost_optimized" || value == "quality_optimized" || value == "balanced"
+}
+func validMarketplaceStatus(value string) bool {
+	return value == "DRAFT" || value == "REVIEW" || value == "ACTIVE" || value == "SUSPENDED" || value == "REJECTED"
+}
+func validBillingMode(value string) bool { return value == "PREPAID" || value == "POSTPAID" }
+func validWalletStatus(value string) bool {
+	return value == "ACTIVE" || value == "FROZEN" || value == "CLOSED"
+}
+
 func normalizeProviderType(value string) (string, bool) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
 		return "openai", true
 	}
 	switch value {
-	case "openai", "deepseek", "openrouter":
+	case "openai", "anthropic", "gemini", "deepseek", "qwen", "kimi", "glm", "openrouter":
 		return value, true
 	default:
 		return "", false
 	}
+}
+
+func healthCheckProvider(ctx context.Context, d Dependencies, provider domain.Provider, credential providers.Credential) error {
+	adapter, err := providerAdapter(d, provider.ProviderType)
+	if err != nil {
+		return err
+	}
+	return adapter.HealthCheck(ctx, provider.BaseURL, credential)
 }
 func validRoutingPolicy(value string) bool {
 	return value == "priority_weighted" || value == "least_loaded" || value == "weighted_round_robin"

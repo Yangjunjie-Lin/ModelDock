@@ -34,12 +34,18 @@ $expectedLedger = @(
     "2:v2",
     "3:v2_statuses",
     "4:project_route_soft_delete",
-    "5:openai_compatible_providers"
+    "5:openai_compatible_providers",
+    "6:modeldock"
 )
 $expectedProviderSeeds = @(
+    "anthropic|anthropic|https://api.anthropic.com/v1",
     "deepseek|deepseek|https://api.deepseek.com/v1",
+    "gemini|gemini|https://generativelanguage.googleapis.com/v1beta/openai",
+    "glm|glm|https://open.bigmodel.cn/api/paas/v4",
+    "kimi|kimi|https://api.moonshot.cn/v1",
     "openai|openai|https://api.openai.com/v1",
-    "openrouter|openrouter|https://openrouter.ai/api/v1"
+    "openrouter|openrouter|https://openrouter.ai/api/v1",
+    "qwen|qwen|https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 
 $dockerExecutable = $null
@@ -304,7 +310,7 @@ function Assert-ExpectedLedger {
     }
 
     $providerResult = Invoke-PsqlChecked -Database $script:testDatabase `
-        -Sql "SELECT slug || '|' || provider_type || '|' || base_url FROM providers WHERE slug IN ('openai','deepseek','openrouter') ORDER BY slug" `
+        -Sql "SELECT slug || '|' || provider_type || '|' || base_url FROM providers WHERE slug IN ('anthropic','openai','deepseek','gemini','glm','kimi','openrouter','qwen') ORDER BY slug" `
         -Operation "Validating OpenAI-compatible provider seeds"
     $actualProviders = [string]::Join("`n", @(Get-NonEmptyLines -Text $providerResult.Output))
     $expectedProviders = [string]::Join("`n", $script:expectedProviderSeeds)
@@ -495,7 +501,7 @@ try {
     Wait-ForSuccessfulStartup -Name $firstContainer
     $firstSnapshot = Get-LedgerSnapshot
     Remove-TestContainer -Name $firstContainer
-    Write-Host "PASS empty database applied migrations 1:core through 5:openai_compatible_providers"
+    Write-Host "PASS empty database applied migrations 1:core through 6:modeldock"
 
     $secondContainer = "relaydock-migration-$runID-second"
     Start-TestServer -Name $secondContainer

@@ -1,17 +1,18 @@
-# RelayDock
+# ModelDock
 
-**Multi-Credential AI API Gateway & Control Plane**
+**中国开发者可用的 AI Model Gateway + Model Marketplace**
 
-RelayDock is a self-hosted, OpenAI-compatible gateway for routing authorized
-application traffic through administrator-owned provider API credentials. It
-combines a low-latency data plane, an auditable credential scheduler, usage and
-cost accounting, downstream API keys, and separate admin/user consoles.
+ModelDock is the commercial evolution of RelayDock: a self-hosted,
+OpenAI-compatible model gateway that lets applications reach global and Chinese
+model providers without changing SDK code. The existing `rdk_*` key format,
+`RELAYDOCK_*` environment variables, database identities, and `/v1` behavior are
+retained for in-place upgrades.
 
 > 中文定位：面向 AI 模型调用的统一 API 中转、授权凭据池、模型路由、用量统计与管理平台。
 
-RelayDock V2.0 integrates official OpenAI-compatible APIs. OpenAI, DeepSeek,
-and OpenRouter are seeded production providers; each still requires an
-administrator-owned official API credential. RelayDock does not create provider
+ModelDock V3 seeds OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Kimi, GLM, and
+OpenRouter provider records. Every provider still requires an
+administrator-owned official API credential. ModelDock does not create provider
 accounts, automate verification/CAPTCHA, pool consumer web sessions, claim
 trials/promotions, or rotate proxies/identities to evade limits.
 
@@ -20,6 +21,17 @@ trials/promotions, or rotate proxies/identities to evade limits.
 - OpenAI-compatible `/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`,
   and `/v1/models`
 - incremental SSE proxying with cancellation and time-to-first-byte metrics
+- dynamic model registry with context windows, versioned prices, quality scores,
+  and latency penalties
+- manual, cost-optimized, quality-optimized, and balanced cross-model routing
+- runtime Provider registry with OpenAI, Anthropic, Gemini, and DeepSeek adapter
+  types plus OpenAI-compatible Chinese provider integrations
+- provider Marketplace listings with model, price, status, verification, and
+  uptime metadata
+- organization wallets, idempotent transaction ledger, request-level billing
+  usage records, prepaid admission, and postpaid compatibility mode
+- enterprise organizations, projects, teams, memberships, quotas, budgets, and
+  audit logs
 - encrypted, administrator-imported provider credential inventory
 - bounded JSON import and batch operations for up to 25 already-issued,
   authorized provider API credentials (never accounts or browser sessions)
@@ -48,10 +60,10 @@ trials/promotions, or rotate proxies/identities to evade limits.
 Authorized client
   -> versioned, project-scoped RelayDock API key authentication
   -> active user / organization / project / membership checks
-  -> project route grant + key allowlist + budget admission
+  -> manual alias or intelligent model route + key allowlist + budget/wallet admission
   -> authorized credential scheduler + project tag constraints
-  -> OpenAI adapter
-  -> OpenAI official API
+  -> provider runtime registry
+  -> official provider API
   -> streaming/non-streaming response
   -> scoped usage/log/budget event + transactional webhook outbox
 ```
@@ -66,7 +78,8 @@ host port `5433` (container port `5432`), and Redis on `6379` by default.
 PostgreSQL, Redis, and application logs
 bind to `./data/postgres`, `./data/redis`, and `./logs`.
 
-Read [the architecture guide](docs/architecture.md) and
+Read [the ModelDock V3 guide](docs/modeldock.md),
+[the architecture guide](docs/architecture.md), and
 [architecture decisions](docs/architecture-decisions.md) for request flow,
 scheduler semantics, failure handling, and secret boundaries. V2 operators and
 integrators should also read the [V2.0 contract](docs/v2.md), the
@@ -387,11 +400,11 @@ The hardened Ubuntu 24.04 deployment package, including Nginx, Certbot,
 resource limits, systemd fallback, backups, DNS, HTTPS, and troubleshooting, is
 documented in [deploy/production/README.md](deploy/production/README.md).
 
-## Known V2.0 limits
+## Known V3 limits
 
-- OpenAI, DeepSeek, and OpenRouter share one audited OpenAI-compatible HTTP
-  adapter. RelayDock does not translate unsupported endpoint shapes between
-  providers; route each endpoint only to an upstream that implements it.
+- The seeded providers use their official OpenAI-compatible surfaces. ModelDock
+  does not translate an endpoint a provider does not implement; apply model
+  capability filters and route each endpoint to a compatible upstream.
 - The deployment topology is single-node Compose, not HA/Kubernetes.
 - Only Models, Responses, Chat Completions, and Embeddings are exposed through
   the compatibility gateway.
@@ -406,8 +419,9 @@ documented in [deploy/production/README.md](deploy/production/README.md).
 - Retention values are control-plane policy metadata in V2.0; automatic database
   cleanup is not bundled. Operators must run an approved scheduled retention
   job until a native worker is added.
-- No payment gateway, recharge, invoice, public marketplace, or commercial
-  tenant billing is included.
+- Wallet top-ups are administrative ledger entries. A payment processor,
+  tax/invoice engine, settlement reconciliation, and public supplier onboarding
+  workflow remain external integrations.
 - A project license has not yet been selected; see **License** below.
 
 ## V2.0 multi-project governance
@@ -418,14 +432,14 @@ constraints, project-scoped versioned keys, budget policies/events, signed
 durable webhooks, project CSV export, and alert acknowledgement. Existing V1
 data is preserved in deterministic `Legacy` organization/project records.
 
-## V2.1+ roadmap
+## V3 roadmap
 
 Potential future work, subject to the same authorization and compliance rules:
 
-- SiliconFlow, Anthropic, Gemini, xAI, Azure OpenAI, and custom
-  OpenAI-compatible adapters;
 - distributed budget reservations with post-response reconciliation;
-- richer capability/pricing administration and policy/region-aware routing;
+- payment processor and invoice integrations;
+- supplier onboarding, verification, SLA probes, and settlement;
+- richer policy/region/data-residency-aware routing;
 - webhook replay observability, additional approved event types, and external
   alert integrations;
 - provider failover policies with replay-safety proofs;

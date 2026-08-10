@@ -10,6 +10,9 @@ export interface DashboardSummary {
   total_cached_tokens?: number
   total_output_tokens?: number
   estimated_cost?: number
+  today_tokens?: number
+  today_cost?: number
+  savings_amount?: number
   success_rate?: number
   average_latency_ms?: number
   p95_latency_ms?: number

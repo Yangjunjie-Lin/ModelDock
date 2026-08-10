@@ -34,7 +34,11 @@ export function ProvidersPage() {
     createFields: [
       { name: 'name', label: 'Display name', required: true, placeholder: 'OpenAI' },
       { name: 'slug', label: 'Slug', required: true, placeholder: 'openai' },
-      { name: 'provider_type', label: 'Provider type', required: true, type: 'select', options: [{ value: 'openai', label: 'OpenAI' }, { value: 'deepseek', label: 'DeepSeek' }, { value: 'openrouter', label: 'OpenRouter' }] },
+      { name: 'provider_type', label: 'Provider type', required: true, type: 'select', options: [
+        { value: 'openai', label: 'OpenAI' }, { value: 'anthropic', label: 'Anthropic' }, { value: 'gemini', label: 'Google Gemini' },
+        { value: 'deepseek', label: 'DeepSeek' }, { value: 'qwen', label: 'Qwen' }, { value: 'kimi', label: 'Kimi' },
+        { value: 'glm', label: 'GLM' }, { value: 'openrouter', label: 'OpenRouter' },
+      ] },
       { name: 'base_url', label: 'Base URL', type: 'url', required: true, placeholder: 'https://api.openai.com/v1', hint: 'Use the official provider API endpoint.' },
     ],
     emptyTitle: 'No providers configured', emptyDescription: 'Add an official provider connection to begin configuring authorized credentials.',
@@ -67,10 +71,82 @@ export function ModelsPage() {
       { key: 'model_type', label: 'Type', render: (row) => <Badge>{String(row.model_type || 'unknown')}</Badge> },
       { key: 'capabilities', label: 'Capabilities', render: cell.tags('capabilities') },
       { key: 'enabled', label: 'Status', render: (row) => <StatusBadge value={row.enabled ? 'enabled' : 'disabled'} /> },
+      { key: 'quality_score', label: 'Quality', render: (row) => formatNumber(row.quality_score, false) },
+      { key: 'latency_score', label: 'Latency penalty', render: (row) => formatNumber(row.latency_score, false) },
       { key: 'input_price', label: 'Input / 1M', render: (row) => formatMoney(row.input_price) },
       { key: 'output_price', label: 'Output / 1M', render: (row) => formatMoney(row.output_price) },
     ],
+    createFields: [
+      { name: 'provider_id', label: 'Provider ID', required: true },
+      { name: 'provider_model_id', label: 'Provider model ID', required: true, placeholder: 'deepseek-chat' },
+      { name: 'display_name', label: 'Display name', required: true, placeholder: 'DeepSeek Chat' },
+      { name: 'model_type', label: 'Type', type: 'select', required: true, options: [{ value: 'text', label: 'Text' }, { value: 'embedding', label: 'Embedding' }, { value: 'image', label: 'Image' }, { value: 'audio', label: 'Audio' }] },
+      { name: 'context_window', label: 'Context window', type: 'number' },
+      { name: 'quality_score', label: 'Quality score (0–100)', type: 'number', placeholder: '50' },
+      { name: 'latency_score', label: 'Latency penalty (0–100)', type: 'number', placeholder: '50' },
+      { name: 'input_price', label: 'Input price / 1M', type: 'number', placeholder: '0' },
+      { name: 'output_price', label: 'Output price / 1M', type: 'number', placeholder: '0' },
+    ],
     emptyTitle: 'Model registry is empty', emptyDescription: 'Connect a provider, then sync its official model catalog.',
+  }} />
+}
+
+export function RoutingRulesPage() {
+  return <ResourcePage config={{
+    title: 'Routing rules', description: 'Select models by cost, quality, or a weighted quality − price − latency score.', endpoint: '/routing-rules', noun: 'Routing rule', createLabel: 'Create rule', filters: [{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }], sort: commonSort,
+    columns: [
+      { key: 'name', label: 'Rule', render: cell.primary('name', 'alias') },
+      { key: 'project_id', label: 'Project', render: (row) => <code className="inline-code">{String(row.project_id || '—')}</code> },
+      { key: 'strategy', label: 'Strategy', render: (row) => <Badge tone="info">{String(row.strategy || 'balanced')}</Badge> },
+      { key: 'quality_weight', label: 'Quality weight', render: (row) => formatNumber(row.quality_weight, false) },
+      { key: 'price_weight', label: 'Price weight', render: (row) => formatNumber(row.price_weight, false) },
+      { key: 'latency_weight', label: 'Latency weight', render: (row) => formatNumber(row.latency_weight, false) },
+      { key: 'enabled', label: 'Status', render: (row) => <StatusBadge value={row.enabled ? 'enabled' : 'disabled'} /> },
+    ],
+    createFields: [
+      { name: 'project_id', label: 'Project ID', required: true },
+      { name: 'name', label: 'Rule name', required: true, placeholder: 'Balanced production' },
+      { name: 'alias', label: 'API model alias', required: true, placeholder: 'auto-production' },
+      { name: 'strategy', label: 'Strategy', required: true, type: 'select', options: [{ value: 'balanced', label: 'Balanced' }, { value: 'cost_optimized', label: 'Cost optimized' }, { value: 'quality_optimized', label: 'Quality optimized' }] },
+      { name: 'quality_weight', label: 'Quality weight', type: 'number', placeholder: '0.5' },
+      { name: 'price_weight', label: 'Price weight', type: 'number', placeholder: '0.3' },
+      { name: 'latency_weight', label: 'Latency weight', type: 'number', placeholder: '0.2' },
+    ],
+  }} />
+}
+
+export function MarketplacePage() {
+  return <ResourcePage config={{
+    title: 'Provider marketplace', description: 'Review third-party provider endpoints, supported models, verification, pricing, and uptime.', endpoint: '/marketplace/providers', noun: 'Marketplace provider', filters: [{ value: 'ACTIVE', label: 'Active' }, { value: 'REVIEW', label: 'In review' }, { value: 'SUSPENDED', label: 'Suspended' }], sort: commonSort,
+    columns: [
+      { key: 'provider_name', label: 'Provider', render: cell.primary('provider_name', 'endpoint') },
+      { key: 'supported_models', label: 'Models', render: cell.tags('supported_models') },
+      { key: 'status', label: 'Status', render: (row) => <StatusBadge value={row.status} /> },
+      { key: 'verified', label: 'Verified', render: (row) => <StatusBadge value={row.verified ? 'verified' : 'unverified'} /> },
+      { key: 'uptime', label: 'Uptime', render: (row) => `${Number(row.uptime || 0).toFixed(3)}%` },
+      { key: 'updated_at', label: 'Updated', render: cell.date('updated_at') },
+    ],
+  }} />
+}
+
+export function TeamsPage() {
+  return <ResourcePage config={{
+    title: 'Teams', description: 'Group organization members and apply commercial token and cost limits.', endpoint: '/teams', noun: 'Team', createLabel: 'Create team', filters: [{ value: 'ACTIVE', label: 'Active' }, { value: 'DISABLED', label: 'Disabled' }, { value: 'ARCHIVED', label: 'Archived' }], sort: commonSort,
+    columns: [
+      { key: 'name', label: 'Team', render: cell.primary('name', 'slug') },
+      { key: 'organization_id', label: 'Organization', render: (row) => <code className="inline-code">{String(row.organization_id || '—')}</code> },
+      { key: 'status', label: 'Status', render: (row) => <StatusBadge value={row.status} /> },
+      { key: 'monthly_token_limit', label: 'Token limit', render: (row) => formatNumber(row.monthly_token_limit) },
+      { key: 'monthly_cost_limit', label: 'Cost limit', render: (row) => formatMoney(row.monthly_cost_limit) },
+    ],
+    createFields: [
+      { name: 'organization_id', label: 'Organization ID', required: true },
+      { name: 'name', label: 'Team name', required: true, placeholder: 'AI Platform' },
+      { name: 'slug', label: 'Slug', placeholder: 'ai-platform' },
+      { name: 'status', label: 'Status', type: 'select', required: true, options: [{ value: 'ACTIVE', label: 'Active' }, { value: 'DISABLED', label: 'Disabled' }] },
+      { name: 'monthly_token_limit', label: 'Monthly token limit', type: 'number' },
+      { name: 'monthly_cost_limit', label: 'Monthly cost limit', type: 'number' },
+    ],
   }} />
 }
 
@@ -113,6 +189,7 @@ export function AdminApiKeysPage() {
       { name: 'name', label: 'Key name', required: true, placeholder: 'Production service' },
       { name: 'user_id', label: 'User ID', required: true },
       { name: 'project_id', label: 'Project ID', required: true, hint: 'The owner must have active access to this project.' },
+      { name: 'team_id', label: 'Team ID', hint: 'Optional. The key owner must be an active member of this team.' },
       { name: 'environment', label: 'Environment', type: 'select', required: true, options: [{ value: 'live', label: 'Live' }, { value: 'test', label: 'Test' }] },
       { name: 'rate_limit_rpm', label: 'Requests per minute', type: 'number', placeholder: '600' },
       { name: 'rate_limit_tpm', label: 'Tokens per minute', type: 'number', placeholder: '200000' },

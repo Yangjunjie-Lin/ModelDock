@@ -88,12 +88,38 @@ func listGatewayModels(c *gin.Context, d Dependencies) {
 		openAIError(c, 500, "internal_error", "Could not load the model catalog.")
 		return
 	}
-	data := make([]gin.H, 0, len(routes))
+	data := make([]gin.H, 0, len(routes)+4)
+	seen := make(map[string]bool)
+	activeRoutes := 0
 	for _, route := range routes {
-		if !route.Enabled || !modelAllowed(key.AllowedModels, route.Alias) {
+		if !route.Enabled {
 			continue
 		}
-		data = append(data, gin.H{"id": route.Alias, "object": "model", "created": route.CreatedAt.Unix(), "owned_by": "relayedock"})
+		activeRoutes++
+		if !modelAllowed(key.AllowedModels, route.Alias) {
+			continue
+		}
+		seen[route.Alias] = true
+		data = append(data, gin.H{"id": route.Alias, "object": "model", "created": route.CreatedAt.Unix(), "owned_by": "modeldock"})
+	}
+	rules, err := d.Store.ListRoutingRules(c.Request.Context(), key.ProjectID)
+	if err != nil {
+		openAIError(c, 500, "internal_error", "Could not load the routing catalog.")
+		return
+	}
+	for _, rule := range rules {
+		if !rule.Enabled || seen[rule.Alias] || !modelAllowed(key.AllowedModels, rule.Alias) {
+			continue
+		}
+		seen[rule.Alias] = true
+		data = append(data, gin.H{"id": rule.Alias, "object": "model", "created": rule.CreatedAt.Unix(), "owned_by": "modeldock-router"})
+	}
+	if activeRoutes > 0 {
+		for _, alias := range []string{"auto", "auto:cost", "auto:quality", "auto:balanced"} {
+			if !seen[alias] && modelAllowed(key.AllowedModels, alias) {
+				data = append(data, gin.H{"id": alias, "object": "model", "created": time.Now().Unix(), "owned_by": "modeldock-router"})
+			}
+		}
 	}
 	c.JSON(200, gin.H{"object": "list", "data": data})
 }
@@ -152,7 +178,8 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		openAIError(c, http.StatusBadRequest, "invalid_client_request_id", "X-Client-Request-Id must not exceed 512 bytes.")
 		return
 	}
-	projectRoute, err := d.Store.ProjectRouteByAlias(c.Request.Context(), key.ProjectID, requestedModel)
+	routingDecision, err := d.Store.ResolveProjectRouteForEndpoint(c.Request.Context(), key.ProjectID, requestedModel, endpoint)
+	projectRoute := routingDecision.Route
 	if err != nil || !projectRoute.Enabled {
 		logEntry.StatusCode = http.StatusNotFound
 		logEntry.ErrorCode = "model_not_found"
@@ -168,6 +195,21 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		logEntry.ErrorCode = "model_not_allowed"
 		d.Metrics.Error()
 		openAIError(c, 403, "model_not_allowed", "This API key is not allowed to use the requested model.")
+		return
+	}
+	walletAllowed, walletErr := d.Store.WalletAllowsRequest(c.Request.Context(), key.OrganizationID)
+	if walletErr != nil {
+		logEntry.StatusCode = http.StatusServiceUnavailable
+		logEntry.ErrorCode = "billing_state_unavailable"
+		d.Metrics.Error()
+		openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "Billing state is temporarily unavailable.")
+		return
+	}
+	if !walletAllowed {
+		logEntry.StatusCode = http.StatusPaymentRequired
+		logEntry.ErrorCode = "insufficient_balance"
+		d.Metrics.Error()
+		openAIError(c, http.StatusPaymentRequired, "insufficient_balance", "The organization wallet is frozen or has insufficient prepaid balance.")
 		return
 	}
 	estimatedTokens := len(body) / 4
@@ -246,6 +288,34 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			return
 		}
 	}
+	if key.TeamID != "" {
+		team, err := d.Store.TeamByID(c.Request.Context(), key.TeamID)
+		if err != nil || team.Status != "ACTIVE" {
+			logEntry.StatusCode = http.StatusForbidden
+			logEntry.ErrorCode = "team_unavailable"
+			d.Metrics.Error()
+			openAIError(c, http.StatusForbidden, "team_unavailable", "The API key team is not active.")
+			return
+		}
+		if team.MonthlyTokenLimit != nil || team.MonthlyCostLimit != nil {
+			tokens, cost, err := d.Store.TeamMonthlyUsage(c.Request.Context(), team.ID)
+			if err != nil {
+				logEntry.StatusCode = http.StatusServiceUnavailable
+				logEntry.ErrorCode = "quota_state_unavailable"
+				d.Metrics.Error()
+				openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "Team quota state is temporarily unavailable.")
+				return
+			}
+			if (team.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *team.MonthlyTokenLimit) ||
+				(team.MonthlyCostLimit != nil && cost >= *team.MonthlyCostLimit) {
+				logEntry.StatusCode = http.StatusForbidden
+				logEntry.ErrorCode = "team_quota_exceeded"
+				d.Metrics.Error()
+				openAIError(c, http.StatusForbidden, "team_quota_exceeded", "The team monthly quota has been reached.")
+				return
+			}
+		}
+	}
 	if !allowRate(c, d, key, estimatedTokens) {
 		logEntry.StatusCode = c.Writer.Status()
 		logEntry.ErrorCode = "rate_limit_exceeded"
@@ -280,6 +350,12 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 	cred := selection.Credential
 	logEntry.CredentialID = cred.ID
 	logEntry.SchedulerReason = selection.Reason
+	if logEntry.SchedulerReason == nil {
+		logEntry.SchedulerReason = map[string]any{}
+	}
+	logEntry.SchedulerReason["model_router"] = map[string]any{"strategy": routingDecision.Strategy,
+		"score": routingDecision.Score, "candidates": routingDecision.Candidates, "selected_alias": projectRoute.Alias,
+		"selected_model": projectRoute.UpstreamModel, "provider_type": projectRoute.ProviderType}
 	secret, err := d.Vault.Decrypt(cred.EncryptedSecret, cred.ID)
 	if err != nil {
 		logEntry.StatusCode = 503
@@ -290,8 +366,16 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		return
 	}
 	d.Metrics.Upstream()
+	adapter, err := providerAdapter(d, projectRoute.ProviderType)
+	if err != nil {
+		logEntry.StatusCode = http.StatusServiceUnavailable
+		logEntry.ErrorCode = "provider_adapter_unavailable"
+		openAIError(c, http.StatusServiceUnavailable, "provider_unavailable", "The configured provider adapter is unavailable.")
+		d.Metrics.Error()
+		return
+	}
 	forward := providers.ForwardRequest{BaseURL: projectRoute.ProviderBaseURL, Path: endpoint, Body: bytes.NewReader(upstreamBody), ContentType: "application/json", Accept: c.GetHeader("Accept"), ClientRequestID: clientRequestID, Credential: providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)}}
-	resp, err := d.OpenAI.Forward(c.Request.Context(), forward)
+	resp, err := adapter.Forward(c.Request.Context(), forward)
 	if err != nil {
 		logEntry.StatusCode = 502
 		logEntry.ErrorCode = "provider_connection_error"
@@ -351,8 +435,18 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 	if cost, err := d.Store.CalculateCost(c.Request.Context(), projectRoute.ProviderID, projectRoute.UpstreamModel, usage.Input, usage.Cached, usage.Output); err == nil {
 		logEntry.EstimatedCost = cost
 	}
+	if routingDecision.Strategy != "manual" {
+		if reference, err := d.Store.CalculateProjectReferenceCost(c.Request.Context(), key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
+			logEntry.ReferenceCost = reference
+			if reference > logEntry.EstimatedCost {
+				logEntry.SavingsAmount = reference - logEntry.EstimatedCost
+			}
+		}
+	}
 	if resp.StatusCode >= 400 {
-		d.OpenAI.CloseIdleConnections()
+		if closer, ok := adapter.(providers.IdleConnectionCloser); ok {
+			closer.CloseIdleConnections()
+		}
 		d.Metrics.Error()
 		if logEntry.ErrorCode == "" {
 			logEntry.ErrorCode = upstreamErrorCode(capture.Bytes())

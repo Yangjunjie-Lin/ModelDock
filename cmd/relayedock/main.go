@@ -21,6 +21,10 @@ import (
 	"github.com/relayedock/relayedock/internal/config"
 	secretcrypto "github.com/relayedock/relayedock/internal/crypto"
 	"github.com/relayedock/relayedock/internal/observability"
+	"github.com/relayedock/relayedock/internal/providers"
+	provideranthropic "github.com/relayedock/relayedock/internal/providers/anthropic"
+	providerdeepseek "github.com/relayedock/relayedock/internal/providers/deepseek"
+	providergemini "github.com/relayedock/relayedock/internal/providers/gemini"
 	"github.com/relayedock/relayedock/internal/providers/openai"
 	"github.com/relayedock/relayedock/internal/ratelimit"
 	"github.com/relayedock/relayedock/internal/scheduler"
@@ -110,6 +114,15 @@ func run() error {
 	}
 	metrics := &observability.Metrics{}
 	openAI := openai.New(nil)
+	providerRegistry := providers.NewRegistry()
+	providerRegistry.Register("openai", openAI)
+	providerRegistry.Register("openrouter", openAI)
+	providerRegistry.Register("qwen", openAI)
+	providerRegistry.Register("kimi", openAI)
+	providerRegistry.Register("glm", openAI)
+	providerRegistry.Register("deepseek", providerdeepseek.New(nil))
+	providerRegistry.Register("anthropic", provideranthropic.New(nil))
+	providerRegistry.Register("gemini", providergemini.New(nil))
 	webhookDispatcher := webhook.New(webhook.Config{Timeout: cfg.WebhookTimeout, AllowHTTP: cfg.WebhookAllowHTTP, AllowPrivateNetwork: cfg.WebhookAllowPrivate})
 	cockpitClient := cockpit.New(cockpit.Config{SnapshotPath: cfg.CockpitSnapshotPath, BaseURL: cfg.CockpitBaseURL, APIKey: cfg.CockpitAPIKey, TestModel: cfg.CockpitTestModel})
 	workerHost, _ := os.Hostname()
@@ -121,7 +134,7 @@ func run() error {
 	counter := scheduler.NewRedisCounter(redisClient)
 	deps := server.Dependencies{
 		Config: cfg, Store: db, Redis: redisClient, Vault: vault, APIKeys: keys, Auth: authManager,
-		OpenAI: openAI, Scheduler: scheduler.New(db, counter), Limiter: ratelimit.New(redisClient), Metrics: metrics, Logger: logger, Webhooks: webhookDispatcher, Cockpit: cockpitClient,
+		OpenAI: openAI, Providers: providerRegistry, Scheduler: scheduler.New(db, counter), Limiter: ratelimit.New(redisClient), Metrics: metrics, Logger: logger, Webhooks: webhookDispatcher, Cockpit: cockpitClient,
 	}
 	gateway := &http.Server{Addr: cfg.GatewayAddr, Handler: server.GatewayEngine(deps), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
 	control := &http.Server{Addr: cfg.ControlAddr, Handler: server.ControlEngine(deps), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}

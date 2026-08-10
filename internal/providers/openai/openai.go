@@ -77,6 +77,11 @@ func (a *Adapter) CreateChatCompletion(ctx context.Context, r providers.ForwardR
 	r.Path = "/chat/completions"
 	return a.Forward(ctx, r)
 }
+func (a *Adapter) CreateStreamCompletion(ctx context.Context, r providers.ForwardRequest) (*http.Response, error) {
+	r.Path = "/chat/completions"
+	r.Accept = "text/event-stream"
+	return a.Forward(ctx, r)
+}
 func (a *Adapter) CreateEmbedding(ctx context.Context, r providers.ForwardRequest) (*http.Response, error) {
 	r.Path = "/embeddings"
 	return a.Forward(ctx, r)

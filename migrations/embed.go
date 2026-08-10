@@ -26,6 +26,9 @@ var projectRouteSoftDeleteSchema string
 //go:embed 0005_openai_compatible_providers.sql
 var openAICompatibleProvidersSchema string
 
+//go:embed 0006_modeldock.sql
+var modelDockSchema string
+
 // All is ordered oldest to newest.  Never edit a released migration; append a
 // new entry instead so checksum validation can detect binary/schema drift.
 var All = []Migration{
@@ -34,4 +37,5 @@ var All = []Migration{
 	{Version: 3, Name: "v2_statuses", SQL: v2StatusesSchema},
 	{Version: 4, Name: "project_route_soft_delete", SQL: projectRouteSoftDeleteSchema},
 	{Version: 5, Name: "openai_compatible_providers", SQL: openAICompatibleProvidersSchema},
+	{Version: 6, Name: "modeldock", SQL: modelDockSchema},
 }

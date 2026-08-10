@@ -337,7 +337,13 @@ func (s *Store) RemoveGroupMember(ctx context.Context, groupID, credentialID str
 }
 
 func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,provider_id,provider_model_id,display_name,model_type,enabled,capabilities,capability_source,context_window,metadata,created_at,updated_at FROM models ORDER BY provider_model_id`)
+	rows, err := s.pool.Query(ctx, `SELECT m.id,m.provider_id,p.name,m.provider_model_id,m.display_name,m.model_type,m.enabled,
+		m.capabilities,m.capability_source,m.context_window,m.latency_score::float8,m.quality_score::float8,
+		COALESCE(mp.input_price,0)::float8,COALESCE(mp.output_price,0)::float8,COALESCE(mp.currency,''),
+		m.metadata,m.created_at,m.updated_at FROM models m JOIN providers p ON p.id=m.provider_id
+		LEFT JOIN LATERAL (SELECT input_price,output_price,currency FROM model_prices
+			WHERE model_id=m.id AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
+		ORDER BY p.name,m.provider_model_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +352,9 @@ func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 	for rows.Next() {
 		var m domain.Model
 		var caps, meta []byte
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ProviderModelID, &m.DisplayName, &m.ModelType, &m.Enabled, &caps, &m.CapabilitySource, &m.ContextWindow, &meta, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderModelID, &m.DisplayName, &m.ModelType,
+			&m.Enabled, &caps, &m.CapabilitySource, &m.ContextWindow, &m.LatencyScore, &m.QualityScore,
+			&m.InputPrice, &m.OutputPrice, &m.PriceCurrency, &meta, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(caps, &m.Capabilities)
@@ -380,12 +388,94 @@ func (s *Store) UpsertModels(ctx context.Context, providerID string, models []do
 		if m.CapabilitySource == "" {
 			m.CapabilitySource = "provider"
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO models(id,provider_id,provider_model_id,display_name,model_type,enabled,capabilities,capability_source,context_window,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(provider_id,provider_model_id) DO UPDATE SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled,metadata=EXCLUDED.metadata,updated_at=now()`, m.ID, providerID, m.ProviderModelID, m.DisplayName, m.ModelType, true, jsonBytes(m.Capabilities), m.CapabilitySource, m.ContextWindow, jsonBytes(m.Metadata))
+		_, err = tx.Exec(ctx, `INSERT INTO models(id,provider_id,provider_model_id,display_name,model_type,enabled,capabilities,capability_source,context_window,latency_score,quality_score,metadata)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(provider_id,provider_model_id) DO UPDATE
+			SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled,metadata=EXCLUDED.metadata,updated_at=now()`,
+			m.ID, providerID, m.ProviderModelID, m.DisplayName, m.ModelType, true, jsonBytes(m.Capabilities),
+			m.CapabilitySource, m.ContextWindow, defaultScore(m.LatencyScore), defaultScore(m.QualityScore), jsonBytes(m.Metadata))
 		if err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func defaultScore(value float64) float64 {
+	if value == 0 {
+		return 50
+	}
+	return value
+}
+
+func (s *Store) CreateModel(ctx context.Context, m domain.Model) (domain.Model, error) {
+	if m.ID == "" {
+		m.ID = id.UUID()
+	}
+	if m.DisplayName == "" {
+		m.DisplayName = m.ProviderModelID
+	}
+	if m.ModelType == "" {
+		m.ModelType = "text"
+	}
+	if m.CapabilitySource == "" {
+		m.CapabilitySource = "manual"
+	}
+	if m.Metadata == nil {
+		m.Metadata = map[string]any{}
+	}
+	if m.Capabilities == nil {
+		m.Capabilities = []string{}
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO models(id,provider_id,provider_model_id,display_name,model_type,enabled,
+		capabilities,capability_source,context_window,latency_score,quality_score,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, m.ID, m.ProviderID, m.ProviderModelID,
+		m.DisplayName, m.ModelType, m.Enabled, jsonBytes(m.Capabilities), m.CapabilitySource, m.ContextWindow,
+		defaultScore(m.LatencyScore), defaultScore(m.QualityScore), jsonBytes(m.Metadata)); err != nil {
+		return domain.Model{}, err
+	}
+	return s.ModelByID(ctx, m.ID)
+}
+
+func (s *Store) ModelByID(ctx context.Context, modelID string) (domain.Model, error) {
+	models, err := s.ListModels(ctx)
+	if err != nil {
+		return domain.Model{}, err
+	}
+	for _, model := range models {
+		if model.ID == modelID {
+			return model, nil
+		}
+	}
+	return domain.Model{}, ErrNotFound
+}
+
+func (s *Store) UpdateModel(ctx context.Context, m domain.Model) (domain.Model, error) {
+	if m.Metadata == nil {
+		m.Metadata = map[string]any{}
+	}
+	if m.Capabilities == nil {
+		m.Capabilities = []string{}
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE models SET provider_id=$2,provider_model_id=$3,display_name=$4,model_type=$5,
+		enabled=$6,capabilities=$7,capability_source=$8,context_window=$9,latency_score=$10,quality_score=$11,
+		metadata=$12,updated_at=now() WHERE id=$1`, m.ID, m.ProviderID, m.ProviderModelID, m.DisplayName, m.ModelType,
+		m.Enabled, jsonBytes(m.Capabilities), m.CapabilitySource, m.ContextWindow, m.LatencyScore, m.QualityScore,
+		jsonBytes(m.Metadata))
+	if err == nil && tag.RowsAffected() == 0 {
+		return domain.Model{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Model{}, err
+	}
+	return s.ModelByID(ctx, m.ID)
+}
+
+func (s *Store) DisableModel(ctx context.Context, modelID string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE models SET enabled=false,updated_at=now() WHERE id=$1`, modelID)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
 }
 
 func (s *Store) ListModelPrices(ctx context.Context, modelID string) ([]domain.ModelPrice, error) {
@@ -439,6 +529,38 @@ func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel str
 	}
 	noncached := input - cached
 	return (float64(noncached)*inputPrice + float64(cached)*cachedPrice + float64(output)*outputPrice) / float64(unit), nil
+}
+
+// CalculateProjectReferenceCost returns the highest current catalog cost among
+// enabled models granted to the project. Intelligent-router savings use this
+// explicit, reproducible baseline and are still estimates rather than invoices.
+func (s *Store) CalculateProjectReferenceCost(ctx context.Context, projectID string, input, cached, output int64) (float64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT mp.input_price::float8,mp.cached_input_price::float8,
+		mp.output_price::float8,mp.unit FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
+		JOIN models m ON m.provider_id=r.provider_id AND m.provider_model_id=r.upstream_model
+		JOIN LATERAL (SELECT input_price,cached_input_price,output_price,unit FROM model_prices WHERE model_id=m.id
+			AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
+		WHERE pmr.project_id=$1 AND pmr.deleted_at IS NULL AND pmr.enabled AND r.enabled AND m.enabled`, projectID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if cached > input {
+		cached = input
+	}
+	var highest float64
+	for rows.Next() {
+		var inputPrice, cachedPrice, outputPrice float64
+		var unit int64
+		if err := rows.Scan(&inputPrice, &cachedPrice, &outputPrice, &unit); err != nil {
+			return 0, err
+		}
+		cost := (float64(input-cached)*inputPrice + float64(cached)*cachedPrice + float64(output)*outputPrice) / float64(unit)
+		if cost > highest {
+			highest = cost
+		}
+	}
+	return highest, rows.Err()
 }
 
 func scanRoute(row pgx.Row) (domain.ModelRoute, error) {

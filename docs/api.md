@@ -485,6 +485,33 @@ exports contain the whole project; Console exports are additionally restricted
 to the current user. CSV contains request/usage metadata only—never prompts,
 responses, provider secrets, or RelayDock key values.
 
+## ModelDock V3 administration
+
+All paths below are relative to `/api/admin` and require an administrator
+session plus the existing CSRF protection for mutations.
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /models`, `PUT /models/{id}`, `DELETE /models/{id}` | Create, update, or disable registry models and quality/latency scores |
+| `GET/POST /routing-rules` | List or create project intelligent-routing aliases |
+| `PUT/DELETE /routing-rules/{id}` | Update or remove a routing rule |
+| `GET/POST /marketplace/providers` | List or create Marketplace provider listings |
+| `PUT/DELETE /marketplace/providers/{id}` | Review, verify, suspend, or remove a listing |
+| `GET/POST /teams` | List or create organization teams with token/cost limits |
+| `PUT/DELETE /teams/{id}` | Update or archive a team |
+| `GET /teams/{id}/members` | List team membership |
+| `PUT/DELETE /teams/{id}/members/{userID}` | Set or remove a team member |
+| `GET /wallets` | List organization wallets |
+| `PUT /wallets/{id}` | Set `PREPAID`/`POSTPAID`, status, and credit limit |
+| `GET /wallets/{id}/transactions` | List the immutable wallet ledger |
+| `POST /wallets/{id}/topups` | Add funds; requires an idempotency key |
+| `POST /wallets/{id}/adjustments` | Apply an audited signed balance adjustment |
+
+The built-in model aliases `auto`, `auto:cost`, `auto:quality`, and
+`auto:balanced` invoke intelligent routing. Exact physical aliases continue to
+use manual routing. See [modeldock.md](modeldock.md) for scoring and billing
+semantics.
+
 ## Operational endpoints
 
 Both listeners expose:

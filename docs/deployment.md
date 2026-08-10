@@ -1,6 +1,6 @@
 # Deployment
 
-The provided Compose topology is intended for a single-node V2.0 deployment and
+The provided Compose topology is intended for a single-node ModelDock V3 deployment and
 Windows-friendly local development. If the repository lives at
 `D:\RelayDock`, its durable bind mounts resolve to:
 
@@ -18,7 +18,7 @@ No Docker-managed named volume is used for project data.
 - Docker Compose v2
 - 4 GB available memory for the full stack
 - Git; Go 1.24+ and Node.js 22+ only for host-side development
-- an administrator-authorized OpenAI API/project credential for real traffic
+- at least one administrator-authorized provider API credential for real traffic
 
 ## First start
 
@@ -72,16 +72,18 @@ bootstrap password may be removed from the runtime environment; changing it
 does not rotate the stored password. V2.0 has no self-service password-change
 endpoint, so document and restrict an explicit database recovery procedure.
 
-## Add the first OpenAI credential
+## Add the first provider credential
 
-1. Create an API/project credential in the official OpenAI platform dashboard.
+1. Create an API/project credential in the provider's official platform.
 2. In Admin → Providers, keep the OpenAI base URL at
    `https://api.openai.com/v1`.
 3. In Admin → Credentials, choose **Add credential**, enter the official key
    and optional organization/project metadata, then select **Validate & save**.
 4. Put the credential in a credential group, synchronize/configure model
-   metadata, and create a route such as `gpt-default`.
-5. In the user console, create a RelayDock API key. Copy the full key at the
+   metadata and pricing, then create a physical route such as `gpt-default`.
+5. Optionally create a Routing Rule or use `auto:cost`, `auto:quality`, or
+   `auto:balanced` after granting candidate routes to the project.
+6. In the user console, create a ModelDock API key. Copy the full key at the
    one-time display and store it in the client secret manager.
 
 Never paste a consumer ChatGPT cookie/session, account password, or a credential
@@ -164,8 +166,9 @@ before declaring the backup usable.
 5. Roll back application images only when the database schema remains
    compatible; database rollback requires an explicit tested restore plan.
 
-V2.0 uses embedded migrations `1:core`, `2:v2`, `3:v2_statuses`,
-`4:project_route_soft_delete`, and `5:openai_compatible_providers`. Do not edit
+ModelDock uses embedded migrations `1:core`, `2:v2`, `3:v2_statuses`,
+`4:project_route_soft_delete`, `5:openai_compatible_providers`, and
+`6:modeldock`. Do not edit
 an already-applied migration: add a new version instead. After an upgrade,
 verify the migration ledger and exercise the V2 input-to-output suite from the
 repository root against an isolated test stack:

@@ -273,6 +273,7 @@ kbd { display: inline-flex; align-items: center; gap: 2px; padding: 2px 5px; bor
 .cockpit-security strong { color: var(--text-2); font-size: 9px; }
 .cockpit-security p { margin: 3px 0 0; color: var(--text-3); font-size: 9px; }
 .spin { animation: rd-spin .8s linear infinite; }
+.billing-total { display: block; margin-top: 12px; font-size: 24px; letter-spacing: -.03em; }
 @keyframes rd-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1280px) {

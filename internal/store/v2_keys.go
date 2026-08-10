@@ -11,7 +11,7 @@ import (
 	"github.com/relayedock/relayedock/internal/id"
 )
 
-const v2APIKeyColumns = `k.id,k.user_id,k.organization_id,k.project_id,k.name,k.environment,k.key_prefix,k.key_hash,k.status,
+const v2APIKeyColumns = `k.id,k.user_id,k.organization_id,k.project_id,COALESCE(k.team_id::text,''),k.name,k.environment,k.key_prefix,k.key_hash,k.status,
 	k.expires_at,k.rate_limit_rpm,k.rate_limit_tpm,k.monthly_token_limit,k.monthly_cost_limit,k.allowed_models,
 	k.created_at,k.updated_at,k.last_used_at,
 	COALESCE((SELECT max(v.version) FROM api_key_versions v WHERE v.api_key_id=k.id),0)`
@@ -19,7 +19,7 @@ const v2APIKeyColumns = `k.id,k.user_id,k.organization_id,k.project_id,k.name,k.
 func scanV2APIKey(row pgx.Row) (domain.APIKey, error) {
 	var key domain.APIKey
 	var allowed []byte
-	err := row.Scan(&key.ID, &key.UserID, &key.OrganizationID, &key.ProjectID, &key.Name, &key.Environment,
+	err := row.Scan(&key.ID, &key.UserID, &key.OrganizationID, &key.ProjectID, &key.TeamID, &key.Name, &key.Environment,
 		&key.KeyPrefix, &key.KeyHash, &key.Status, &key.ExpiresAt, &key.RateLimitRPM, &key.RateLimitTPM,
 		&key.MonthlyTokenLimit, &key.MonthlyCostLimit, &allowed, &key.CreatedAt, &key.UpdatedAt,
 		&key.LastUsedAt, &key.CurrentVersion)
@@ -53,10 +53,22 @@ func (s *Store) CreateProjectAPIKey(ctx context.Context, key domain.APIKey) (dom
 	if key.Status == "" {
 		key.Status = "ACTIVE"
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO api_keys(id,user_id,organization_id,project_id,name,environment,key_prefix,key_hash,status,
+	if key.TeamID != "" {
+		var allowed bool
+		err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM team_memberships tm JOIN teams t ON t.id=tm.team_id
+			WHERE tm.team_id=$1 AND tm.user_id=$2 AND tm.organization_id=$3 AND tm.status='ACTIVE' AND t.status='ACTIVE')`,
+			key.TeamID, key.UserID, key.OrganizationID).Scan(&allowed)
+		if err != nil {
+			return domain.APIKey{}, err
+		}
+		if !allowed {
+			return domain.APIKey{}, ErrNotFound
+		}
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO api_keys(id,user_id,organization_id,project_id,team_id,name,environment,key_prefix,key_hash,status,
 		expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,allowed_models)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, key.ID, key.UserID, key.OrganizationID,
-		key.ProjectID, key.Name, key.Environment, key.KeyPrefix, key.KeyHash, key.Status, key.ExpiresAt,
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, key.ID, key.UserID, key.OrganizationID,
+		key.ProjectID, nullString(key.TeamID), key.Name, key.Environment, key.KeyPrefix, key.KeyHash, key.Status, key.ExpiresAt,
 		key.RateLimitRPM, key.RateLimitTPM, key.MonthlyTokenLimit, key.MonthlyCostLimit, jsonBytes(key.AllowedModels))
 	if err != nil {
 		return domain.APIKey{}, err
@@ -130,10 +142,12 @@ func (s *Store) AuthenticateAPIKeyVersion(ctx context.Context, hash []byte) (dom
 		FROM api_key_versions v JOIN api_keys k ON k.id=v.api_key_id JOIN users u ON u.id=k.user_id
 		JOIN projects p ON p.id=k.project_id JOIN organizations o ON o.id=k.organization_id
 		WHERE v.key_hash=$1 AND k.status='ACTIVE' AND u.status='ACTIVE' AND p.status='ACTIVE' AND o.status='ACTIVE'
+		AND (k.team_id IS NULL OR EXISTS(SELECT 1 FROM teams t JOIN team_memberships tm ON tm.team_id=t.id
+			WHERE t.id=k.team_id AND t.organization_id=k.organization_id AND t.status='ACTIVE' AND tm.user_id=k.user_id AND tm.status='ACTIVE'))
 		AND (k.expires_at IS NULL OR k.expires_at>now()) AND v.valid_from<=now()
 		AND (v.expires_at IS NULL OR v.expires_at>now())
 		AND (v.status='ACTIVE' OR (v.status='GRACE' AND v.grace_expires_at>now()))`, hash).
-		Scan(&authn.Key.ID, &authn.Key.UserID, &authn.Key.OrganizationID, &authn.Key.ProjectID, &authn.Key.Name,
+		Scan(&authn.Key.ID, &authn.Key.UserID, &authn.Key.OrganizationID, &authn.Key.ProjectID, &authn.Key.TeamID, &authn.Key.Name,
 			&authn.Key.Environment, &authn.Key.KeyPrefix, &authn.Key.KeyHash, &authn.Key.Status, &authn.Key.ExpiresAt,
 			&authn.Key.RateLimitRPM, &authn.Key.RateLimitTPM, &authn.Key.MonthlyTokenLimit, &authn.Key.MonthlyCostLimit,
 			&allowed, &authn.Key.CreatedAt, &authn.Key.UpdatedAt, &authn.Key.LastUsedAt, &authn.Key.CurrentVersion,

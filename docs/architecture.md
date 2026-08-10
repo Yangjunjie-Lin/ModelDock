@@ -1,6 +1,6 @@
 # Architecture
 
-RelayDock V2.0 is a modular monolith delivered as one Go binary. The binary opens
+ModelDock V3 is a modular monolith delivered as one Go binary. The binary opens
 two listeners: the data-plane gateway on `:8080` and the control-plane API on
 `:8081`. This keeps deployment simple while maintaining strict package, route,
 authentication, and network boundaries.
@@ -13,17 +13,17 @@ flowchart LR
     AdminUI["Admin web :3000"] -->|"Admin session"| Control["Control plane :8081"]
     ConsoleUI["User console :3001"] -->|"User session"| Control
 
-    subgraph Binary["RelayDock Go binary"]
+    subgraph Binary["ModelDock Go binary"]
         Gateway --> Auth["API-key authentication"]
         Auth --> Tenant["Active tenant / membership"]
         Tenant --> Limits["RPM / TPM / key + project budget admission"]
-        Limits --> Resolver["Project route grant resolver"]
+        Limits --> Resolver["Manual / intelligent model router"]
         Resolver --> Scheduler["Credential scheduler"]
-        Scheduler --> Adapter["OpenAI provider adapter"]
+        Scheduler --> Adapter["Provider runtime registry"]
         Control --> Services["Admin and console services"]
     end
 
-    Adapter -->|"Official public API only"| OpenAI["OpenAI API"]
+    Adapter -->|"Official public API only"| Upstream["Global / Chinese model APIs"]
     Services --> Postgres[("PostgreSQL: system of record")]
     Resolver --> Postgres
     Scheduler --> Postgres
@@ -39,7 +39,9 @@ The control plane owns configuration and human workflows:
 
 - login and role-based access (`SUPER_ADMIN`, `ADMIN`, `USER`);
 - provider and authorized credential management;
-- credential groups, tags, routes, model metadata, and pricing versions;
+- credential groups, tags, routes, model metadata, pricing versions, and
+  intelligent routing rules;
+- Marketplace listings, teams, wallets, transactions, and billing usage records;
 - organizations, projects, memberships, and explicit project route grants;
 - RelayDock API-key issuance, display-once secret delivery, versioned grace
   rotation, revocation, and quotas;
@@ -58,15 +60,15 @@ The data plane is deliberately narrow and latency-sensitive:
 1. Assign or validate a client request ID.
 2. Authenticate the RelayDock API-key version by constant-time HMAC comparison
    and validate the logical key, user, organization, project, and membership.
-3. Resolve an enabled project route grant, then enforce the key model allowlist,
-   RPM/TPM, key quotas, and project budget policies.
+3. Resolve an exact project route or score eligible routes by cost, quality,
+   and latency; then enforce the key allowlist, RPM/TPM, quotas, budget, and wallet.
 4. Merge project required/excluded credential tags with the route constraints.
 5. Acquire a scheduler lease for one eligible authorized credential.
 6. Decrypt the credential only for the in-memory upstream request.
-7. Forward to the official OpenAI API; stream bytes/events incrementally when
+7. Forward through the selected provider adapter; stream bytes/events incrementally when
    requested.
 8. Release concurrency, update health/cooldown, and transactionally persist the
-   scoped request, usage, budget ledger, and matching Webhook outbox rows.
+   scoped request, usage, budget, billing ledger, and matching Webhook outbox rows.
 
 The gateway does not expose control-plane endpoints, provider credential IDs,
 encrypted secret material, or upstream authorization headers.
@@ -85,8 +87,10 @@ type Provider interface {
 }
 ```
 
-V2.0 ships only the OpenAI adapter. Provider-specific headers, error
-classification, and request-ID extraction remain inside that adapter.
+V3 resolves `provider_type` through a concurrency-safe runtime registry. OpenAI,
+Anthropic, Gemini, and DeepSeek have distinct adapter types; Qwen, Kimi, GLM,
+and OpenRouter use their official OpenAI-compatible surfaces. Provider-specific
+headers, errors, and request IDs stay behind the adapter boundary.
 
 ## Credential scheduler
 
