@@ -1,0 +1,4798 @@
+openapi: 3.1.0
+info:
+  title: RelayDock API
+  version: 2.0.0
+  summary: Authorized-credential AI gateway and control plane
+  description: |
+    RelayDock exposes an OpenAI-compatible data plane and a separate control
+    plane. OpenAI-compatible request and response bodies are intentionally open
+    to additive fields. RelayDock does not expose account registration,
+    CAPTCHA, consumer session, promotion, or policy-evasion APIs.
+    Every response includes X-Request-Id and X-RelayDock-Request-Id; both carry
+    RelayDock's trusted, server-generated request ID.
+  license:
+    name: License not yet selected
+servers:
+  - url: http://127.0.0.1:8081
+    description: Local control plane
+tags:
+  - name: Operations
+  - name: Gateway
+  - name: Authentication
+  - name: Admin
+  - name: Console
+  - name: V2 Tenancy
+  - name: V2 Budgets
+  - name: V2 Webhooks
+  - name: V2 Keys
+paths:
+  /healthz:
+    get:
+      tags: [Operations]
+      summary: Process liveness
+      operationId: healthz
+      servers:
+        - url: http://127.0.0.1:8080
+          description: Local gateway listener
+        - url: http://127.0.0.1:8081
+          description: Local control-plane listener
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /readyz:
+    get:
+      tags: [Operations]
+      summary: Dependency readiness
+      operationId: readyz
+      servers:
+        - url: http://127.0.0.1:8080
+          description: Local gateway listener
+        - url: http://127.0.0.1:8081
+          description: Local control-plane listener
+      security: []
+      responses:
+        '200':
+          description: PostgreSQL and Redis are ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '503':
+          description: A required dependency is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      operationId: metrics
+      servers:
+        - url: http://127.0.0.1:8080
+          description: Local gateway listener
+        - url: http://127.0.0.1:8081
+          description: Local control-plane listener
+      security: []
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
+  /v1/models:
+    get:
+      tags: [Gateway]
+      summary: List enabled RelayDock model aliases
+      operationId: listModels
+      servers:
+        - url: http://127.0.0.1:8080
+      security:
+        - relaydockApiKey: []
+      responses:
+        '200':
+          description: Model alias list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/responses:
+    post:
+      tags: [Gateway]
+      summary: Create an OpenAI-compatible response
+      operationId: createResponse
+      servers:
+        - url: http://127.0.0.1:8080
+      security:
+        - relaydockApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/ClientRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRequest'
+      responses:
+        '200':
+          description: OpenAI-compatible JSON response or SSE stream
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/ProviderError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/chat/completions:
+    post:
+      tags: [Gateway]
+      summary: Create an OpenAI-compatible chat completion
+      operationId: createChatCompletion
+      servers:
+        - url: http://127.0.0.1:8080
+      security:
+        - relaydockApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/ClientRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRequest'
+      responses:
+        '200':
+          description: OpenAI-compatible JSON completion or SSE stream
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/ProviderError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/embeddings:
+    post:
+      tags: [Gateway]
+      summary: Create OpenAI-compatible embeddings
+      operationId: createEmbedding
+      servers:
+        - url: http://127.0.0.1:8080
+      security:
+        - relaydockApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/ClientRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRequest'
+      responses:
+        '200':
+          description: OpenAI-compatible embedding list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/ProviderError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Create a control-plane session
+      operationId: login
+      servers:
+        - url: http://127.0.0.1:8081
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated session and CSRF token
+          headers:
+            Set-Cookie:
+              description: relayedock_session and relayedock_refresh (HttpOnly), plus readable relayedock_csrf
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/admin/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Create an administrator UI session
+      operationId: loginAdmin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated session and CSRF token
+          headers:
+            Set-Cookie:
+              description: relayedock_admin_session and relayedock_admin_refresh (HttpOnly), plus readable relayedock_admin_csrf
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/console/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Create a console UI session
+      operationId: loginConsole
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated session and CSRF token
+          headers:
+            Set-Cookie:
+              description: relayedock_console_session and relayedock_console_refresh (HttpOnly), plus readable relayedock_console_csrf
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate the access and refresh session cookies
+      operationId: refreshSession
+      servers:
+        - url: http://127.0.0.1:8081
+      security:
+        - sharedRefreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Session cookies rotated
+          headers:
+            Set-Cookie:
+              description: Rotated relayedock_session and relayedock_refresh HttpOnly cookies
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/admin/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate administrator UI session cookies
+      operationId: refreshAdminSession
+      security:
+        - adminRefreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Session cookies rotated
+          headers:
+            Set-Cookie:
+              description: Rotated relayedock_admin_session and relayedock_admin_refresh HttpOnly cookies
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/console/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate console UI session cookies
+      operationId: refreshConsoleSession
+      security:
+        - consoleRefreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Session cookies rotated
+          headers:
+            Set-Cookie:
+              description: Rotated relayedock_console_session and relayedock_console_refresh HttpOnly cookies
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Return the authenticated user
+      operationId: getCurrentUser
+      servers:
+        - url: http://127.0.0.1:8081
+      security:
+        - controlBearer: []
+        - sharedSessionCookie: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Clear the browser session
+      operationId: logout
+      servers:
+        - url: http://127.0.0.1:8081
+      security:
+        - controlBearer: []
+        - sharedSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Session cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/admin/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Clear the administrator UI session
+      operationId: logoutAdmin
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Administrator session cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/console/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Clear the console UI session
+      operationId: logoutConsole
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Console session cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: Global operational summary
+      operationId: getAdminDashboard
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Dashboard totals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/admin/providers:
+    get:
+      tags: [Admin]
+      summary: List providers
+      operationId: listProviders
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          $ref: '#/components/responses/ProviderList'
+    post:
+      tags: [Admin]
+      summary: Create a provider configuration
+      operationId: createProvider
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderCreate'
+      responses:
+        '201':
+          description: Provider created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/admin/providers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    put:
+      tags: [Admin]
+      summary: Update a provider
+      operationId: updateProvider
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderUpdate'
+      responses:
+        '200':
+          description: Provider updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Admin]
+      summary: Delete a non-built-in provider
+      operationId: deleteProvider
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Provider deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/admin/providers/{id}/sync-models:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [Admin]
+      summary: Synchronize models through one authorized credential
+      operationId: syncProviderModels
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credential_id]
+              properties:
+                credential_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Synchronization count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [synced]
+                properties:
+                  synced:
+                    type: integer
+                    minimum: 0
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/ProviderError'
+  /api/admin/credentials:
+    get:
+      tags: [Admin]
+      summary: List masked provider credentials
+      operationId: listCredentials
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Masked credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialList'
+    post:
+      tags: [Admin]
+      summary: Validate and encrypt an authorized provider credential
+      operationId: createCredential
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialCreate'
+      responses:
+        '201':
+          description: Masked credential metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Credential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          description: Provider validation or credential-group ownership validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/credentials/import:
+    post:
+      tags: [Admin]
+      summary: Import up to 25 already-issued official API credentials
+      description: |
+        JSON-only authorized credential import. It does not accept account
+        passwords, browser cookies, consumer sessions, or registration input.
+        Provider API keys are encrypted and never echoed in the response.
+      operationId: importAuthorizedCredentials
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizedCredentialImport'
+      responses:
+        '200':
+          description: Per-item import results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [created, total, results]
+                properties:
+                  created:
+                    type: integer
+                    minimum: 0
+                  total:
+                    type: integer
+                    minimum: 1
+                    maximum: 25
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/admin/credentials/bulk:
+    post:
+      tags: [Admin]
+      summary: Apply an action to stored credential IDs
+      operationId: bulkCredentialAction
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkCredentialAction'
+      responses:
+        '200':
+          description: Number of selected IDs processed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/admin/credentials/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    put:
+      tags: [Admin]
+      summary: Update credential metadata or replace its secret
+      operationId: updateCredential
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialUpdate'
+      responses:
+        '200':
+          description: Updated masked credential
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Credential'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Admin]
+      summary: Delete a provider credential
+      operationId: deleteCredential
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Credential deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/admin/credentials/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [Admin]
+      summary: Validate a stored credential with the official provider API
+      operationId: testCredential
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Credential is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                  status:
+                    type: string
+                    const: HEALTHY
+        '422':
+          description: Provider validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/credentials/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [Admin]
+      summary: Enable or disable a provider credential
+      operationId: setCredentialStatus
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActiveDisabledPatch'
+      responses:
+        '200':
+          description: New state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResult'
+  /api/admin/credential-groups:
+    get:
+      tags: [Admin]
+      summary: List credential groups
+      operationId: listCredentialGroups
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Credential groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialGroupList'
+    post:
+      tags: [Admin]
+      summary: Create a credential group
+      operationId: createCredentialGroup
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialGroupWrite'
+      responses:
+        '201':
+          description: Group created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialGroup'
+  /api/admin/credential-groups/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    delete:
+      tags: [Admin]
+      summary: Delete a credential group
+      operationId: deleteCredentialGroup
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Group deleted
+  /api/admin/credential-groups/{id}/members/{credentialId}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/CredentialId'
+    put:
+      tags: [Admin]
+      summary: Add or update a credential group member
+      operationId: setCredentialGroupMember
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MembershipWrite'
+      responses:
+        '200':
+          description: Membership set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '422':
+          $ref: '#/components/responses/ProviderMismatch'
+    delete:
+      tags: [Admin]
+      summary: Remove a credential group member
+      operationId: removeCredentialGroupMember
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Membership removed
+  /api/admin/models:
+    get:
+      tags: [Admin]
+      summary: List synchronized model metadata
+      operationId: listAdminModels
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Model metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelList'
+  /api/admin/models/{id}/prices:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [Admin]
+      summary: List effective-dated pricing versions for a model
+      operationId: listModelPrices
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Pricing versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelPrice'
+    post:
+      tags: [Admin]
+      summary: Add a pricing version
+      operationId: createModelPrice
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPriceWrite'
+      responses:
+        '201':
+          description: Pricing version created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPrice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/admin/model-routes:
+    get:
+      tags: [Admin]
+      summary: List model routes
+      operationId: listModelRoutes
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Routes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelRouteList'
+    post:
+      tags: [Admin]
+      summary: Create a model alias route
+      operationId: createModelRoute
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRouteCreate'
+      responses:
+        '201':
+          description: Route created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelRoute'
+        '422':
+          $ref: '#/components/responses/ProviderMismatch'
+  /api/admin/model-routes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    put:
+      tags: [Admin]
+      summary: Update a model route
+      operationId: updateModelRoute
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRouteUpdate'
+      responses:
+        '200':
+          description: Route updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelRoute'
+        '422':
+          $ref: '#/components/responses/ProviderMismatch'
+    delete:
+      tags: [Admin]
+      summary: Delete a model route
+      operationId: deleteModelRoute
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Route deleted
+  /api/admin/routes:
+    get:
+      tags: [Admin]
+      summary: List model routes (UI-compatible alias)
+      operationId: listRoutesAlias
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Routes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelRouteList'
+    post:
+      tags: [Admin]
+      summary: Create a model route (UI-compatible alias)
+      operationId: createRouteAlias
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRouteCreate'
+      responses:
+        '201':
+          description: Route created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelRoute'
+        '422':
+          $ref: '#/components/responses/ProviderMismatch'
+  /api/admin/api-keys:
+    get:
+      tags: [Admin]
+      summary: List all RelayDock API keys
+      operationId: listAdminAPIKeys
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/APIKeyList'
+    post:
+      tags: [Admin]
+      summary: Issue a RelayDock API key for a user
+      operationId: createAdminAPIKey
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/APIKeyCreate'
+                - type: object
+                  required: [user_id]
+                  properties:
+                    user_id:
+                      type: string
+                      format: uuid
+      responses:
+        '201':
+          $ref: '#/components/responses/APIKeyCreated'
+  /api/admin/api-keys/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [Admin]
+      summary: Change a RelayDock API-key status
+      operationId: setAPIKeyStatus
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/APIKeyStatusPatch'
+      responses:
+        '200':
+          description: New status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResult'
+  /api/admin/api-keys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    delete:
+      tags: [Admin]
+      summary: Revoke a RelayDock API key
+      operationId: revokeAdminAPIKey
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Key revoked
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      summary: List users
+      operationId: listUsers
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserList'
+    post:
+      tags: [Admin]
+      summary: Create a user
+      operationId: createUser
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/User'
+                  - $ref: '#/components/schemas/UserCreated'
+  /api/admin/users/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [Admin]
+      summary: Enable or disable a user
+      operationId: setUserStatus
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActiveDisabledPatch'
+      responses:
+        '200':
+          description: New status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResult'
+  /api/admin/request-logs:
+    get:
+      tags: [Admin]
+      summary: List privileged request metadata
+      operationId: listAdminRequestLogs
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/RequestLogList'
+  /api/admin/usage:
+    get:
+      tags: [Admin]
+      summary: List global daily usage aggregates
+      operationId: listAdminUsage
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Days'
+      responses:
+        '200':
+          $ref: '#/components/responses/UsageList'
+  /api/admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: List administrative audit events
+      operationId: listAuditLogs
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Audit events without secret values
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+  /api/admin/alerts:
+    get:
+      tags: [Admin]
+      summary: List operational alerts
+      operationId: listAlerts
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+  /api/admin/settings:
+    get:
+      tags: [Admin]
+      summary: Read allowlisted system settings
+      operationId: getSettings
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+    put:
+      tags: [Admin]
+      summary: Update allowlisted system settings
+      operationId: updateSettings
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Settings'
+      responses:
+        '200':
+          description: Applied settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/console/overview:
+    get:
+      tags: [Console]
+      summary: Current user's operational overview
+      operationId: getConsoleOverview
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          description: Today/month-to-date metrics and recent requests
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/console/dashboard:
+    get:
+      tags: [Console]
+      summary: Current user's dashboard
+      operationId: getConsoleDashboard
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      responses:
+        '200':
+          description: User-scoped dashboard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+  /api/console/api-keys:
+    get:
+      tags: [Console]
+      summary: List current user's RelayDock API keys
+      operationId: listConsoleAPIKeys
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/APIKeyList'
+    post:
+      tags: [Console]
+      summary: Issue a RelayDock API key for the current user
+      operationId: createConsoleAPIKey
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/APIKeyCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/APIKeyCreated'
+  /api/console/api-keys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    delete:
+      tags: [Console]
+      summary: Revoke one of the current user's keys
+      operationId: revokeConsoleAPIKey
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204':
+          description: Key revoked
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/console/models:
+    get:
+      tags: [Console]
+      summary: List configured model routes
+      operationId: listConsoleModels
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          description: Routes available for display
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleModelList'
+  /api/console/usage:
+    get:
+      tags: [Console]
+      summary: Return current user's usage summary and breakdowns
+      operationId: listConsoleUsage
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Period'
+        - $ref: '#/components/parameters/Days'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          description: Usage totals, daily points, and per-model totals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+  /api/console/request-logs:
+    get:
+      tags: [Console]
+      summary: List redacted current-user request metadata
+      operationId: listConsoleRequestLogs
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/RequestLogList'
+  /api/console/logs:
+    get:
+      tags: [Console]
+      summary: List redacted current-user request metadata (UI-compatible alias)
+      operationId: listConsoleLogsAlias
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/RequestLogList'
+  /api/admin/organizations:
+    $ref: '#/components/pathItems/Organizations'
+  /api/admin/organizations/{organizationID}:
+    $ref: '#/components/pathItems/Organization'
+  /api/admin/organizations/{organizationID}/members:
+    $ref: '#/components/pathItems/OrganizationMembers'
+  /api/admin/organizations/{organizationID}/members/{userID}:
+    $ref: '#/components/pathItems/OrganizationMember'
+  /api/admin/organizations/{organizationID}/projects:
+    $ref: '#/components/pathItems/OrganizationProjects'
+  /api/admin/projects/{projectID}:
+    $ref: '#/components/pathItems/Project'
+  /api/admin/projects/{projectID}/members:
+    $ref: '#/components/pathItems/ProjectMembers'
+  /api/admin/projects/{projectID}/members/{userID}:
+    $ref: '#/components/pathItems/ProjectMember'
+  /api/admin/projects/{projectID}/routes:
+    $ref: '#/components/pathItems/ProjectRoutes'
+  /api/admin/projects/{projectID}/routes/{routeID}:
+    $ref: '#/components/pathItems/ProjectRoute'
+  /api/admin/projects/{projectID}/budgets:
+    $ref: '#/components/pathItems/ProjectBudgets'
+  /api/admin/projects/{projectID}/budgets/{policyID}:
+    $ref: '#/components/pathItems/ProjectBudget'
+  /api/admin/projects/{projectID}/budget-usage:
+    $ref: '#/components/pathItems/ProjectBudgetUsage'
+  /api/admin/projects/{projectID}/budget-events:
+    $ref: '#/components/pathItems/ProjectBudgetEvents'
+  /api/admin/projects/{projectID}/webhooks:
+    $ref: '#/components/pathItems/ProjectWebhooks'
+  /api/admin/projects/{projectID}/webhooks/{webhookID}:
+    $ref: '#/components/pathItems/ProjectWebhook'
+  /api/admin/projects/{projectID}/webhooks/{webhookID}/test:
+    $ref: '#/components/pathItems/ProjectWebhookTest'
+  /api/admin/projects/{projectID}/webhook-deliveries:
+    $ref: '#/components/pathItems/ProjectWebhookDeliveries'
+  /api/admin/projects/{projectID}/webhook-deliveries/{deliveryID}/retry:
+    $ref: '#/components/pathItems/ProjectWebhookDeliveryRetry'
+  /api/admin/projects/{projectID}/usage/export:
+    $ref: '#/components/pathItems/ProjectUsageExport'
+  /api/admin/api-keys/{keyID}/rotate:
+    $ref: '#/components/pathItems/APIKeyRotate'
+  /api/admin/api-keys/{keyID}/finalize:
+    $ref: '#/components/pathItems/APIKeyFinalize'
+  /api/admin/credentials/{id}/tags:
+    get:
+      tags: [Admin, V2 Tenancy]
+      summary: Read credential scheduler tags
+      operationId: getAdminCredentialTags
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Normalized tags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialTags'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Admin, V2 Tenancy]
+      summary: Replace credential scheduler tags
+      operationId: replaceAdminCredentialTags
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialTags'
+      responses:
+        '200':
+          description: Replaced normalized tags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialTags'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/admin/alerts/{alertID}/acknowledge:
+    post:
+      tags: [Admin]
+      summary: Acknowledge an alert with the authenticated actor
+      operationId: acknowledgeAdminAlert
+      security:
+        - controlBearer: []
+        - adminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Acknowledged alert identity and actor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/console/projects:
+    get:
+      tags: [Console, V2 Tenancy]
+      summary: List all projects visible to the current user
+      operationId: listConsoleProjects
+      security:
+        - controlBearer: []
+        - consoleSessionCookie: []
+      responses:
+        '200':
+          description: Visible projects with organization display fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/console/organizations:
+    $ref: '#/components/pathItems/Organizations'
+  /api/console/organizations/{organizationID}:
+    $ref: '#/components/pathItems/Organization'
+  /api/console/organizations/{organizationID}/members:
+    $ref: '#/components/pathItems/OrganizationMembers'
+  /api/console/organizations/{organizationID}/members/{userID}:
+    $ref: '#/components/pathItems/OrganizationMember'
+  /api/console/organizations/{organizationID}/projects:
+    $ref: '#/components/pathItems/OrganizationProjects'
+  /api/console/projects/{projectID}:
+    $ref: '#/components/pathItems/Project'
+  /api/console/projects/{projectID}/members:
+    $ref: '#/components/pathItems/ProjectMembers'
+  /api/console/projects/{projectID}/members/{userID}:
+    $ref: '#/components/pathItems/ProjectMember'
+  /api/console/projects/{projectID}/routes:
+    $ref: '#/components/pathItems/ProjectRoutes'
+  /api/console/projects/{projectID}/routes/{routeID}:
+    $ref: '#/components/pathItems/ProjectRoute'
+  /api/console/projects/{projectID}/budgets:
+    $ref: '#/components/pathItems/ProjectBudgets'
+  /api/console/projects/{projectID}/budgets/{policyID}:
+    $ref: '#/components/pathItems/ProjectBudget'
+  /api/console/projects/{projectID}/budget-usage:
+    $ref: '#/components/pathItems/ProjectBudgetUsage'
+  /api/console/projects/{projectID}/budget-events:
+    $ref: '#/components/pathItems/ProjectBudgetEvents'
+  /api/console/projects/{projectID}/webhooks:
+    $ref: '#/components/pathItems/ProjectWebhooks'
+  /api/console/projects/{projectID}/webhooks/{webhookID}:
+    $ref: '#/components/pathItems/ProjectWebhook'
+  /api/console/projects/{projectID}/webhooks/{webhookID}/test:
+    $ref: '#/components/pathItems/ProjectWebhookTest'
+  /api/console/projects/{projectID}/webhook-deliveries:
+    $ref: '#/components/pathItems/ProjectWebhookDeliveries'
+  /api/console/projects/{projectID}/webhook-deliveries/{deliveryID}/retry:
+    $ref: '#/components/pathItems/ProjectWebhookDeliveryRetry'
+  /api/console/projects/{projectID}/usage/export:
+    $ref: '#/components/pathItems/ProjectUsageExport'
+  /api/console/api-keys/{keyID}/rotate:
+    $ref: '#/components/pathItems/APIKeyRotate'
+  /api/console/api-keys/{keyID}/finalize:
+    $ref: '#/components/pathItems/APIKeyFinalize'
+components:
+  securitySchemes:
+    relaydockApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: rdk_live_... or rdk_test_...
+      description: Downstream RelayDock API key; never use an upstream provider key here.
+    controlBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    adminSessionCookie:
+      type: apiKey
+      in: cookie
+      name: relayedock_admin_session
+      description: Administrator UI access-session cookie.
+    adminRefreshCookie:
+      type: apiKey
+      in: cookie
+      name: relayedock_admin_refresh
+      description: Administrator UI refresh-session cookie.
+    sharedSessionCookie:
+      type: apiKey
+      in: cookie
+      name: relayedock_session
+      description: Shared control-plane access-session cookie.
+    sharedRefreshCookie:
+      type: apiKey
+      in: cookie
+      name: relayedock_refresh
+      description: Shared control-plane refresh-session cookie.
+    consoleSessionCookie:
+      type: apiKey
+      in: cookie
+      name: relayedock_console_session
+      description: User Console access-session cookie.
+    consoleRefreshCookie:
+      type: apiKey
+      in: cookie
+      name: relayedock_console_refresh
+      description: User Console refresh-session cookie.
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CredentialId:
+      name: credentialId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    OrganizationId:
+      name: organizationID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProjectId:
+      name: projectID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: userID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RouteId:
+      name: routeID
+      in: path
+      required: true
+      description: Project-route grant ID or referenced global model-route ID.
+      schema:
+        type: string
+        format: uuid
+    PolicyId:
+      name: policyID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WebhookId:
+      name: webhookID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DeliveryId:
+      name: deliveryID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    KeyId:
+      name: keyID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AlertId:
+      name: alertID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Days:
+      name: days
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 365
+        default: 30
+    Period:
+      name: period
+      in: query
+      schema:
+        type: string
+        enum: [today, 7d, 30d]
+        default: 30d
+    ProjectIdQuery:
+      name: project_id
+      in: query
+      description: Optional V2 project scope; the caller's access is checked before data is returned.
+      schema:
+        type: string
+        format: uuid
+    BudgetPeriod:
+      name: period
+      in: query
+      schema:
+        type: string
+        enum: [DAILY, MONTHLY]
+        default: MONTHLY
+    From:
+      name: from
+      in: query
+      description: Inclusive RFC3339 timestamp or YYYY-MM-DD date.
+      schema:
+        type: string
+    To:
+      name: to
+      in: query
+      description: Exclusive RFC3339 timestamp; a YYYY-MM-DD date includes that complete UTC day.
+      schema:
+        type: string
+    DeliveryStatus:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [PENDING, PROCESSING, RETRY, DELIVERED, DEAD]
+    ClientRequestId:
+      name: X-Client-Request-Id
+      in: header
+      description: Optional bounded caller correlation ID; RelayDock still returns its own ID in X-Request-Id and X-RelayDock-Request-Id.
+      schema:
+        type: string
+        maxLength: 512
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required double-submit token matching the applicable relayedock_csrf, relayedock_admin_csrf, or relayedock_console_csrf cookie for state-changing cookie-authenticated requests; Bearer authentication does not require CSRF proof.
+      schema:
+        type: string
+  pathItems:
+    Organizations:
+      description: Reused by the Admin and Console realms; cookie clients use the cookie for their path realm, while trusted integrations may use a control-plane Bearer token.
+      get:
+        tags: [V2 Tenancy]
+        summary: List visible organizations
+        security:
+          - controlBearer: []
+        parameters:
+          - $ref: '#/components/parameters/Limit'
+          - $ref: '#/components/parameters/Offset'
+        responses:
+          '200':
+            description: Organizations visible in the current realm
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/OrganizationList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+      post:
+        tags: [V2 Tenancy]
+        summary: Create an organization
+        description: The authenticated actor is added as an active OWNER.
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OrganizationWrite'
+                  - type: object
+                    required: [name, slug]
+        responses:
+          '201':
+            description: Organization created
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Organization'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+    Organization:
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+      get:
+        tags: [V2 Tenancy]
+        summary: Get an organization
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Organization
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Organization'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      put:
+        tags: [V2 Tenancy]
+        summary: Update an organization
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationWrite'
+        responses:
+          '200':
+            description: Updated organization
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Organization'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      delete:
+        tags: [V2 Tenancy]
+        summary: Archive an organization
+        description: The fixed Legacy organization cannot be archived.
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Organization archived
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    OrganizationMembers:
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+      get:
+        tags: [V2 Tenancy]
+        summary: List organization members
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Organization members
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/OrganizationMembershipList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      post:
+        tags: [V2 Tenancy]
+        summary: Add or replace an organization member
+        description: user_id is required on this collection operation.
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OrganizationMembershipWrite'
+                  - type: object
+                    required: [user_id]
+        responses:
+          '200':
+            description: Stored membership
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/OrganizationMembership'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    OrganizationMember:
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - $ref: '#/components/parameters/UserId'
+      put:
+        tags: [V2 Tenancy]
+        summary: Replace an organization membership
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembershipWrite'
+        responses:
+          '200':
+            description: Stored membership
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/OrganizationMembership'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      delete:
+        tags: [V2 Tenancy]
+        summary: Disable an organization membership
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Membership disabled
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    OrganizationProjects:
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+      get:
+        tags: [V2 Tenancy]
+        summary: List visible projects in an organization
+        security:
+          - controlBearer: []
+        parameters:
+          - $ref: '#/components/parameters/Limit'
+          - $ref: '#/components/parameters/Offset'
+        responses:
+          '200':
+            description: Projects
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      post:
+        tags: [V2 Tenancy]
+        summary: Create a project
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ProjectWrite'
+                  - type: object
+                    required: [name, slug]
+        responses:
+          '201':
+            description: Project created
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Project'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    Project:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Tenancy]
+        summary: Get a project
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Project
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Project'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      put:
+        tags: [V2 Tenancy]
+        summary: Update a project
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWrite'
+        responses:
+          '200':
+            description: Updated project
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Project'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      delete:
+        tags: [V2 Tenancy]
+        summary: Archive a project
+        description: The fixed Legacy project cannot be archived.
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Project archived
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectMembers:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Tenancy]
+        summary: List project members
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Project members
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectMembershipList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      post:
+        tags: [V2 Tenancy]
+        summary: Add or replace a project member
+        description: user_id is required on this collection operation.
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ProjectMembershipWrite'
+                  - type: object
+                    required: [user_id]
+        responses:
+          '200':
+            description: Stored membership
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectMembership'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectMember:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/UserId'
+      put:
+        tags: [V2 Tenancy]
+        summary: Replace a project membership
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMembershipWrite'
+        responses:
+          '200':
+            description: Stored membership
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectMembership'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      delete:
+        tags: [V2 Tenancy]
+        summary: Disable a project membership
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Membership disabled
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectRoutes:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Tenancy]
+        summary: List project route grants
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Project route grants
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectRouteList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      post:
+        tags: [V2 Tenancy]
+        summary: Grant or upsert a model route for a project
+        description: model_route_id is required on this collection operation.
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ProjectRouteWrite'
+                  - type: object
+                    required: [model_route_id]
+        responses:
+          '200':
+            description: Stored project route grant
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectRoute'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectRoute:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/RouteId'
+      put:
+        tags: [V2 Tenancy]
+        summary: Update a project route grant
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRouteWrite'
+        responses:
+          '200':
+            description: Stored project route grant
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectRoute'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      delete:
+        tags: [V2 Tenancy]
+        summary: Remove a project route grant
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Grant removed
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectBudgets:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Budgets]
+        summary: List project budget policies
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Budget policies
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectBudgetPolicyList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      post:
+        tags: [V2 Budgets]
+        summary: Create or upsert a project budget policy by name
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudgetPolicyWrite'
+        responses:
+          '201':
+            description: Stored budget policy
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectBudgetPolicy'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectBudget:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/PolicyId'
+      put:
+        tags: [V2 Budgets]
+        summary: Update a project budget policy
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudgetPolicyWrite'
+        responses:
+          '200':
+            description: Stored budget policy
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectBudgetPolicy'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      delete:
+        tags: [V2 Budgets]
+        summary: Delete a project budget policy
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Policy deleted
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectBudgetUsage:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Budgets]
+        summary: Get current project budget usage window
+        security:
+          - controlBearer: []
+        parameters:
+          - $ref: '#/components/parameters/BudgetPeriod'
+        responses:
+          '200':
+            description: Current budget usage
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ProjectBudgetUsage'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectBudgetEvents:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Budgets]
+        summary: List project budget events
+        description: Defaults to the prior 90 days and rejects ranges longer than 366 days.
+        security:
+          - controlBearer: []
+        parameters:
+          - $ref: '#/components/parameters/From'
+          - $ref: '#/components/parameters/To'
+          - $ref: '#/components/parameters/Limit'
+          - $ref: '#/components/parameters/Offset'
+        responses:
+          '200':
+            description: Budget events
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/BudgetEventList'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectWebhooks:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Webhooks]
+        summary: List project Webhook endpoints
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Webhook endpoints without signing secrets
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/WebhookEndpointList'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+      post:
+        tags: [V2 Webhooks]
+        summary: Create a signed project Webhook endpoint
+        description: Generates a signing secret when one is not supplied and shows it once.
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/WebhookEndpointWrite'
+                  - type: object
+                    required: [name, url, event_types]
+        responses:
+          '201':
+            description: Webhook endpoint and one-time signing secret
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/WebhookEndpointCreated'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+          '422':
+            $ref: '#/components/responses/InvalidReference'
+    ProjectWebhook:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/WebhookId'
+      put:
+        tags: [V2 Webhooks]
+        summary: Update a project Webhook endpoint
+        description: Omit signing_secret to retain the existing encrypted secret.
+        security:
+          - controlBearer: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWrite'
+        responses:
+          '200':
+            description: Updated Webhook endpoint without its signing secret
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/WebhookEndpoint'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+          '422':
+            $ref: '#/components/responses/InvalidReference'
+      delete:
+        tags: [V2 Webhooks]
+        summary: Disable a project Webhook endpoint
+        security:
+          - controlBearer: []
+        responses:
+          '204':
+            description: Endpoint disabled
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectWebhookTest:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/WebhookId'
+      post:
+        tags: [V2 Webhooks]
+        summary: Enqueue a webhook.test delivery
+        security:
+          - controlBearer: []
+        responses:
+          '201':
+            description: Durable outbox delivery
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/WebhookDelivery'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectWebhookDeliveries:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Webhooks]
+        summary: List project Webhook deliveries
+        security:
+          - controlBearer: []
+        parameters:
+          - $ref: '#/components/parameters/DeliveryStatus'
+          - $ref: '#/components/parameters/Limit'
+          - $ref: '#/components/parameters/Offset'
+        responses:
+          '200':
+            description: Webhook deliveries
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/WebhookDeliveryList'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectWebhookDeliveryRetry:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/DeliveryId'
+      post:
+        tags: [V2 Webhooks]
+        summary: Retry a dead Webhook delivery
+        description: Only a DEAD delivery can be returned to PENDING.
+        security:
+          - controlBearer: []
+        responses:
+          '200':
+            description: Delivery reset to PENDING
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/WebhookDelivery'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    ProjectUsageExport:
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      get:
+        tags: [V2 Tenancy]
+        summary: Export project usage as CSV
+        description: Defaults to 30 days, rejects ranges over 366 days, and formula-neutralizes text cells. Console output is additionally filtered to the current user.
+        security:
+          - controlBearer: []
+        parameters:
+          - $ref: '#/components/parameters/From'
+          - $ref: '#/components/parameters/To'
+        responses:
+          '200':
+            description: Project-scoped usage metadata; never prompt, response, or secret content
+            content:
+              text/csv:
+                schema:
+                  type: string
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    APIKeyRotate:
+      parameters:
+        - $ref: '#/components/parameters/KeyId'
+      post:
+        tags: [V2 Keys]
+        summary: Rotate a project API-key version with grace
+        security:
+          - controlBearer: []
+        requestBody:
+          required: false
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyRotateInput'
+        responses:
+          '201':
+            description: New version and one-time plaintext replacement key
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/APIKeyRotated'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+    APIKeyFinalize:
+      parameters:
+        - $ref: '#/components/parameters/KeyId'
+      post:
+        tags: [V2 Keys]
+        summary: Revoke one or all grace API-key versions
+        security:
+          - controlBearer: []
+        requestBody:
+          required: false
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyFinalizeInput'
+        responses:
+          '200':
+            description: Finalization result
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/APIKeyFinalizeResult'
+          '400':
+            $ref: '#/components/responses/BadRequest'
+          '401':
+            $ref: '#/components/responses/Unauthorized'
+          '404':
+            $ref: '#/components/responses/NotFound'
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Authentication failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    GatewayUnauthorized:
+      description: RelayDock API-key authentication failed
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Request is not permitted
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ProviderMismatch:
+      description: Provider, credential, and credential-group ownership do not match
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InvalidReference:
+      description: A referenced resource, relationship, or Webhook target is not valid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Resource or model route not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    TooLarge:
+      description: Request body exceeds the configured limit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: RelayDock API-key limit reached
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+        X-RateLimit-Limit-Requests:
+          schema:
+            type: integer
+        X-RateLimit-Remaining-Requests:
+          schema:
+            type: integer
+        X-RateLimit-Limit-Tokens:
+          schema:
+            type: integer
+        X-RateLimit-Remaining-Tokens:
+          schema:
+            type: integer
+        X-RelayDock-RateLimit-Limit-Requests:
+          schema:
+            type: integer
+        X-RelayDock-RateLimit-Remaining-Requests:
+          schema:
+            type: integer
+        X-RelayDock-RateLimit-Limit-Tokens:
+          schema:
+            type: integer
+        X-RelayDock-RateLimit-Remaining-Tokens:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ProviderError:
+      description: Upstream provider connection or service error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unavailable:
+      description: Required state or an eligible credential is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: Internal service failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ProviderList:
+      description: Providers
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Provider'
+    APIKeyList:
+      description: API-key metadata; full key values are never listed
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: array
+                items:
+                  $ref: '#/components/schemas/APIKeyMetadata'
+    APIKeyCreated:
+      description: One-time plaintext key plus metadata
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIKeyCreated'
+    RequestLogList:
+      description: Request metadata list
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RequestLog'
+    UsageList:
+      description: Daily usage points
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UsagePoint'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type, code]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              const: relaydock_error
+            param:
+              type: [string, 'null']
+            code:
+              type: string
+    Health:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          const: ok
+        service:
+          type: string
+          const: relaydock
+    Readiness:
+      type: object
+      required: [status, postgres, redis]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        postgres:
+          type: boolean
+        redis:
+          type: boolean
+    ModelRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          minLength: 1
+        stream:
+          type: boolean
+      additionalProperties: true
+    GatewayModel:
+      type: object
+      required: [id, object, created, owned_by]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: model
+        created:
+          type: integer
+          format: int64
+        owned_by:
+          type: string
+          const: relaydock
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/GatewayModel'
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 1
+    LoginResponse:
+      type: object
+      required: [user, expires_at, csrf_token]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        expires_at:
+          type: string
+          format: date-time
+        csrf_token:
+          type: string
+    RefreshResponse:
+      type: object
+      required: [expires_at]
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+    User:
+      type: object
+      required: [id, email, display_name, role, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [SUPER_ADMIN, ADMIN, USER]
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        monthly_token_limit:
+          type: [integer, 'null']
+          format: int64
+        monthly_cost_limit:
+          type: [number, 'null']
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: [string, 'null']
+          format: date-time
+    UserCreate:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 12
+          description: Omit to receive a one-time generated temporary password.
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, USER]
+          default: USER
+    UserCreated:
+      type: object
+      required: [user, temporary_password, warning]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        temporary_password:
+          type: string
+          format: password
+        warning:
+          type: string
+    UserList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+    Provider:
+      type: object
+      required: [id, name, slug, provider_type, base_url, enabled, config, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        provider_type:
+          type: string
+        base_url:
+          type: string
+          format: uri
+        enabled:
+          type: boolean
+        config:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProviderCreate:
+      type: object
+      additionalProperties: false
+      required: [name, base_url]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        slug:
+          type: string
+          description: Optional stable slug; derived from the name when omitted.
+        provider_type:
+          type: string
+          const: openai
+          default: openai
+        base_url:
+          type: string
+          format: uri
+        enabled:
+          type: boolean
+          const: true
+          default: true
+        config:
+          type: object
+          additionalProperties: true
+    ProviderUpdate:
+      type: object
+      additionalProperties: false
+      required: [name, base_url, enabled]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        base_url:
+          type: string
+          format: uri
+        enabled:
+          type: boolean
+        config:
+          type: object
+          additionalProperties: true
+    Credential:
+      type: object
+      description: Provider credential metadata; ciphertext and plaintext secret are never serialized.
+      required: [id, provider_id, name, credential_type, has_secret, secret_last4, status, priority, weight, max_concurrency, current_health]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        provider_name:
+          type: string
+        name:
+          type: string
+        credential_type:
+          type: string
+          enum: [api_key, service_account, workload_identity]
+        has_secret:
+          type: boolean
+        secret_last4:
+          type: string
+          maxLength: 4
+        organization_id:
+          type: [string, 'null']
+        project_id:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, RATE_LIMITED, COOLDOWN, AUTH_FAILED, UNHEALTHY, UNKNOWN]
+        priority:
+          type: integer
+        weight:
+          type: integer
+          minimum: 1
+        max_concurrency:
+          type: integer
+          minimum: 1
+        current_health:
+          type: string
+        cooldown_until:
+          type: [string, 'null']
+          format: date-time
+        active_requests:
+          type: integer
+          minimum: 0
+    CredentialList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Credential'
+    CredentialCreate:
+      type: object
+      required: [name]
+      anyOf:
+        - required: [secret]
+        - required: [api_key]
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+          description: Defaults to the built-in OpenAI provider.
+        name:
+          type: string
+        credential_type:
+          type: string
+          enum: [api_key, service_account, workload_identity]
+          default: api_key
+        secret:
+          type: string
+          format: password
+          writeOnly: true
+        api_key:
+          type: string
+          format: password
+          writeOnly: true
+          description: UI-compatible alias of secret.
+        organization_id:
+          type: [string, 'null']
+        project_id:
+          type: [string, 'null']
+        group_id:
+          type: [string, 'null']
+          format: uuid
+        credential_group_id:
+          type: [string, 'null']
+          format: uuid
+          description: UI-compatible alias of group_id.
+        priority:
+          type: integer
+          default: 0
+        weight:
+          type: integer
+          minimum: 1
+          default: 100
+        max_concurrency:
+          type: integer
+          minimum: 1
+          default: 10
+        validate:
+          type: boolean
+          default: true
+        save_disabled:
+          type: boolean
+          default: false
+    AuthorizedCredentialImport:
+      type: object
+      required: [credentials]
+      properties:
+        validate:
+          type: boolean
+          default: true
+        credentials:
+          type: array
+          minItems: 1
+          maxItems: 25
+          items:
+            type: object
+            required: [name, api_key]
+            properties:
+              provider_id:
+                type: string
+                format: uuid
+                description: Defaults to the built-in OpenAI provider.
+              name:
+                type: string
+              api_key:
+                type: string
+                format: password
+                writeOnly: true
+              organization_id:
+                type: [string, 'null']
+              project_id:
+                type: [string, 'null']
+              group_id:
+                type: [string, 'null']
+                format: uuid
+              priority:
+                type: integer
+                default: 0
+              weight:
+                type: integer
+                minimum: 1
+                default: 100
+              max_concurrency:
+                type: integer
+                minimum: 1
+                default: 10
+    BulkCredentialAction:
+      type: object
+      required: [credential_ids, action]
+      properties:
+        credential_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        action:
+          type: string
+          description: enable, disable, delete, health_check, or move:{credential-group-uuid}
+    CredentialUpdate:
+      type: object
+      required: [name, status, weight, max_concurrency]
+      properties:
+        name:
+          type: string
+        secret:
+          type: string
+          format: password
+          writeOnly: true
+          description: Omit or send an empty string to retain the current secret.
+        organization_id:
+          type: [string, 'null']
+        project_id:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, RATE_LIMITED, COOLDOWN, AUTH_FAILED, UNHEALTHY, UNKNOWN]
+        priority:
+          type: integer
+        weight:
+          type: integer
+          minimum: 1
+        max_concurrency:
+          type: integer
+          minimum: 1
+    CredentialGroup:
+      type: object
+      required: [id, provider_id, name, description, member_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        member_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CredentialGroupWrite:
+      type: object
+      required: [name]
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+          description: Defaults to the built-in OpenAI provider.
+        name:
+          type: string
+        description:
+          type: string
+    CredentialGroupList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CredentialGroup'
+    MembershipWrite:
+      type: object
+      properties:
+        weight:
+          type: integer
+          minimum: 1
+          default: 100
+        priority:
+          type: integer
+          default: 0
+    AdminModel:
+      type: object
+      required: [id, provider_id, provider_model_id, display_name, model_type, enabled, capabilities, capability_source]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        provider_model_id:
+          type: string
+        display_name:
+          type: string
+        model_type:
+          type: string
+        enabled:
+          type: boolean
+        capabilities:
+          type: array
+          items:
+            type: string
+        capability_source:
+          type: string
+          enum: [provider, manual]
+        context_window:
+          type: [integer, 'null']
+        metadata:
+          type: object
+          additionalProperties: true
+    AdminModelList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminModel'
+    ModelPrice:
+      type: object
+      required: [id, model_id, version, effective_from, input_price, cached_input_price, output_price, currency, unit, source, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        model_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        effective_from:
+          type: string
+          format: date-time
+        input_price:
+          type: number
+          minimum: 0
+        cached_input_price:
+          type: number
+          minimum: 0
+        output_price:
+          type: number
+          minimum: 0
+        currency:
+          type: string
+          default: USD
+        unit:
+          type: integer
+          format: int64
+          default: 1000000
+        source:
+          type: string
+          default: manual
+        created_at:
+          type: string
+          format: date-time
+    ModelPriceWrite:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        effective_from:
+          type: string
+          format: date-time
+        input_price:
+          type: number
+          minimum: 0
+          default: 0
+        cached_input_price:
+          type: number
+          minimum: 0
+          default: 0
+        output_price:
+          type: number
+          minimum: 0
+          default: 0
+        currency:
+          type: string
+          default: USD
+        unit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 1000000
+        source:
+          type: string
+          default: manual
+    ModelRoute:
+      type: object
+      required: [id, alias, provider_id, upstream_model, credential_group_id, enabled, routing_policy, fallback_config]
+      properties:
+        id:
+          type: string
+          format: uuid
+        alias:
+          type: string
+        provider_id:
+          type: string
+          format: uuid
+        upstream_model:
+          type: string
+        credential_group_id:
+          type: string
+          format: uuid
+        fallback_group_id:
+          type: [string, 'null']
+          format: uuid
+        enabled:
+          type: boolean
+        routing_policy:
+          type: string
+        fallback_config:
+          type: object
+          additionalProperties: true
+    ModelRouteCreate:
+      type: object
+      additionalProperties: false
+      required: [alias, provider_id, upstream_model, credential_group_id]
+      properties:
+        alias:
+          type: string
+        provider_id:
+          type: string
+          format: uuid
+        upstream_model:
+          type: string
+        credential_group_id:
+          type: string
+          format: uuid
+        fallback_group_id:
+          type: [string, 'null']
+          format: uuid
+        routing_policy:
+          type: string
+          enum: [priority_weighted, least_loaded, weighted_round_robin]
+          default: priority_weighted
+        fallback_config:
+          type: object
+          additionalProperties: true
+    ModelRouteUpdate:
+      type: object
+      additionalProperties: false
+      required: [alias, provider_id, upstream_model, credential_group_id, enabled]
+      properties:
+        alias:
+          type: string
+        provider_id:
+          type: string
+          format: uuid
+        upstream_model:
+          type: string
+        credential_group_id:
+          type: string
+          format: uuid
+        fallback_group_id:
+          type: [string, 'null']
+          format: uuid
+        enabled:
+          type: boolean
+        routing_policy:
+          type: string
+          enum: [priority_weighted, least_loaded, weighted_round_robin]
+          default: priority_weighted
+        fallback_config:
+          type: object
+          additionalProperties: true
+    ModelRouteList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelRoute'
+    ConsoleModel:
+      type: object
+      required: [id, alias, display_name, enabled, capabilities, context_window]
+      description: A public RelayDock alias without provider or credential-pool routing details.
+      properties:
+        id:
+          type: string
+        alias:
+          type: string
+        display_name:
+          type: string
+        enabled:
+          type: boolean
+          const: true
+        capabilities:
+          type: array
+          items:
+            type: string
+        context_window:
+          type: [integer, 'null']
+          format: int64
+    ConsoleModelList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConsoleModel'
+    APIKeyMetadata:
+      type: object
+      required: [id, user_id, name, environment, key_prefix, status, rate_limit_rpm, rate_limit_tpm, allowed_models, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+          description: Present in project-scoped V2 responses.
+        project_id:
+          type: string
+          format: uuid
+          description: Present in project-scoped V2 responses.
+        name:
+          type: string
+        environment:
+          type: string
+          enum: [live, test]
+        key_prefix:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, REVOKED]
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        rate_limit_rpm:
+          type: integer
+        rate_limit_tpm:
+          type: integer
+        monthly_token_limit:
+          type: [integer, 'null']
+          format: int64
+        monthly_cost_limit:
+          type: [number, 'null']
+        allowed_models:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: [string, 'null']
+          format: date-time
+        current_version:
+          type: integer
+          minimum: 1
+          description: Present in project-scoped V2 responses.
+    APIKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+          description: V2 project scope; defaults to the fixed Legacy project for V1 compatibility.
+        name:
+          type: string
+        environment:
+          type: string
+          enum: [live, test]
+          default: live
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        rate_limit_rpm:
+          type: integer
+          minimum: 1
+          default: 60
+        rate_limit_tpm:
+          type: integer
+          minimum: 1
+          default: 100000
+        monthly_token_limit:
+          type: [integer, 'null']
+          format: int64
+        monthly_cost_limit:
+          type: [number, 'null']
+        allowed_models:
+          type: array
+          items:
+            type: string
+    APIKeyCreated:
+      type: object
+      required: [api_key, key, secret, warning]
+      properties:
+        api_key:
+          $ref: '#/components/schemas/APIKeyMetadata'
+        key:
+          type: string
+          pattern: '^rdk_(live|test)_'
+        secret:
+          type: string
+          description: V1 compatibility alias of key; also shown once.
+        warning:
+          type: string
+    Dashboard:
+      type: object
+      additionalProperties: true
+      properties:
+        total_requests:
+          type: integer
+          format: int64
+        requests_today:
+          type: integer
+          format: int64
+        input_tokens:
+          type: integer
+          format: int64
+        total_input_tokens:
+          type: integer
+          format: int64
+        cached_input_tokens:
+          type: integer
+          format: int64
+        total_cached_tokens:
+          type: integer
+          format: int64
+        output_tokens:
+          type: integer
+          format: int64
+        total_output_tokens:
+          type: integer
+          format: int64
+        estimated_cost:
+          type: number
+        errors:
+          type: integer
+          format: int64
+        success_rate:
+          type: number
+        average_latency_ms:
+          type: number
+        p95_latency_ms:
+          type: number
+        active_credentials:
+          type: integer
+          format: int64
+        healthy_credentials:
+          type: integer
+          format: int64
+        rate_limited_credentials:
+          type: integer
+          format: int64
+        request_trend:
+          type: array
+          description: Hourly request totals for the latest 24-hour window.
+          items:
+            $ref: '#/components/schemas/DashboardRequestTrendPoint'
+        token_trend:
+          type: array
+          description: Hourly token totals for the latest 24-hour window.
+          items:
+            $ref: '#/components/schemas/DashboardTokenTrendPoint'
+        model_distribution:
+          type: array
+          description: Request totals for the eight most-used model aliases.
+          items:
+            $ref: '#/components/schemas/DashboardModelDistributionPoint'
+        status_code_distribution:
+          type: array
+          description: Request totals grouped by HTTP response status.
+          items:
+            $ref: '#/components/schemas/DashboardStatusDistributionPoint'
+        alerts:
+          type: array
+          description: Up to four latest operational alerts for an administrator dashboard; empty for a user-scoped dashboard.
+          items:
+            $ref: '#/components/schemas/Alert'
+    DashboardRequestTrendPoint:
+      type: object
+      required: [label, value, requests]
+      properties:
+        label:
+          type: string
+          description: Hour label in HH:MM form.
+        value:
+          type: integer
+          format: int64
+        requests:
+          type: integer
+          format: int64
+    DashboardTokenTrendPoint:
+      type: object
+      required: [label, input, cached, output]
+      properties:
+        label:
+          type: string
+          description: Hour label in HH:MM form.
+        input:
+          type: integer
+          format: int64
+        cached:
+          type: integer
+          format: int64
+        output:
+          type: integer
+          format: int64
+    DashboardModelDistributionPoint:
+      type: object
+      required: [model, value, requests]
+      properties:
+        model:
+          type: string
+        value:
+          type: integer
+          format: int64
+        requests:
+          type: integer
+          format: int64
+    DashboardStatusDistributionPoint:
+      type: object
+      required: [status_code, value, requests]
+      properties:
+        status_code:
+          type: integer
+        value:
+          type: integer
+          format: int64
+        requests:
+          type: integer
+          format: int64
+    Alert:
+      type: object
+      required: [id, kind, title, severity, message, resource_type, resource_id, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        title:
+          type: string
+        severity:
+          type: string
+        message:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, ACKNOWLEDGED]
+        acknowledged_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    UsagePoint:
+      type: object
+      required: [date, requests, input_tokens, cached_input_tokens, output_tokens, cost, errors]
+      properties:
+        date:
+          type: string
+          format: date
+        requests:
+          type: integer
+          format: int64
+        input_tokens:
+          type: integer
+          format: int64
+        cached_input_tokens:
+          type: integer
+          format: int64
+        output_tokens:
+          type: integer
+          format: int64
+        cost:
+          type: number
+        errors:
+          type: integer
+          format: int64
+    UsageSummary:
+      type: object
+      required: [requests, input_tokens, cached_input_tokens, output_tokens, estimated_cost, errors, daily, by_model]
+      properties:
+        requests:
+          type: integer
+          format: int64
+        input_tokens:
+          type: integer
+          format: int64
+        cached_input_tokens:
+          type: integer
+          format: int64
+        output_tokens:
+          type: integer
+          format: int64
+        estimated_cost:
+          type: number
+        errors:
+          type: integer
+          format: int64
+        daily:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsagePoint'
+        by_model:
+          type: array
+          items:
+            type: object
+            required: [model, requests, tokens, cost]
+            properties:
+              model:
+                type: string
+              requests:
+                type: integer
+                format: int64
+              tokens:
+                type: integer
+                format: int64
+              cost:
+                type: number
+    Settings:
+      type: object
+      description: Only server-allowlisted keys are persisted.
+      additionalProperties: true
+      properties:
+        gateway_name:
+          type: string
+        log_retention_days:
+          type: integer
+          minimum: 1
+        audit_retention_days:
+          type: integer
+          minimum: 1
+        log_prompt_content:
+          type: boolean
+          description: Must remain false unless explicit governance permits content logging.
+        default_rate_limit_rpm:
+          type: integer
+          minimum: 1
+        default_rate_limit_tpm:
+          type: integer
+          minimum: 1
+        credential_cooldown_seconds:
+          type: integer
+          minimum: 1
+        max_scheduler_attempts:
+          type: integer
+          minimum: 1
+        alert_high_error_rate:
+          type: number
+          minimum: 0
+        alert_high_429_rate:
+          type: number
+          minimum: 0
+        alert_pool_healthy_min:
+          type: integer
+          minimum: 0
+    RequestLog:
+      type: object
+      required: [request_id, endpoint, status_code, streaming, input_tokens, output_tokens, total_tokens, estimated_cost, latency_ms, created_at]
+      properties:
+        request_id:
+          type: string
+        user_id:
+          type: string
+        api_key_id:
+          type: string
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        route_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+        credential_id:
+          type: string
+          description: Empty in user-console responses.
+        requested_model:
+          type: string
+        resolved_model:
+          type: string
+        endpoint:
+          type: string
+        status_code:
+          type: integer
+        streaming:
+          type: boolean
+        input_tokens:
+          type: integer
+          format: int64
+        cached_input_tokens:
+          type: integer
+          format: int64
+        output_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        estimated_cost:
+          type: number
+        latency_ms:
+          type: integer
+          format: int64
+        ttft_ms:
+          type: [integer, 'null']
+          format: int64
+        upstream_request_id:
+          type: string
+          description: Empty in user-console responses.
+        error_code:
+          type: string
+        scheduler_reason:
+          type: [object, 'null']
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+    Organization:
+      type: object
+      required: [id, name, slug, status, metadata, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+          maxLength: 80
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$'
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, ARCHIVED]
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OrganizationWrite:
+      type: object
+      description: name and slug are required when creating; omitted update fields retain their current values.
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          maxLength: 80
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$'
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, ARCHIVED]
+          default: ACTIVE
+        metadata:
+          type: object
+          additionalProperties: true
+    OrganizationList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Organization'
+    OrganizationMembership:
+      type: object
+      required: [organization_id, user_id, role, status, created_at, updated_at]
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [OWNER, ADMIN, MEMBER, VIEWER]
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OrganizationMembershipWrite:
+      type: object
+      required: [role]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Required on the collection POST; the path value wins on member PUT.
+        role:
+          type: string
+          enum: [OWNER, ADMIN, MEMBER, VIEWER]
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+          default: ACTIVE
+    OrganizationMembershipList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationMembership'
+    Project:
+      type: object
+      required: [id, organization_id, name, slug, description, status, metadata, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        organization_name:
+          type: string
+          description: Present in the flattened Console project list.
+        organization_slug:
+          type: string
+          description: Present in the flattened Console project list.
+        name:
+          type: string
+        slug:
+          type: string
+          maxLength: 80
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$'
+        description:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, ARCHIVED]
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProjectWrite:
+      type: object
+      description: name and slug are required when creating; omitted update fields retain their current values.
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          maxLength: 80
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$'
+        description:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, ARCHIVED]
+          default: ACTIVE
+        metadata:
+          type: object
+          additionalProperties: true
+    ProjectList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+    ProjectMembership:
+      type: object
+      required: [project_id, user_id, role, status, created_at, updated_at]
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, DEVELOPER, VIEWER]
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProjectMembershipWrite:
+      type: object
+      required: [role]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Required on the collection POST; the path value wins on member PUT.
+        role:
+          type: string
+          enum: [ADMIN, DEVELOPER, VIEWER]
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+          default: ACTIVE
+    ProjectMembershipList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMembership'
+    CredentialRoutingConfig:
+      type: object
+      properties:
+        required_credential_tags:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        excluded_credential_tags:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+      additionalProperties: true
+    ProjectRoute:
+      type: object
+      required: [id, organization_id, project_id, model_route_id, alias, enabled, routing_config, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        model_route_id:
+          type: string
+          format: uuid
+        alias:
+          type: string
+        enabled:
+          type: boolean
+        routing_config:
+          $ref: '#/components/schemas/CredentialRoutingConfig'
+        provider_id:
+          type: string
+          format: uuid
+        provider_base_url:
+          type: string
+          format: uri
+        upstream_model:
+          type: string
+        credential_group_id:
+          type: string
+          format: uuid
+        fallback_group_id:
+          type: [string, 'null']
+          format: uuid
+        routing_policy:
+          type: string
+        fallback_config:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProjectRouteWrite:
+      type: object
+      properties:
+        model_route_id:
+          type: string
+          format: uuid
+          description: Required on the collection POST; routeID supplies it on PUT.
+        alias:
+          type: string
+          description: Defaults to the existing grant alias when updating.
+        enabled:
+          type: boolean
+          default: true
+        routing_config:
+          $ref: '#/components/schemas/CredentialRoutingConfig'
+    ProjectRouteList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectRoute'
+    ProjectBudgetPolicy:
+      type: object
+      required: [id, project_id, name, period, alert_threshold, enforce_hard_limit, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        period:
+          type: string
+          enum: [DAILY, MONTHLY]
+        token_limit:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+        cost_limit:
+          type: [number, 'null']
+          minimum: 0
+        alert_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        enforce_hard_limit:
+          type: boolean
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProjectBudgetPolicyWrite:
+      type: object
+      required: [name]
+      description: At least one of token_limit or cost_limit must be supplied.
+      properties:
+        name:
+          type: string
+        period:
+          type: string
+          enum: [DAILY, MONTHLY]
+          default: MONTHLY
+        token_limit:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+        cost_limit:
+          type: [number, 'null']
+          minimum: 0
+        alert_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.8
+        enforce_hard_limit:
+          type: boolean
+          default: false
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+          default: ACTIVE
+      anyOf:
+        - required: [token_limit]
+          properties:
+            token_limit:
+              type: integer
+              format: int64
+              minimum: 0
+        - required: [cost_limit]
+          properties:
+            cost_limit:
+              type: number
+              minimum: 0
+    ProjectBudgetPolicyList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectBudgetPolicy'
+    ProjectBudgetUsage:
+      type: object
+      required: [organization_id, project_id, period, from, to, requests, input_tokens, cached_input_tokens, output_tokens, total_tokens, cost, errors]
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        period:
+          type: string
+          enum: [DAILY, MONTHLY]
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        requests:
+          type: integer
+          format: int64
+        input_tokens:
+          type: integer
+          format: int64
+        cached_input_tokens:
+          type: integer
+          format: int64
+        output_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        cost:
+          type: number
+        errors:
+          type: integer
+          format: int64
+    BudgetEvent:
+      type: object
+      required: [id, organization_id, project_id, event_type, tokens, cost, metadata, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        policy_id:
+          type: [string, 'null']
+          format: uuid
+        user_id:
+          type: [string, 'null']
+          format: uuid
+        api_key_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: string
+        event_type:
+          type: string
+          enum: [COMMIT, THRESHOLD, REJECT]
+        tokens:
+          type: integer
+          format: int64
+        cost:
+          type: number
+        idempotency_key:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+    BudgetEventList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetEvent'
+    WebhookEndpoint:
+      type: object
+      required: [id, organization_id, project_id, name, url, secret_last4, event_types, enabled, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        secret_last4:
+          type: string
+          minLength: 4
+          maxLength: 4
+        event_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [webhook.test, budget.warning, budget.exceeded, api_key.rotated]
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_delivery_at:
+          type: [string, 'null']
+          format: date-time
+    WebhookEndpointWrite:
+      type: object
+      description: name, url, and event_types are required on create; fields are optional on update.
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        signing_secret:
+          type: string
+          format: password
+          minLength: 16
+          writeOnly: true
+          description: Generated on create when omitted; omit on update to retain the current secret.
+        secret:
+          type: string
+          format: password
+          minLength: 16
+          writeOnly: true
+          deprecated: true
+          description: Compatibility alias for signing_secret.
+        event_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [webhook.test, budget.warning, budget.exceeded, api_key.rotated]
+        enabled:
+          type: boolean
+          default: true
+    WebhookEndpointCreated:
+      type: object
+      required: [webhook, signing_secret, warning]
+      properties:
+        webhook:
+          $ref: '#/components/schemas/WebhookEndpoint'
+        signing_secret:
+          type: string
+          format: password
+          readOnly: true
+          description: Shown exactly once.
+        warning:
+          type: string
+    WebhookEndpointList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEndpoint'
+    WebhookDelivery:
+      type: object
+      required: [id, endpoint_id, organization_id, project_id, event_id, event_type, payload, status, attempts, max_attempts, available_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+        event_type:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, RETRY, DELIVERED, DEAD]
+        attempts:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+        available_at:
+          type: string
+          format: date-time
+        locked_at:
+          type: [string, 'null']
+          format: date-time
+        locked_until:
+          type: [string, 'null']
+          format: date-time
+        locked_by:
+          type: string
+        claim_token:
+          type: string
+          format: uuid
+          readOnly: true
+        delivered_at:
+          type: [string, 'null']
+          format: date-time
+        last_http_status:
+          type: [integer, 'null']
+        last_response:
+          type: string
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        endpoint_url:
+          type: string
+          format: uri
+    WebhookDeliveryList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+    APIKeyVersion:
+      type: object
+      required: [id, api_key_id, version, key_prefix, status, valid_from, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        api_key_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        key_prefix:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, GRACE, REVOKED]
+        valid_from:
+          type: string
+          format: date-time
+        grace_expires_at:
+          type: [string, 'null']
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: [string, 'null']
+          format: date-time
+    APIKeyRotateInput:
+      type: object
+      properties:
+        grace_period_seconds:
+          type: integer
+          minimum: 30
+          maximum: 86400
+          default: 300
+        grace_seconds:
+          type: integer
+          minimum: 30
+          maximum: 86400
+          deprecated: true
+          description: Compatibility alias used only when grace_period_seconds is zero or omitted.
+    APIKeyRotated:
+      type: object
+      required: [api_key, version, key, secret, grace_expires_at, warning]
+      properties:
+        api_key:
+          $ref: '#/components/schemas/APIKeyMetadata'
+        version:
+          $ref: '#/components/schemas/APIKeyVersion'
+        key:
+          type: string
+          pattern: '^rdk_(live|test)_'
+          description: One-time plaintext replacement key.
+        secret:
+          type: string
+          pattern: '^rdk_(live|test)_'
+          description: Compatibility alias for key; also shown once.
+        grace_expires_at:
+          type: string
+          format: date-time
+        warning:
+          type: string
+    APIKeyFinalizeInput:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: Grace version to revoke; omit to revoke every grace version.
+    APIKeyFinalizeResult:
+      type: object
+      required: [finalized, api_key_id]
+      properties:
+        finalized:
+          type: boolean
+          const: true
+        api_key_id:
+          type: string
+          format: uuid
+    CredentialTags:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+    AlertAcknowledgement:
+      type: object
+      required: [id, status, acknowledged_at, acknowledged_by]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: ACKNOWLEDGED
+        acknowledged_at:
+          type: string
+          format: date-time
+        acknowledged_by:
+          type: string
+          format: uuid
+    ActiveDisabledPatch:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+    APIKeyStatusPatch:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, REVOKED]
+    StatusResult:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string

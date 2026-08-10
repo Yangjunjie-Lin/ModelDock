@@ -1,0 +1,16 @@
+.git
+.env
+.cache
+.deepeval
+.docker-log-recovery
+.pytest_cache
+.temp-file-recovery
+.venv
+data
+logs
+backups
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/__pycache__
+**/*.pyc

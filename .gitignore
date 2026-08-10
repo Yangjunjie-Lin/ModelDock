@@ -1,0 +1,52 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state (kept on the project drive by Docker Compose)
+/data/
+/logs/
+/backups/
+
+# Go
+/bin/
+/dist/
+coverage.out
+*.test
+
+# JavaScript
+node_modules/
+apps/*/node_modules/
+apps/*/dist/
+*.tsbuildinfo
+.vite/
+
+# Python SDK test environment
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# IDE and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local test artifacts
+/.cache/
+/.docker-log-recovery/
+/.temp-file-recovery/
+/tmp/
+*.log
+
+# Superseded Windows-incompatible Dockerfile names retained only because the
+# host filesystem blocks direct deletion; Compose uses Dockerfile.* instead.
+deploy/docker/*.Dockerfile
+deploy/docker/*.Dockerfile.dockerignore

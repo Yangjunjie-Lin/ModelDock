@@ -1,0 +1,182 @@
+name: ${COMPOSE_PROJECT_NAME:-relaydock}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - type: bind
+        source: ./data/postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    networks: [relaydock-internal, relaydock-diagnostics]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      TZ: ${TZ:-UTC}
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --appendfsync everysec --requirepass "$${REDIS_PASSWORD}"
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - type: bind
+        source: ./data/redis
+        target: /data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    security_opt: ["no-new-privileges:true"]
+    networks: [relaydock-internal, relaydock-diagnostics]
+
+  relaydock:
+    image: relaydock/server:local
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.relaydock
+      args:
+        GOPROXY: ${GO_MODULE_PROXY:-https://proxy.golang.org,direct}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      TZ: ${TZ:-UTC}
+      GATEWAY_ADDR: :8080
+      CONTROL_ADDR: :8081
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL}
+      RELAYDOCK_MASTER_KEY: ${RELAYDOCK_MASTER_KEY:?set RELAYDOCK_MASTER_KEY}
+      RELAYDOCK_API_KEY_HMAC_SECRET: ${RELAYDOCK_API_KEY_HMAC_SECRET:?set RELAYDOCK_API_KEY_HMAC_SECRET}
+      RELAYDOCK_JWT_SECRET: ${RELAYDOCK_JWT_SECRET:?set RELAYDOCK_JWT_SECRET}
+      RELAYDOCK_JWT_LIFETIME: ${RELAYDOCK_JWT_LIFETIME:-15m}
+      RELAYDOCK_JWT_REFRESH_LIFETIME: ${RELAYDOCK_JWT_REFRESH_LIFETIME:-168h}
+      RELAYDOCK_ADMIN_EMAIL: ${RELAYDOCK_ADMIN_EMAIL:-admin@relayedock.local}
+      RELAYDOCK_ADMIN_PASSWORD: ${RELAYDOCK_ADMIN_PASSWORD:-}
+      RELAYDOCK_ADMIN_DISPLAY_NAME: ${RELAYDOCK_ADMIN_DISPLAY_NAME:-RelayDock Administrator}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_DIR: ${LOG_DIR:-/app/logs}
+      LOG_PROMPT_CONTENT: "false"
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-10485760}
+      CREDENTIAL_COOLDOWN: ${CREDENTIAL_COOLDOWN:-30s}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-30s}
+      WEBHOOK_ALLOW_HTTP: ${WEBHOOK_ALLOW_HTTP:-false}
+      WEBHOOK_ALLOW_PRIVATE_NETWORK: ${WEBHOOK_ALLOW_PRIVATE_NETWORK:-false}
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-10s}
+      WEBHOOK_POLL_INTERVAL: ${WEBHOOK_POLL_INTERVAL:-2s}
+      WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-6}
+      COCKPIT_SNAPSHOT_PATH: ${COCKPIT_SNAPSHOT_PATH:-/app/cockpit/accounts.json}
+      COCKPIT_BASE_URL: ${COCKPIT_BASE_URL:-http://host.docker.internal:51900}
+      COCKPIT_API_KEY: ${COCKPIT_API_KEY:-}
+      COCKPIT_TEST_MODEL: ${COCKPIT_TEST_MODEL:-gpt-5.6-luna}
+    ports:
+      - "${GATEWAY_HOST:-127.0.0.1}:${GATEWAY_PORT:-8080}:8080"
+      - "${CONTROL_PLANE_HOST:-127.0.0.1}:${CONTROL_PLANE_PORT:-8081}:8081"
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /app/logs
+      - type: bind
+        source: ./data/cockpit
+        target: /app/cockpit
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null && wget -qO- http://127.0.0.1:8081/readyz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [relaydock-edge, relaydock-internal]
+
+  admin-web:
+    image: relaydock/admin-web:local
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.admin-web
+      args:
+        VITE_API_BASE: /api/admin
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,uid=101,gid=101
+      - /var/run:size=1m,uid=101,gid=101
+    ports:
+      - "${ADMIN_WEB_HOST:-127.0.0.1}:${ADMIN_WEB_PORT:-3000}:8080"
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [relaydock-edge]
+
+  console-web:
+    image: relaydock/console-web:local
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.console-web
+      args:
+        VITE_API_BASE: /api/console
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,uid=101,gid=101
+      - /var/run:size=1m,uid=101,gid=101
+    ports:
+      - "${CONSOLE_WEB_HOST:-127.0.0.1}:${CONSOLE_WEB_PORT:-3001}:8080"
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [relaydock-edge]
+
+networks:
+  relaydock-edge:
+    driver: bridge
+  relaydock-internal:
+    driver: bridge
+    internal: true
+  relaydock-diagnostics:
+    driver: bridge
