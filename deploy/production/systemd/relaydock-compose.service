@@ -1,0 +1,19 @@
+[Unit]
+Description=RelayDock production Docker Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/relaydock
+ExecStartPre=/usr/bin/docker compose --env-file .env config --quiet
+ExecStart=/usr/bin/docker compose --env-file .env up -d --remove-orphans
+ExecReload=/usr/bin/docker compose --env-file .env up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file .env stop
+TimeoutStartSec=0
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

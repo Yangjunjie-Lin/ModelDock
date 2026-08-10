@@ -50,6 +50,13 @@ func requestMiddleware(logger *slog.Logger) gin.HandlerFunc {
 	}
 }
 
+func configureTrustedProxies(r *gin.Engine, d Dependencies) {
+	if err := r.SetTrustedProxies(d.Config.TrustedProxies); err != nil {
+		d.Logger.Error("invalid_trusted_proxies", "error", err)
+		_ = r.SetTrustedProxies(nil)
+	}
+}
+
 func recovery(logger *slog.Logger) gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		logger.Error("panic_recovered", "error", recovered, "request_id", requestID(c))

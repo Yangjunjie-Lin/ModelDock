@@ -25,7 +25,8 @@ const apiKeyVersionContext = "relayedock.api_key_version"
 
 func GatewayEngine(d Dependencies) *gin.Engine {
 	r := gin.New()
-	r.Use(recovery(d.Logger), requestMiddleware(d.Logger))
+	configureTrustedProxies(r, d)
+	r.Use(recovery(d.Logger), requestMiddleware(d.Logger), cors(d.Config.AllowedOrigins))
 	registerHealth(r, d)
 	v1 := r.Group("/v1")
 	v1.Use(gatewayAuth(d))

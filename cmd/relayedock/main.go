@@ -64,7 +64,12 @@ func run() error {
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	db, err := store.Open(startupCtx, cfg.DatabaseURL)
+	db, err := store.OpenWithPoolConfig(startupCtx, cfg.DatabaseURL, store.PoolConfig{
+		MaxConns:        int32(cfg.PostgresMaxConns),
+		MinConns:        int32(cfg.PostgresMinConns),
+		MaxConnIdleTime: cfg.PostgresMaxIdleTime,
+		MaxConnLifetime: cfg.PostgresMaxLifetime,
+	})
 	if err != nil {
 		return err
 	}
@@ -80,6 +85,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	redisOptions.PoolSize = cfg.RedisPoolSize
+	redisOptions.MinIdleConns = cfg.RedisMinIdleConns
+	redisOptions.DialTimeout = cfg.RedisDialTimeout
+	redisOptions.ReadTimeout = cfg.RedisReadTimeout
+	redisOptions.WriteTimeout = cfg.RedisWriteTimeout
 	redisClient := redis.NewClient(redisOptions)
 	defer redisClient.Close()
 	if err := redisClient.Ping(startupCtx).Err(); err != nil {

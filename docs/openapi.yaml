@@ -3074,6 +3074,7 @@ components:
           type: string
         provider_type:
           type: string
+          enum: [openai, deepseek, openrouter]
         base_url:
           type: string
           format: uri
@@ -3101,7 +3102,7 @@ components:
           description: Optional stable slug; derived from the name when omitted.
         provider_type:
           type: string
-          const: openai
+          enum: [openai, deepseek, openrouter]
           default: openai
         base_url:
           type: string

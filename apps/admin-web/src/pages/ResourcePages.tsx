@@ -34,7 +34,7 @@ export function ProvidersPage() {
     createFields: [
       { name: 'name', label: 'Display name', required: true, placeholder: 'OpenAI' },
       { name: 'slug', label: 'Slug', required: true, placeholder: 'openai' },
-      { name: 'provider_type', label: 'Provider type', required: true, type: 'select', options: [{ value: 'openai', label: 'OpenAI' }] },
+      { name: 'provider_type', label: 'Provider type', required: true, type: 'select', options: [{ value: 'openai', label: 'OpenAI' }, { value: 'deepseek', label: 'DeepSeek' }, { value: 'openrouter', label: 'OpenRouter' }] },
       { name: 'base_url', label: 'Base URL', type: 'url', required: true, placeholder: 'https://api.openai.com/v1', hint: 'Use the official provider API endpoint.' },
     ],
     emptyTitle: 'No providers configured', emptyDescription: 'Add an official provider connection to begin configuring authorized credentials.',

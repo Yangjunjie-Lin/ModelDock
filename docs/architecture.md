@@ -203,5 +203,6 @@ effective date. It is not represented as the provider's invoice.
 Docker Compose runs PostgreSQL, Redis, the single RelayDock binary, and two
 static web containers. PostgreSQL data, Redis append-only data, and application
 logs are bind-mounted beneath the project directory so a project located on
-`D:\RelayDock` keeps runtime state on the D drive. The optional `mock-openai`
-profile is isolated to local verification and is never a production upstream.
+`D:\RelayDock` keeps runtime state on the D drive. The Ubuntu production
+topology adds Nginx and Certbot, keeps PostgreSQL/Redis private, and stores
+durable state under `/opt/relaydock/data`; see `deploy/production/README.md`.

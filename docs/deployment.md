@@ -109,33 +109,6 @@ V2.0 stores request/audit retention values but does not run an automatic cleanup
 worker. Apply those values with an operator-managed, tested PostgreSQL retention
 job and backup policy.
 
-## Offline mock and SDK verification
-
-The optional `mock-openai` profile provides deterministic, non-billable Models,
-Responses, Chat Completions (including SSE), and Embeddings responses.
-
-```powershell
-docker compose --env-file .env --profile mock-openai up -d --build
-```
-
-For an isolated test database, add an OpenAI-type provider with base URL
-`http://mock-openai:8090/v1` and credential value `mock-upstream-key`. Configure
-chat and embedding routes, issue an `rdk_test_...` key, then run:
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\python -m pip install -r tests\sdk\python\requirements.txt
-$env:RELAYDOCK_BASE_URL = "http://127.0.0.1:8080/v1"
-$env:RELAYDOCK_API_KEY = "rdk_test_replace_with_one_time_value"
-$env:RELAYDOCK_CHAT_MODEL = "gpt-default"
-$env:RELAYDOCK_EMBEDDING_MODEL = "embedding-default"
-.\.venv\Scripts\python -m pytest -q tests\sdk\python
-```
-
-The mock service is not an account simulator and has no registration,
-administration, billing, browser, CAPTCHA, or promotion APIs. Never configure it
-as a production upstream.
-
 ## Linux bind-mount permissions
 
 The containers use non-root service users. On Linux, create the bind directories
@@ -191,9 +164,9 @@ before declaring the backup usable.
 5. Roll back application images only when the database schema remains
    compatible; database rollback requires an explicit tested restore plan.
 
-V2.0 uses embedded migrations `1:core`, `2:v2`, `3:v2_statuses`, and
-`4:project_route_soft_delete`. Do not edit an already-applied migration: add a
-new version instead. After an upgrade,
+V2.0 uses embedded migrations `1:core`, `2:v2`, `3:v2_statuses`,
+`4:project_route_soft_delete`, and `5:openai_compatible_providers`. Do not edit
+an already-applied migration: add a new version instead. After an upgrade,
 verify the migration ledger and exercise the V2 input-to-output suite from the
 repository root against an isolated test stack:
 

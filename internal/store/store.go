@@ -32,13 +32,37 @@ var (
 type Store struct{ pool *pgxpool.Pool }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	return OpenWithPoolConfig(ctx, databaseURL, PoolConfig{})
+}
+
+type PoolConfig struct {
+	MaxConns        int32
+	MinConns        int32
+	MaxConnIdleTime time.Duration
+	MaxConnLifetime time.Duration
+}
+
+func OpenWithPoolConfig(ctx context.Context, databaseURL string, poolConfig PoolConfig) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	cfg.MaxConns = 30
-	cfg.MinConns = 2
-	cfg.MaxConnIdleTime = 5 * time.Minute
+	if poolConfig.MaxConns <= 0 {
+		poolConfig.MaxConns = 20
+	}
+	if poolConfig.MinConns <= 0 {
+		poolConfig.MinConns = 2
+	}
+	if poolConfig.MaxConnIdleTime <= 0 {
+		poolConfig.MaxConnIdleTime = 5 * time.Minute
+	}
+	if poolConfig.MaxConnLifetime <= 0 {
+		poolConfig.MaxConnLifetime = 30 * time.Minute
+	}
+	cfg.MaxConns = poolConfig.MaxConns
+	cfg.MinConns = poolConfig.MinConns
+	cfg.MaxConnIdleTime = poolConfig.MaxConnIdleTime
+	cfg.MaxConnLifetime = poolConfig.MaxConnLifetime
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)

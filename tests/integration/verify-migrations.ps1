@@ -33,7 +33,13 @@ $expectedLedger = @(
     "1:core",
     "2:v2",
     "3:v2_statuses",
-    "4:project_route_soft_delete"
+    "4:project_route_soft_delete",
+    "5:openai_compatible_providers"
+)
+$expectedProviderSeeds = @(
+    "deepseek|deepseek|https://api.deepseek.com/v1",
+    "openai|openai|https://api.openai.com/v1",
+    "openrouter|openrouter|https://openrouter.ai/api/v1"
 )
 
 $dockerExecutable = $null
@@ -296,6 +302,15 @@ function Assert-ExpectedLedger {
     if ($checksumResult.Output.Trim() -ne "0") {
         throw "The migration ledger contains an invalid checksum."
     }
+
+    $providerResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT slug || '|' || provider_type || '|' || base_url FROM providers WHERE slug IN ('openai','deepseek','openrouter') ORDER BY slug" `
+        -Operation "Validating OpenAI-compatible provider seeds"
+    $actualProviders = [string]::Join("`n", @(Get-NonEmptyLines -Text $providerResult.Output))
+    $expectedProviders = [string]::Join("`n", $script:expectedProviderSeeds)
+    if ($actualProviders -ne $expectedProviders) {
+        throw "The OpenAI-compatible provider seed set does not match the production manifest."
+    }
 }
 
 function Get-LedgerSnapshot {
@@ -480,7 +495,7 @@ try {
     Wait-ForSuccessfulStartup -Name $firstContainer
     $firstSnapshot = Get-LedgerSnapshot
     Remove-TestContainer -Name $firstContainer
-    Write-Host "PASS empty database applied migrations 1:core through 4:project_route_soft_delete"
+    Write-Host "PASS empty database applied migrations 1:core through 5:openai_compatible_providers"
 
     $secondContainer = "relaydock-migration-$runID-second"
     Start-TestServer -Name $secondContainer

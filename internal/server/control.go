@@ -23,6 +23,7 @@ import (
 
 func ControlEngine(d Dependencies) *gin.Engine {
 	r := gin.New()
+	configureTrustedProxies(r, d)
 	r.Use(recovery(d.Logger), requestMiddleware(d.Logger), cors(d.Config.AllowedOrigins))
 	registerHealth(r, d)
 	r.POST("/api/auth/login", func(c *gin.Context) { loginHandler(c, d, "shared") })
@@ -185,7 +186,11 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		if p.Slug == "" {
 			p.Slug = strings.ToLower(strings.ReplaceAll(p.Name, " ", "-"))
 		}
-		p.ProviderType = "openai"
+		p.ProviderType, _ = normalizeProviderType(p.ProviderType)
+		if p.ProviderType == "" {
+			openAIError(c, 400, "invalid_request", "provider_type must be openai, deepseek, or openrouter.")
+			return
+		}
 		p.Enabled = true
 		v, err := d.Store.CreateProvider(c.Request.Context(), p)
 		audit(c, d, "provider.create", "provider", v.ID, v)
@@ -1134,6 +1139,19 @@ func last4(v string) string {
 func validBaseURL(v string) bool {
 	u, err := url.Parse(v)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+func normalizeProviderType(value string) (string, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "openai", true
+	}
+	switch value {
+	case "openai", "deepseek", "openrouter":
+		return value, true
+	default:
+		return "", false
+	}
 }
 func validRoutingPolicy(value string) bool {
 	return value == "priority_weighted" || value == "least_loaded" || value == "weighted_round_robin"

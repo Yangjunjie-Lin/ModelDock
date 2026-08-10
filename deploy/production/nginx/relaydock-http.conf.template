@@ -1,0 +1,40 @@
+limit_req_zone $binary_remote_addr zone=relaydock_api_per_ip:10m rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=relaydock_conn_per_ip:10m;
+
+upstream relaydock_gateway {
+    zone relaydock_gateway 64k;
+    server relaydock:8080 max_fails=3 fail_timeout=10s;
+    keepalive 64;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__;
+    client_max_body_size 10m;
+
+    location = /nginx-health {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    # API keys must not be sent over plaintext HTTP. HTTPS is enabled by
+    # deploy/production/scripts/enable-https.sh after ACME issuance.
+    location / {
+        return 503;
+    }
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}

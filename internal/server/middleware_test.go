@@ -26,6 +26,41 @@ func csrfTestEngine(t *testing.T) (*gin.Engine, string) {
 	r.POST("/mutate", controlAuth(Dependencies{Auth: manager, Config: config.Config{AllowedOrigins: []string{"http://localhost:3001"}}}), func(c *gin.Context) { c.Status(204) })
 	return r, raw
 }
+
+func TestCORSAllowsConfiguredGatewayOrigin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(cors([]string{"https://api.example.net"}))
+	r.OPTIONS("/v1/chat/completions", func(c *gin.Context) { c.Status(http.StatusTeapot) })
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://api.example.net")
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d; want %d", recorder.Code, http.StatusNoContent)
+	}
+	if origin := recorder.Header().Get("Access-Control-Allow-Origin"); origin != "https://api.example.net" {
+		t.Fatalf("allow origin = %q", origin)
+	}
+}
+
+func TestCORSRejectsUnconfiguredGatewayOrigin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(cors([]string{"https://api.example.net"}))
+	r.OPTIONS("/v1/chat/completions", func(c *gin.Context) { c.Status(http.StatusTeapot) })
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://attacker.invalid")
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("preflight status = %d; want %d", recorder.Code, http.StatusForbidden)
+	}
+}
 func TestCookieAuthRejectsMissingCSRFEvidence(t *testing.T) {
 	r, session := csrfTestEngine(t)
 	req := httptest.NewRequest(http.MethodPost, "/mutate", nil)

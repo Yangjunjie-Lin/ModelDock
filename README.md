@@ -9,9 +9,11 @@ cost accounting, downstream API keys, and separate admin/user consoles.
 
 > 中文定位：面向 AI 模型调用的统一 API 中转、授权凭据池、模型路由、用量统计与管理平台。
 
-RelayDock V2.0 integrates only OpenAI's official public API. It does not create
-provider accounts, automate verification/CAPTCHA, pool consumer web sessions,
-claim trials/promotions, or rotate proxies/identities to evade limits.
+RelayDock V2.0 integrates official OpenAI-compatible APIs. OpenAI, DeepSeek,
+and OpenRouter are seeded production providers; each still requires an
+administrator-owned official API credential. RelayDock does not create provider
+accounts, automate verification/CAPTCHA, pool consumer web sessions, claim
+trials/promotions, or rotate proxies/identities to evade limits.
 
 ## Highlights
 
@@ -38,7 +40,7 @@ claim trials/promotions, or rotate proxies/identities to evade limits.
 - PostgreSQL as the system of record; Redis for atomic counters, rate limits,
   cooldown, locks, and cache
 - hardened non-root containers and project-local D-drive-friendly bind mounts
-- deterministic optional mock OpenAI service plus official Python SDK tests
+- official Python SDK compatibility tests
 
 ## Architecture
 
@@ -379,9 +381,17 @@ Safe bulk operations apply only to already-authorized provider API credentials
 and metadata. See [compliance.md](docs/compliance.md) and the clean-room
 [reference analysis](docs/reference-analysis.md).
 
+## Production deployment
+
+The hardened Ubuntu 24.04 deployment package, including Nginx, Certbot,
+resource limits, systemd fallback, backups, DNS, HTTPS, and troubleshooting, is
+documented in [deploy/production/README.md](deploy/production/README.md).
+
 ## Known V2.0 limits
 
-- OpenAI is the only production provider adapter.
+- OpenAI, DeepSeek, and OpenRouter share one audited OpenAI-compatible HTTP
+  adapter. RelayDock does not translate unsupported endpoint shapes between
+  providers; route each endpoint only to an upstream that implements it.
 - The deployment topology is single-node Compose, not HA/Kubernetes.
 - Only Models, Responses, Chat Completions, and Embeddings are exposed through
   the compatibility gateway.
@@ -412,8 +422,8 @@ data is preserved in deterministic `Legacy` organization/project records.
 
 Potential future work, subject to the same authorization and compliance rules:
 
-- SiliconFlow, Anthropic, Gemini, xAI, Azure OpenAI, DeepSeek, OpenRouter, and
-  custom OpenAI-compatible adapters;
+- SiliconFlow, Anthropic, Gemini, xAI, Azure OpenAI, and custom
+  OpenAI-compatible adapters;
 - distributed budget reservations with post-response reconciliation;
 - richer capability/pricing administration and policy/region-aware routing;
 - webhook replay observability, additional approved event types, and external

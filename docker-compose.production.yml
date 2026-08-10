@@ -1,0 +1,262 @@
+name: ${COMPOSE_PROJECT_NAME:-relaydock}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      TZ: ${TZ:-UTC}
+    command:
+      - postgres
+      - -c
+      - max_connections=60
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 60s
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4-alpine
+    restart: always
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      TZ: ${TZ:-UTC}
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        exec redis-server --appendonly yes --appendfsync everysec
+        --requirepass "$${REDIS_PASSWORD}" --maxmemory 128mb
+        --maxmemory-policy noeviction --tcp-keepalive 60
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+    mem_limit: 192m
+    cpus: 0.5
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  relaydock:
+    image: relaydock/server:${RELAYDOCK_IMAGE_TAG:-production}
+    build:
+      context: ${RELAYDOCK_SOURCE_DIR:-./src}
+      dockerfile: deploy/docker/Dockerfile.relaydock
+      args:
+        GOPROXY: ${GO_MODULE_PROXY:-https://proxy.golang.org,direct}
+    restart: always
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      TZ: ${TZ:-UTC}
+      GATEWAY_ADDR: :8080
+      CONTROL_ADDR: :8081
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-20}
+      POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-2}
+      POSTGRES_MAX_CONN_IDLE_TIME: ${POSTGRES_MAX_CONN_IDLE_TIME:-5m}
+      POSTGRES_MAX_CONN_LIFETIME: ${POSTGRES_MAX_CONN_LIFETIME:-30m}
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL}
+      REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:-20}
+      REDIS_MIN_IDLE_CONNS: ${REDIS_MIN_IDLE_CONNS:-2}
+      REDIS_DIAL_TIMEOUT: ${REDIS_DIAL_TIMEOUT:-5s}
+      REDIS_READ_TIMEOUT: ${REDIS_READ_TIMEOUT:-3s}
+      REDIS_WRITE_TIMEOUT: ${REDIS_WRITE_TIMEOUT:-3s}
+      RELAYDOCK_MASTER_KEY: ${RELAYDOCK_MASTER_KEY:?set RELAYDOCK_MASTER_KEY}
+      RELAYDOCK_API_KEY_HMAC_SECRET: ${RELAYDOCK_API_KEY_HMAC_SECRET:?set RELAYDOCK_API_KEY_HMAC_SECRET}
+      RELAYDOCK_JWT_SECRET: ${RELAYDOCK_JWT_SECRET:?set RELAYDOCK_JWT_SECRET}
+      RELAYDOCK_JWT_LIFETIME: ${RELAYDOCK_JWT_LIFETIME:-15m}
+      RELAYDOCK_JWT_REFRESH_LIFETIME: ${RELAYDOCK_JWT_REFRESH_LIFETIME:-168h}
+      RELAYDOCK_ADMIN_EMAIL: ${RELAYDOCK_ADMIN_EMAIL:?set RELAYDOCK_ADMIN_EMAIL}
+      RELAYDOCK_ADMIN_PASSWORD: ${RELAYDOCK_ADMIN_PASSWORD:?set RELAYDOCK_ADMIN_PASSWORD}
+      RELAYDOCK_ADMIN_DISPLAY_NAME: ${RELAYDOCK_ADMIN_DISPLAY_NAME:-RelayDock Administrator}
+      COOKIE_SECURE: "true"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/32}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_DIR: /app/logs
+      LOG_PROMPT_CONTENT: "false"
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-10485760}
+      CREDENTIAL_COOLDOWN: ${CREDENTIAL_COOLDOWN:-30s}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-30s}
+      WEBHOOK_ALLOW_HTTP: "false"
+      WEBHOOK_ALLOW_PRIVATE_NETWORK: "false"
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-10s}
+      WEBHOOK_POLL_INTERVAL: ${WEBHOOK_POLL_INTERVAL:-2s}
+      WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-6}
+    ports:
+      - "127.0.0.1:${GATEWAY_DIAGNOSTIC_PORT:-8080}:8080"
+      - "127.0.0.1:${CONTROL_PLANE_PORT:-8081}:8081"
+    expose: ["8080", "8081"]
+    volumes:
+      - ./data/relaydock/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null && wget -qO- http://127.0.0.1:8081/readyz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [edge, internal]
+    mem_limit: 512m
+    cpus: 1.5
+    stop_grace_period: 45s
+    logging: *default-logging
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    read_only: true
+    command: ["/bin/sh", "-c", "while sleep 21600; do nginx -s reload; done & exec nginx -g 'daemon off;'"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./data/certbot/conf:/etc/letsencrypt:ro
+      - ./data/certbot/www:/var/www/certbot:ro
+      - ./data/nginx/logs:/var/log/nginx
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=32m,uid=101,gid=101
+      - /var/run:size=2m,uid=101,gid=101
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --header='Host: ${API_DOMAIN:?set API_DOMAIN}' http://127.0.0.1/nginx-health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, NET_BIND_SERVICE, SETGID, SETUID]
+    networks: [edge]
+    mem_limit: 128m
+    cpus: 0.5
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  certbot:
+    image: certbot/certbot:v4.0.0
+    restart: always
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 43200; done"]
+    volumes:
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+      - ./data/certbot/logs:/var/log/letsencrypt
+    healthcheck:
+      test: ["CMD-SHELL", "certbot --version >/dev/null && test -d /etc/letsencrypt && test -d /var/www/certbot"]
+      interval: 1h
+      timeout: 10s
+      retries: 3
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge]
+    mem_limit: 128m
+    cpus: 0.25
+    logging: *default-logging
+
+  admin-web:
+    profiles: [control-ui]
+    image: relaydock/admin-web:${RELAYDOCK_IMAGE_TAG:-production}
+    build:
+      context: ${RELAYDOCK_SOURCE_DIR:-./src}
+      dockerfile: deploy/docker/Dockerfile.admin-web
+      args:
+        VITE_API_BASE: /api/admin
+    restart: always
+    ports:
+      - "127.0.0.1:${ADMIN_WEB_PORT:-3000}:8080"
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge]
+    mem_limit: 96m
+    cpus: 0.25
+    logging: *default-logging
+
+  console-web:
+    profiles: [control-ui]
+    image: relaydock/console-web:${RELAYDOCK_IMAGE_TAG:-production}
+    build:
+      context: ${RELAYDOCK_SOURCE_DIR:-./src}
+      dockerfile: deploy/docker/Dockerfile.console-web
+      args:
+        VITE_API_BASE: /api/console
+    restart: always
+    ports:
+      - "127.0.0.1:${CONSOLE_WEB_PORT:-3001}:8080"
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge]
+    mem_limit: 96m
+    cpus: 0.25
+    logging: *default-logging
+
+networks:
+  edge:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true

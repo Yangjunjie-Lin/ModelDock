@@ -14,7 +14,16 @@ type Config struct {
 	GatewayAddr         string
 	ControlAddr         string
 	DatabaseURL         string
+	PostgresMaxConns    int
+	PostgresMinConns    int
+	PostgresMaxIdleTime time.Duration
+	PostgresMaxLifetime time.Duration
 	RedisURL            string
+	RedisPoolSize       int
+	RedisMinIdleConns   int
+	RedisDialTimeout    time.Duration
+	RedisReadTimeout    time.Duration
+	RedisWriteTimeout   time.Duration
 	MasterKey           []byte
 	APIKeyHMACSecret    []byte
 	JWTSecret           []byte
@@ -24,6 +33,7 @@ type Config struct {
 	AdminPassword       string
 	AdminDisplayName    string
 	AllowedOrigins      []string
+	TrustedProxies      []string
 	MaxBodyBytes        int64
 	Cooldown            time.Duration
 	ShutdownTimeout     time.Duration
@@ -46,13 +56,23 @@ func Load() (Config, error) {
 		GatewayAddr:         env("GATEWAY_ADDR", ":8080"),
 		ControlAddr:         env("CONTROL_ADDR", ":8081"),
 		DatabaseURL:         env("DATABASE_URL", "postgres://relayedock:relayedock@localhost:5432/relayedock?sslmode=disable"),
+		PostgresMaxConns:    integer("POSTGRES_MAX_CONNS", 20),
+		PostgresMinConns:    integer("POSTGRES_MIN_CONNS", 2),
+		PostgresMaxIdleTime: duration("POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute),
+		PostgresMaxLifetime: duration("POSTGRES_MAX_CONN_LIFETIME", 30*time.Minute),
 		RedisURL:            env("REDIS_URL", "redis://localhost:6379/0"),
+		RedisPoolSize:       integer("REDIS_POOL_SIZE", 20),
+		RedisMinIdleConns:   integer("REDIS_MIN_IDLE_CONNS", 2),
+		RedisDialTimeout:    duration("REDIS_DIAL_TIMEOUT", 5*time.Second),
+		RedisReadTimeout:    duration("REDIS_READ_TIMEOUT", 3*time.Second),
+		RedisWriteTimeout:   duration("REDIS_WRITE_TIMEOUT", 3*time.Second),
 		JWTLifetime:         durationAny(15*time.Minute, "RELAYDOCK_JWT_LIFETIME", "JWT_LIFETIME"),
 		JWTRefreshLifetime:  durationAny(7*24*time.Hour, "RELAYDOCK_JWT_REFRESH_LIFETIME", "JWT_REFRESH_LIFETIME"),
 		AdminEmail:          strings.ToLower(strings.TrimSpace(envAny("admin@relayedock.local", "RELAYDOCK_ADMIN_EMAIL", "ADMIN_EMAIL"))),
 		AdminPassword:       envAny("", "RELAYDOCK_ADMIN_PASSWORD", "ADMIN_PASSWORD"),
 		AdminDisplayName:    envAny("RelayDock Administrator", "RELAYDOCK_ADMIN_DISPLAY_NAME", "ADMIN_DISPLAY_NAME"),
 		AllowedOrigins:      csv(env("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001")),
+		TrustedProxies:      csv(os.Getenv("TRUSTED_PROXIES")),
 		MaxBodyBytes:        int64(integer("MAX_REQUEST_BODY_BYTES", 16<<20)),
 		Cooldown:            duration("CREDENTIAL_COOLDOWN", 30*time.Second),
 		ShutdownTimeout:     duration("SHUTDOWN_TIMEOUT", 20*time.Second),
@@ -81,6 +101,12 @@ func Load() (Config, error) {
 	}
 	if c.JWTRefreshLifetime <= c.JWTLifetime {
 		return Config{}, errors.New("RELAYDOCK_JWT_REFRESH_LIFETIME must be longer than RELAYDOCK_JWT_LIFETIME")
+	}
+	if c.PostgresMinConns > c.PostgresMaxConns {
+		return Config{}, errors.New("POSTGRES_MIN_CONNS must not exceed POSTGRES_MAX_CONNS")
+	}
+	if c.RedisMinIdleConns > c.RedisPoolSize {
+		return Config{}, errors.New("REDIS_MIN_IDLE_CONNS must not exceed REDIS_POOL_SIZE")
 	}
 	return c, nil
 }

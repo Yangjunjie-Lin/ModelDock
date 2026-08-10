@@ -18,7 +18,9 @@ type Adapter struct{ client *http.Client }
 
 type HTTPError struct{ StatusCode int }
 
-func (e *HTTPError) Error() string { return fmt.Sprintf("OpenAI API returned HTTP %d", e.StatusCode) }
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("upstream provider API returned HTTP %d", e.StatusCode)
+}
 
 func New(client *http.Client) *Adapter {
 	if client == nil {
