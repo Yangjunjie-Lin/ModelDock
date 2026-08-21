@@ -1,128 +1,110 @@
-# ModelDock commercial beta go-live checklist
+# ModelDock commercial readiness go-live checklist
 
-**Decision: NO-GO**  
-**Review date:** 2026-08-17 (Asia/Shanghai)  
-**Requested release:** `v0.9.0-beta`  
+**Decision: NO-GO**
+**Review date:** 2026-08-21 (Asia/Shanghai)
+**Candidate version:** `3.0.0-beta.1`
+**Baseline commit:** `9ef82a669b704028f1919e094b0bd82a11dba866`
+**Latest migration:** `0024_exact_money_and_release_evidence`
 **Release created:** no
 
-This is an evidence record for the final commercial-beta validation. It is not
-a release announcement. Passing synthetic integration tests does not override
-a release gate. The blockers below must be closed and the complete suite must
-be rerun against the exact release commit and immutable images before another
-go-live decision.
+This is an engineering revalidation record, not a release announcement. The
+tests below ran against the current uncommitted working tree on
+`fix/commercial-readiness-closure`; therefore the local result is useful
+engineering evidence but is not an exact-clean-commit release artifact. The
+protected CI and Release workflows must rerun the same suites after review and
+commit. No Tag, GitHub Release, production image promotion, or deployment is
+authorized by this record.
 
-## Release gates
+## Decision by release profile
 
-| Mandatory gate | Result | Evidence and disposition |
+| Profile | Result | Reason |
 | --- | --- | --- |
-| Payment, wallet, usage, and Provider records balance | PASS in the isolated synthetic run | Four-way reconciliation completed with `differences=0`; exact amounts are recorded in [financial-reconciliation-report.md](financial-reconciliation-report.md). |
-| No cross-organization authorization bypass | PASS in the tested path | A console user received `404` when reading another organization; project/key scope and disabled-user invalidation were also exercised. This does not replace an independent penetration test. |
-| Only commercially approved Providers enter production routing | **BLOCKED** | Every standard Provider in the inspected database is `CONTRACT_PENDING / NOT_APPROVED`; legal entity, contract evidence, and processing regions are incomplete. See [provider-commercial-matrix.md](provider-commercial-matrix.md). |
-| Backup can be restored | PASS for isolated logical-backup drill | `pg_dump`/`pg_restore` reproduced migration version 19 plus funding, posted-ledger, and audit counts. Production object-storage and managed-PITR recovery have not been evidenced. |
-| Payment webhook replay cannot duplicate credit | PASS in sandbox | Signed payment webhook replay and refund replay each retained one durable successful record. No real payment channel was tested. |
-| Negative-margin protection | PASS in the commercial decimal path | In-flight price snapshots and minimum-margin admission were tested. **BLOCKED overall** because legacy money/quota/catalog paths still use `float64` and PostgreSQL `::float8`. |
-| Legal and Provider contract status is unambiguous | **BLOCKED** | License decision is `blocked / undecided`; all legal drafts are marked `PENDING COUNSEL REVIEW`; Provider contracts are not approved. |
-| Release metadata matches requested version | **BLOCKED** | Runtime version is `2.0.0`; the requested version is `0.9.0-beta`; the release verifier accepts stable `MAJOR.MINOR.PATCH` only. |
-| Final-image HIGH/CRITICAL vulnerability scan | PASS with operational caveat | Trivy 0.73.0 found 0 HIGH/CRITICAL vulnerabilities in Server, Admin, and Console using a database updated 2026-08-15 and still within its `NextUpdate` time. An attempted online database refresh failed because `mirror.gcr.io:443` refused the connection. |
+| `ENGINEERING_PREVIEW` | **GO** | Exact-money, migrations, synthetic commercial/Marketplace tests, version metadata, and fail-closed gate tests pass. Preview artifacts are explicitly non-production. |
+| `COMMERCIAL_BETA` | **NO-GO** | License, legal entity/text, payment agreement/adapter, Provider rights, production SMTP/DR, current vulnerability scan, independent security assessment, and owner approvals are blocked. |
+| `MARKETPLACE_PRODUCTION` | **NO-GO** | Commercial Beta blockers remain, and no real supplier KYB/contract, tax/invoice, production payout, or two-administrator launch evidence exists. |
 
-Any single blocked row makes this review `NO-GO`. No tag, image publication, or
-GitHub Release was created.
+## Mandatory gates
 
-## End-to-end acceptance scenarios
-
-All rows below passed in a disposable local Docker network with PostgreSQL 17,
-Redis 7.4, a local mail capture, a signed sandbox payment channel, and a
-deterministic synthetic OpenAI-compatible Provider. No real money, real API
-key, or user data was used.
-
-| # | Scenario | Result |
-| ---: | --- | --- |
-| 1 | User registration and captured-email verification | PASS |
-| 2 | Organization, project, and `rdk_test_*` API key creation | PASS |
-| 3 | Explicit subscription plan selection | PASS |
-| 4 | Signed sandbox recharge | PASS |
-| 5 | Exact cash-wallet credit | PASS |
-| 6 | Ordinary OpenAI-compatible `/v1` completion | PASS |
-| 7 | SSE streaming completion | PASS |
-| 8 | Pre-dispatch Provider fallback | PASS |
-| 9 | Client disconnect during upstream body streaming | PASS |
-| 10 | Reserve, settle, and release accounting | PASS |
-| 11 | Provider cost, retail price, promotion, and gross margin | PASS |
-| 12 | Current monthly customer statement | PASS |
-| 13 | Exact sandbox refund and replay | PASS |
-| 14 | Payment/wallet/usage/Provider reconciliation | PASS, zero differences |
-| 15 | Provider kill switch blocks new attempts | PASS |
-| 16 | Suspended user invalidates API key immediately | PASS |
-| 17 | Retention cleanup, deletion pseudonymization, and retained audit evidence | PASS |
-| 18 | Logical backup restore with evidence-count comparison | PASS |
-| 19 | Hard-killed app instance and replacement instance recovery | PASS |
-| 20 | Payment webhook and request idempotency replay | PASS |
-
-## Load and fault injection
-
-| Test | Result | Verified invariant |
+| Gate | Result | Evidence and disposition |
 | --- | --- | --- |
-| 8 concurrent ordinary requests | PASS | All returned 200 and reached settled operations. |
-| 8 concurrent SSE requests | PASS | All returned 200 and reached settled operations. |
-| 100 concurrent reservations against one wallet | PASS in the dedicated funding suite | Balance constraints, cancellation, recovery, and immutable balanced journals held. |
-| Provider timeout, 429, and 500 | PASS | Operations failed terminally with zero settlement and full release. |
-| Redis temporary outage | PASS | Request failed safely and no invalid reservation remained. |
-| Ledger worker/app hard restart | PASS | Stale reservation recovered with `ESTIMATED_CRASH_RECOVERY`; reserved balance returned to zero. |
-| Payment worker restart | PASS | Pending order reached its terminal expiry state without duplicate credit. |
-| Price version switched while request was reserved | PASS | Settlement used the immutable request-time snapshot, not the later version. |
-| PostgreSQL primary connection interruption | PASS | Readiness failed during pause and recovered after unpause; accounting invariants held. |
-| One application instance failed | PASS | Replacement instance became ready and served a new `/v1` request. |
+| Exact money across monetary code paths | **PASS (engineering)** | Migration 0024 adds `NUMERIC(30,12)` compatibility columns and reconciliation; `scripts/verify-exact-money.ps1` passes. Retained floating-point entries are explicitly non-monetary telemetry/routing values. |
+| Migration and compatibility contract | **PASS (engineering)** | Empty 1–24 migration, idempotent restart, unknown/checksum rejection, V1/V12/V21/V22 upgrades, 12-place writes, legacy writes, and zero migration differences passed. |
+| Commercial and Marketplace integration | **PASS (engineering)** | `scripts/verify-commercial-integration.ps1` completed 14/14 suites and recorded schema 24 plus one local image digest. Because the tree is uncommitted, the artifact is not release evidence for the baseline SHA. |
+| Wallet, ledger, usage, and Provider records balance | **PASS in synthetic tests** | Concurrent reserve/settle/release, reversals, refunds, Supplier payable, and four-way close completed with zero unexplained differences. No real acquirer or Provider statement was tested. |
+| Version and image identity | **PASS (engineering)** | `VERSION`, runtime, Docker labels, OpenAPI, Changelog, and release metadata use `3.0.0-beta.1`; SemVer 2.0 prerelease validation passes. |
+| Release cannot be bypassed by one approval | **PASS (engineering)** | Nine negative tests reject license-only approval, stale Migration 19 evidence, another commit, sandbox payment/payout, missing Provider rights, expired/future-dated approval, and approval for another commit. |
+| Production payment and refund channel | **BLOCKED** | Only signed sandbox and administrator-reviewed manual-transfer adapters exist; no approved production acquirer or real settlement/chargeback evidence exists. |
+| Commercially approved Provider | **BLOCKED** | Approved Provider count is zero. Standard Providers remain fail-closed without contract, resale, customer-region, and data-processing-region evidence. |
+| Production supplier payout | **BLOCKED** | The payout adapter is permanently sandbox-only; no bank/payout institution or real idempotent payout evidence exists. |
+| License, entity, legal text, tax, and invoice approval | **BLOCKED** | Repository evidence remains `BLOCKED`; the coding agent did not select a license or invent legal/tax approval. |
+| Production SMTP, PITR, failover, and multi-zone recovery | **BLOCKED** | Local capture, logical restore, pause/unpause, and container replacement passed but do not prove managed production recovery. |
+| Independent security assessment | **BLOCKED** | No independent penetration test or production TLS/WAF/DNS/IAM/KMS/logging assessment was supplied. |
+| Current HIGH/CRITICAL image scan | **NOT RUN / BLOCKED** | Trivy 0.73.0 was available, but both `mirror.gcr.io` and GHCR vulnerability-database downloads failed with TLS handshake timeouts and the local cache was empty. No clean result is claimed. |
+| Required human sign-off | **BLOCKED** | Finance, operations, security, legal, and repository-owner evidence remains absent. |
 
-The concurrency numbers above establish deterministic regression coverage, not
-a capacity limit or production SLO. Multi-AZ failover and sustained soak tests
-remain outside this local test scope.
+Any blocked mandatory row keeps the commercial decision `NO-GO`.
+
+## Marketplace Prompt 15–18 revalidation
+
+The former Migration-19 report is not used as Marketplace acceptance evidence.
+The current suites explicitly upgraded populated V21 and V22 fixtures through
+Migration 24 and verified:
+
+- supplier registration, KYB pending/default-deny, separate approvers, endpoint
+  ownership, SSRF defenses, model/price applications, and suspension/exit;
+- platform quality probes, canary routing, Provider faults, kill switch, and
+  emergency cutover;
+- platform-measured settled usage as the only payable source, commission,
+  reserve, refunds, bills, disputes, settlement batches, and payout replay by a
+  stable idempotency key; and
+- historical ledger/usage/supplier evidence retention after suspension and
+  exit, while sandbox payout remains ineligible for production readiness.
+
+These are synthetic engineering assertions. They do not prove that any real
+supplier has completed KYB, signed a contract, received traffic, or been paid.
 
 ## Commands and observed results
 
-| Command | Observed result |
+| Command or suite | Observed result |
 | --- | --- |
-| `gofmt -w cmd internal migrations tests/backend` | PASS; formatting completed. |
-| `go vet ./...` (Go 1.26.6 container) | PASS. |
-| `go test -count=1 -timeout=180s ./...` (Go 1.26.6 container) | PASS for all packages. |
-| `npm ci`, `npm run lint`, `npm run typecheck`, `npm run build` in `apps/admin-web` | PASS; build warned about one 514.87 kB JavaScript chunk. |
-| `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` in `apps/console-web` | PASS; Vitest 8/8. |
-| `npm audit` in both frontends | PASS; 0 vulnerabilities reported. |
-| `docker compose --env-file <isolated-env> config --quiet` | PASS for development configuration. |
-| `docker compose --env-file <isolated-env> -f docker-compose.production.yml config --quiet` | PASS for production configuration. |
-| `powershell -File tests/integration/verify-migrations.ps1 -ConfirmIsolatedTestDatabase` | PASS: empty migrations 1-19, idempotent restart, unknown/checksum rejection, populated V1 and V12 upgrades. |
-| `powershell -File tests/integration/verify-funding.ps1 -ConfirmIsolatedTestDatabase` | PASS: concurrent reservation, cancellation, recovery, and ledger invariants. |
-| `powershell -File tests/integration/verify-payments.ps1` | PASS: webhook replay, failure isolation, recovery, and traceability. |
-| `powershell -File tests/integration/verify-pricing.ps1 -ConfirmIsolatedTestDatabase` | PASS: margin protection, versions, and promotions. |
-| `powershell -File tests/integration/verify-subscriptions.ps1 -ConfirmIsolatedTestDatabase` | PASS: concurrency, lifecycle, retention, and ledger separation. |
-| `powershell -File tests/integration/verify-financial-close.ps1 -ConfirmIsolatedTestDatabase` | PASS after reconciliation-query corrections. |
-| `powershell -File tests/integration/verify-accounts.ps1 -ConfirmIsolatedTestDatabase` | PASS. |
-| `powershell -NoProfile -ExecutionPolicy Bypass -File tests/integration/verify-commercial-onboarding.ps1 -ConfirmIsolatedTestDatabase -StartupTimeoutSeconds 120` | PASS twice; final run emitted all eight scenario summaries. |
-| `docker build -f deploy/docker/Dockerfile.relaydock -t modeldock/go-live-server:local .` and equivalent Admin/Console builds | PASS for all three final local images. |
-| Trivy 0.73.0 `image --skip-db-update --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1` | PASS; 0 findings in all three images using the still-current cached DB. |
-| Gitleaks 8.30.1 repository scan | PASS; 3 commits/~1.52 MB scanned, no leaks found. |
-| `powershell -File scripts/verify-release.ps1 -Version 0.9.0-beta -RequireApprovedLicense` | EXPECTED FAIL (exit 1): verifier requires stable `MAJOR.MINOR.PATCH`. |
-| `powershell -File scripts/verify-release.ps1 -Version 2.0.0 -RequireApprovedLicense` | EXPECTED FAIL (exit 1): repository owner has not approved the licensing decision. |
+| `gofmt`, `go vet ./...`, `go test -count=1 -timeout=300s ./...` | PASS on Go 1.26.6. |
+| Admin `npm ci`, lint, typecheck, build, audit | PASS; audit reported 0 vulnerabilities. No Admin test script is defined. |
+| Console `npm ci`, lint, typecheck, Vitest, build, audit | PASS; Vitest 11/11 and audit 0 vulnerabilities. |
+| Development, mock-Provider, and production Compose validation | PASS. |
+| `scripts/verify-commercial-integration.ps1` | PASS; 14/14 suites, schema 24, one local server image digest. |
+| `scripts/verify-exact-money.ps1` | PASS. |
+| `tests/release/verify-commercial-readiness.ps1` | PASS; 9 negative scenarios. |
+| Workflow YAML parse and Actionlint 1.7.12 | PASS for CI, Release, and Nightly Soak workflows. |
+| Gitleaks 8.30.1 directory and Git-history scans | PASS; about 437.85 MB working tree and 4 commits scanned, no leaks found. |
+| Syft 1.50.0 SBOM generation | PASS for Server, Admin, and Console; all three SPDX JSON files parsed successfully. |
+| Container non-root inspection | PASS: Server `10001:10001`; Admin/Console `101:101`. |
+| Trivy 0.73.0 HIGH/CRITICAL scan | **NOT RUN**; vulnerability database unavailable after two TLS handshake timeouts. |
+| `govulncheck ./...` | **NOT RUN**; vulnerability data retrieval timed out and no usable local database was available. |
+| `gosec ./...` | **NOT RUN**; installation/module verification timed out and no cached binary was available. |
 
-The literal `<isolated-env>` above denotes a generated, untracked test
-environment file; its secret values are intentionally not recorded.
+The local commercial evidence JSON intentionally remains outside the release
+manifest. A future release run must create evidence on the exact clean commit,
+with the latest migration and immutable image digests.
 
-## Required closure before re-review
+## Required closure before commercial re-review
 
-1. Obtain counsel and owner approval for licensing and all public legal text.
-2. Populate and independently approve Provider legal entity, resale contract,
-   dates, permitted customer regions, data-processing regions, retention terms,
-   and terms version. Keep the Provider excluded until every field is verified.
-3. Replace all remaining monetary `float64`/`::float8` paths with exact decimal
-   or defined minor-unit representations through new forward migrations where
-   schema changes are required; add compatibility and concurrency tests.
-4. Resolve the version policy: either authorize a prerelease-aware verifier and
-   align runtime/changelog metadata, or choose the release version already
-   represented by the source. This requires a separate, explicit release step.
-5. Exercise an approved payment sandbox owned by the intended payment partner,
-   an approved Provider contract, production SMTP, managed PITR/object backup,
-   and deployment-environment failover.
-6. Refresh the vulnerability database online and repeat scans on images built
-   from the exact immutable release commit.
-7. Rerun every command above. Any financial imbalance, authorization bypass,
-   duplicate credit, negative-margin admission, backup failure, or contract
-   ambiguity remains an automatic `NO-GO`.
+1. Obtain owner/counsel approval for licensing, legal entity, terms, privacy,
+   refunds, data processing, tax, and invoice policy.
+2. Execute a production payment agreement and validate the production adapter,
+   settlement file, webhook replay, refunds, chargebacks, and fee reconciliation.
+3. Approve at least one Provider's commercial distribution rights, regions,
+   processing terms, contract window, and kill-switch operations.
+4. Complete production SMTP, managed PostgreSQL PITR, Redis/database/application
+   failover, multi-zone RPO/RTO, IAM/KMS/WAF/DNS, and logging/privacy drills.
+5. Obtain and disposition an independent penetration test; refresh current
+   vulnerability data and scan exact immutable release images.
+6. For Marketplace production, complete real supplier KYB/contract, endpoint
+   verification, canary, tax/invoice, payout institution, bill reconciliation,
+   dispute/refund allocation, second-admin approval, suspension/cutover, and
+   exit evidence.
+7. Commit the reviewed engineering changes and rerun the protected CI/Release
+   workflows. Any stale migration, other-commit report, sandbox adapter, expired
+   evidence, or unexplained financial difference must fail closed.
+
+Until every applicable gate is genuinely approved, the final decision remains
+`NO-GO`.

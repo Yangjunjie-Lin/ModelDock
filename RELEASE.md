@@ -1,7 +1,7 @@
 # ModelDock release process
 
 Formal releases are created only by `.github/workflows/release.yml` from an
-annotated semantic-version tag such as `v2.0.0`. Manually created GitHub
+annotated Semantic Version 2.0 tag such as `v3.0.0-beta.1`. Manually created GitHub
 Releases and mutable `latest` image tags are not part of the supported process.
 
 ## Release blockers
@@ -10,13 +10,18 @@ All of the following must be resolved before tagging:
 
 1. The target commit is on the protected default branch and its required CI
    checks pass.
-2. `internal/version.Current` equals the tag without the leading `v`.
+2. `VERSION` and `internal/version.Current` equal the tag without the leading
+   `v`.
 3. `CHANGELOG.md` has a dated entry for that exact version.
 4. `docs/licensing-decision.md` records an approved owner decision. The current
    `blocked` status intentionally prevents a formal release.
 5. Empty-database and populated V1 upgrade migrations pass.
-6. Go, frontend, Compose, Docker, secret, dependency, and vulnerability gates
-   pass with no permitted bypass.
+6. Go, frontend, Compose, Docker, secret, dependency, vulnerability, exact-money,
+   and all commercial/Marketplace integration gates pass with no bypass.
+7. `scripts/verify-commercial-readiness.ps1` passes the selected profile using
+   evidence bound to the exact commit, latest migration, and immutable image
+   digests. The current external evidence intentionally keeps commercial
+   profiles at `NO-GO`.
 
 ## Versioning and changelog
 
@@ -31,8 +36,15 @@ Update `CHANGELOG.md` using Keep a Changelog categories. Do not move an item
 out of `Unreleased` until its release commit is final. Run:
 
 ```powershell
-pwsh ./scripts/verify-release.ps1 -Version 2.0.0
+pwsh ./scripts/verify-release.ps1 -Version 3.0.0-beta.1
 ```
+
+The workflow accepts `ENGINEERING_PREVIEW`, `COMMERCIAL_BETA`, and
+`MARKETPLACE_PRODUCTION`. Engineering Preview uploads a source-only artifact
+explicitly marked non-production and does not push images or create a GitHub
+Release. Commercial profiles fail before image construction unless every
+external evidence gate is current and approved. Prerelease SemVer values create
+GitHub Prereleases; stable SemVer values create stable releases.
 
 ## Automated release artifacts
 

@@ -16,12 +16,12 @@ margin, and BYOK service fees before production use. See
 
 The provided Compose topology is intended for a single-node ModelDock V3 deployment and
 Windows-friendly local development. If the repository lives at
-`D:\RelayDock`, its durable bind mounts resolve to:
+`D:\ModelDock`, its durable bind mounts resolve to:
 
 ```text
-D:\RelayDock\data\postgres
-D:\RelayDock\data\redis
-D:\RelayDock\logs
+D:\ModelDock\data\postgres
+D:\ModelDock\data\redis
+D:\ModelDock\logs
 ```
 
 No Docker-managed named volume is used for project data.
@@ -39,7 +39,7 @@ No Docker-managed named volume is used for project data.
 From PowerShell:
 
 ```powershell
-Set-Location D:\RelayDock
+Set-Location D:\ModelDock
 Copy-Item .env.example .env
 .\deploy\scripts\prepare-data.ps1
 ```
@@ -121,7 +121,7 @@ docker compose --env-file .env logs -f --tail 200 relaydock
 or coordination dependencies are unavailable. Compose waits for PostgreSQL,
 Redis, and both RelayDock listeners before starting the web services.
 
-Application logs are written to `D:\RelayDock\logs` and Docker's container log
+Application logs are written to `D:\ModelDock\logs` and Docker's container log
 stream. Configure rotation for both. Logs are structured and secret-redacted;
 do not enable prompt content logging in normal operation.
 

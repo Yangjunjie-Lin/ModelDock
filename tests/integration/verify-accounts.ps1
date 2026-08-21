@@ -2,7 +2,8 @@
 param(
     [switch]$ConfirmIsolatedTestDatabase,
     [ValidateRange(30, 180)]
-    [int]$StartupTimeoutSeconds = 90
+    [int]$StartupTimeoutSeconds = 90,
+    [string]$ExistingImage = ""
 )
 
 Set-StrictMode -Version 3.0
@@ -19,7 +20,8 @@ $redis = "modeldock-accounts-redis-$runID"
 $server = "modeldock-accounts-app-$runID"
 $closedServer = "modeldock-accounts-closed-$runID"
 $inviteServer = "modeldock-accounts-invite-$runID"
-$image = "modeldock/accounts-integration:$runID"
+$image = if ($ExistingImage) { $ExistingImage } else { "modeldock/accounts-integration:$runID" }
+$ownsImage = -not [bool]$ExistingImage
 $containers = [Collections.Generic.List[string]]::new()
 
 function Invoke-Docker {
@@ -86,9 +88,11 @@ function Invoke-JSON {
         $errorResponse = $_.Exception.Response
         if ($null -eq $errorResponse) { throw }
         $status = [int]$errorResponse.StatusCode
-        $stream = $errorResponse.GetResponseStream()
-        $reader = [IO.StreamReader]::new($stream)
-        try { $content = $reader.ReadToEnd() } finally { $reader.Dispose(); $stream.Dispose() }
+        if ($_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace([string]$_.ErrorDetails.Message)) {
+            $content = [string]$_.ErrorDetails.Message
+        } elseif ($null -ne $errorResponse.Content) {
+            $content = $errorResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        }
     }
     $json = $null
     if (-not [string]::IsNullOrWhiteSpace($content)) { $json = $content | ConvertFrom-Json }
@@ -203,7 +207,11 @@ function Start-AppContainer {
 }
 
 try {
-    [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/docker/Dockerfile.relaydock"), "-t", $image, $repoRoot) -Operation "Building account integration image")
+    if ($ownsImage) {
+        [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/docker/Dockerfile.relaydock"), "-t", $image, $repoRoot) -Operation "Building account integration image")
+    } else {
+        [void](Invoke-Docker -Arguments @("image", "inspect", $image) -Operation "Inspecting the prebuilt account integration image")
+    }
     [void](Invoke-Docker -Arguments @("network", "create", $network) -Operation "Creating isolated network")
     [void](Invoke-Docker -Arguments @("run", "-d", "--name", $postgres, "--network", $network, "-e", "POSTGRES_DB=relayedock", "-e", "POSTGRES_USER=relayedock", "-e", "POSTGRES_PASSWORD=synthetic-db-password", "postgres:17-alpine") -Operation "Starting isolated PostgreSQL")
     $containers.Add($postgres)
@@ -361,5 +369,5 @@ try {
         if ($name -match "^modeldock-accounts-(pg|redis|app|closed|invite)-$runID$") { & docker rm -f $name *> $null }
     }
     if ($network -match "^modeldock-accounts-$runID$") { & docker network rm $network *> $null }
-    & docker image rm $image *> $null
+    if ($ownsImage) { & docker image rm $image *> $null }
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,7 +63,7 @@ func admitProjectBudgets(ctx context.Context, d Dependencies, key domain.APIKey,
 			return false, err
 		}
 		tokenBlocked := policy.TokenLimit != nil && usage.TotalTokens+estimatedTokens > *policy.TokenLimit
-		costBlocked := policy.CostLimit != nil && usage.Cost >= *policy.CostLimit
+		costBlocked := policy.CostLimit != nil && usage.Cost.Compare(*policy.CostLimit) >= 0
 		if !tokenBlocked && !costBlocked {
 			continue
 		}
@@ -119,19 +120,20 @@ func commitProjectBudget(ctx context.Context, d Dependencies, key domain.APIKey,
 
 func budgetLimitReached(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) bool {
 	return (policy.TokenLimit != nil && usage.TotalTokens >= *policy.TokenLimit) ||
-		(policy.CostLimit != nil && usage.Cost >= *policy.CostLimit)
+		(policy.CostLimit != nil && usage.Cost.Compare(*policy.CostLimit) >= 0)
 }
 
 func budgetThresholdReached(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) bool {
 	threshold := policy.AlertThreshold
-	if threshold < 0 {
-		threshold = 0
+	if threshold.IsNegative() {
+		threshold = domain.Decimal("0")
 	}
-	if threshold > 1 {
-		threshold = 1
+	if threshold.Compare(domain.Decimal("1")) > 0 {
+		threshold = domain.Decimal("1")
 	}
-	return (policy.TokenLimit != nil && float64(usage.TotalTokens) >= float64(*policy.TokenLimit)*threshold) ||
-		(policy.CostLimit != nil && usage.Cost >= *policy.CostLimit*threshold)
+	return (policy.TokenLimit != nil && domain.Decimal(strconv.FormatInt(usage.TotalTokens, 10)).Compare(
+		domain.Decimal(strconv.FormatInt(*policy.TokenLimit, 10)).Multiply(threshold)) >= 0) ||
+		(policy.CostLimit != nil && usage.Cost.Compare(policy.CostLimit.Multiply(threshold)) >= 0)
 }
 
 func budgetMetadata(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) map[string]any {

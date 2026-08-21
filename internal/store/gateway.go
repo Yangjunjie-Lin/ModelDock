@@ -13,18 +13,20 @@ import (
 )
 
 // #nosec G101 -- SQL projection names API-key columns but contains no credential value.
-const apiKeyColumns = `id,user_id,name,environment,key_prefix,key_hash,status,expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,allowed_models,created_at,updated_at,last_used_at`
+const apiKeyColumns = `id,user_id,name,environment,key_prefix,key_hash,status,expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,COALESCE(monthly_cost_limit_exact,monthly_cost_limit)::text,allowed_models,created_at,updated_at,last_used_at`
 
 func scanAPIKey(row pgx.Row) (domain.APIKey, error) {
 	var k domain.APIKey
 	var allowed []byte
-	err := row.Scan(&k.ID, &k.UserID, &k.Name, &k.Environment, &k.KeyPrefix, &k.KeyHash, &k.Status, &k.ExpiresAt, &k.RateLimitRPM, &k.RateLimitTPM, &k.MonthlyTokenLimit, &k.MonthlyCostLimit, &allowed, &k.CreatedAt, &k.UpdatedAt, &k.LastUsedAt)
+	var monthlyCostLimit *string
+	err := row.Scan(&k.ID, &k.UserID, &k.Name, &k.Environment, &k.KeyPrefix, &k.KeyHash, &k.Status, &k.ExpiresAt, &k.RateLimitRPM, &k.RateLimitTPM, &k.MonthlyTokenLimit, &monthlyCostLimit, &allowed, &k.CreatedAt, &k.UpdatedAt, &k.LastUsedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return k, ErrNotFound
 	}
 	if err != nil {
 		return k, err
 	}
+	k.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
 	_ = json.Unmarshal(allowed, &k.AllowedModels)
 	if k.AllowedModels == nil {
 		k.AllowedModels = []string{}
@@ -33,7 +35,7 @@ func scanAPIKey(row pgx.Row) (domain.APIKey, error) {
 }
 func (s *Store) CreateAPIKey(ctx context.Context, k domain.APIKey) (domain.APIKey, error) {
 	k.ID = id.UUID()
-	_, err := s.pool.Exec(ctx, `INSERT INTO api_keys(id,user_id,name,environment,key_prefix,key_hash,status,expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,allowed_models) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,$10,$11,$12)`, k.ID, k.UserID, k.Name, k.Environment, k.KeyPrefix, k.KeyHash, k.ExpiresAt, k.RateLimitRPM, k.RateLimitTPM, k.MonthlyTokenLimit, k.MonthlyCostLimit, jsonBytes(k.AllowedModels))
+	_, err := s.pool.Exec(ctx, `INSERT INTO api_keys(id,user_id,name,environment,key_prefix,key_hash,status,expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,monthly_cost_limit_exact,allowed_models) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,$10,round($11::numeric,8),$11,$12)`, k.ID, k.UserID, k.Name, k.Environment, k.KeyPrefix, k.KeyHash, k.ExpiresAt, k.RateLimitRPM, k.RateLimitTPM, k.MonthlyTokenLimit, decimalPointer(k.MonthlyCostLimit), jsonBytes(k.AllowedModels))
 	if err != nil {
 		return k, err
 	}
@@ -76,16 +78,16 @@ func (s *Store) MonthlyTokens(ctx context.Context, keyID string) (int64, error) 
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0) FROM usage_daily WHERE api_key_id=$1 AND date>=date_trunc('month',current_date)::date`, keyID).Scan(&n)
 	return n, err
 }
-func (s *Store) MonthlyCost(ctx context.Context, keyID string) (float64, error) {
-	var n float64
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(cost),0)::float8 FROM usage_daily WHERE api_key_id=$1 AND date>=date_trunc('month',current_date)::date`, keyID).Scan(&n)
-	return n, err
+func (s *Store) MonthlyCost(ctx context.Context, keyID string) (domain.Decimal, error) {
+	var value string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE api_key_id=$1 AND date>=date_trunc('month',current_date)::date`, keyID).Scan(&value)
+	return domain.Decimal(value), err
 }
-func (s *Store) MonthlyUserUsage(ctx context.Context, userID string) (int64, float64, error) {
+func (s *Store) MonthlyUserUsage(ctx context.Context, userID string) (int64, domain.Decimal, error) {
 	var tokens int64
-	var cost float64
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost),0)::float8 FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&tokens, &cost)
-	return tokens, cost, err
+	var cost string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&tokens, &cost)
+	return tokens, domain.Decimal(cost), err
 }
 func (s *Store) RevokeAPIKey(ctx context.Context, keyID, userID string, admin bool) error {
 	tx, err := s.pool.Begin(ctx)
@@ -152,11 +154,11 @@ func (s *Store) UpdateAPIKeyStatus(ctx context.Context, keyID, status string) er
 }
 
 func (s *Store) InsertRequestLog(ctx context.Context, l domain.RequestLog) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO request_logs(id,request_id,user_id,api_key_id,provider_id,credential_id,requested_model,resolved_model,endpoint,status_code,streaming,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost,reference_cost,savings_amount,latency_ms,ttft_ms,upstream_request_id,error_code,scheduler_reason,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,COALESCE($24,now()))`, id.UUID(), l.RequestID, nullString(l.UserID), nullString(l.APIKeyID), nullString(l.ProviderID), nullString(l.CredentialID), l.RequestedModel, l.ResolvedModel, l.Endpoint, l.StatusCode, l.Streaming, l.InputTokens, l.CachedInputTokens, l.OutputTokens, l.TotalTokens, l.EstimatedCost, l.ReferenceCost, l.SavingsAmount, l.LatencyMS, l.TTFTMS, nullString(l.UpstreamRequestID), nullString(l.ErrorCode), jsonBytes(l.SchedulerReason), nullableTime(l.CreatedAt))
+	_, err := s.pool.Exec(ctx, `INSERT INTO request_logs(id,request_id,user_id,api_key_id,provider_id,credential_id,requested_model,resolved_model,endpoint,status_code,streaming,input_tokens,cached_input_tokens,output_tokens,total_tokens,estimated_cost,reference_cost,savings_amount,estimated_cost_exact,reference_cost_exact,savings_amount_exact,latency_ms,ttft_ms,upstream_request_id,error_code,scheduler_reason,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,round($16::numeric,8),round($17::numeric,8),round($18::numeric,8),$16,$17,$18,$19,$20,$21,$22,$23,COALESCE($24,now()))`, id.UUID(), l.RequestID, nullString(l.UserID), nullString(l.APIKeyID), nullString(l.ProviderID), nullString(l.CredentialID), l.RequestedModel, l.ResolvedModel, l.Endpoint, l.StatusCode, l.Streaming, l.InputTokens, l.CachedInputTokens, l.OutputTokens, l.TotalTokens, l.EstimatedCost.String(), l.ReferenceCost.String(), l.SavingsAmount.String(), l.LatencyMS, l.TTFTMS, nullString(l.UpstreamRequestID), nullString(l.ErrorCode), jsonBytes(l.SchedulerReason), nullableTime(l.CreatedAt))
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO usage_daily(date,user_id,api_key_id,model,requests,input_tokens,cached_input_tokens,output_tokens,cost,errors) VALUES(current_date,$1,$2,$3,1,$4,$5,$6,$7,$8) ON CONFLICT(date,user_id,api_key_id,model) DO UPDATE SET requests=usage_daily.requests+1,input_tokens=usage_daily.input_tokens+EXCLUDED.input_tokens,cached_input_tokens=usage_daily.cached_input_tokens+EXCLUDED.cached_input_tokens,output_tokens=usage_daily.output_tokens+EXCLUDED.output_tokens,cost=usage_daily.cost+EXCLUDED.cost,errors=usage_daily.errors+EXCLUDED.errors`, l.UserID, l.APIKeyID, l.ResolvedModel, l.InputTokens, l.CachedInputTokens, l.OutputTokens, l.EstimatedCost, boolInt(l.StatusCode >= 400))
+	_, err = s.pool.Exec(ctx, `INSERT INTO usage_daily(date,user_id,api_key_id,model,requests,input_tokens,cached_input_tokens,output_tokens,cost,cost_exact,errors) VALUES(current_date,$1,$2,$3,1,$4,$5,$6,round($7::numeric,8),$7,$8) ON CONFLICT(date,user_id,api_key_id,model) DO UPDATE SET requests=usage_daily.requests+1,input_tokens=usage_daily.input_tokens+EXCLUDED.input_tokens,cached_input_tokens=usage_daily.cached_input_tokens+EXCLUDED.cached_input_tokens,output_tokens=usage_daily.output_tokens+EXCLUDED.output_tokens,cost=round(usage_daily.cost+EXCLUDED.cost,8),cost_exact=usage_daily.cost_exact+EXCLUDED.cost_exact,errors=usage_daily.errors+EXCLUDED.errors`, l.UserID, l.APIKeyID, l.ResolvedModel, l.InputTokens, l.CachedInputTokens, l.OutputTokens, l.EstimatedCost.String(), boolInt(l.StatusCode >= 400))
 	return err
 }
 
@@ -164,7 +166,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offs
 	q := `SELECT request_id,COALESCE(trace_id,''),COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),organization_id::text,project_id::text,
 		COALESCE(route_id::text,''),COALESCE(provider_id::text,''),COALESCE(credential_id::text,''),
 		COALESCE(requested_model,''),COALESCE(resolved_model,''),endpoint,status_code,streaming,input_tokens,
-		cached_input_tokens,output_tokens,total_tokens,estimated_cost::float8,reference_cost::float8,savings_amount::float8,latency_ms,ttft_ms,
+		cached_input_tokens,output_tokens,total_tokens,estimated_cost_exact::text,reference_cost_exact::text,savings_amount_exact::text,latency_ms,ttft_ms,
 		COALESCE(upstream_request_id,''),COALESCE(error_code,''),scheduler_reason,created_at FROM request_logs`
 	args := []any{}
 	if userID != nil {
@@ -183,12 +185,14 @@ func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offs
 	for rows.Next() {
 		var l domain.RequestLog
 		var reason []byte
+		var estimatedCost, referenceCost, savingsAmount string
 		if err := rows.Scan(&l.RequestID, &l.TraceID, &l.UserID, &l.APIKeyID, &l.OrganizationID, &l.ProjectID, &l.RouteID,
 			&l.ProviderID, &l.CredentialID, &l.RequestedModel, &l.ResolvedModel, &l.Endpoint, &l.StatusCode,
 			&l.Streaming, &l.InputTokens, &l.CachedInputTokens, &l.OutputTokens, &l.TotalTokens,
-			&l.EstimatedCost, &l.ReferenceCost, &l.SavingsAmount, &l.LatencyMS, &l.TTFTMS, &l.UpstreamRequestID, &l.ErrorCode, &reason, &l.CreatedAt); err != nil {
+			&estimatedCost, &referenceCost, &savingsAmount, &l.LatencyMS, &l.TTFTMS, &l.UpstreamRequestID, &l.ErrorCode, &reason, &l.CreatedAt); err != nil {
 			return nil, err
 		}
+		l.EstimatedCost, l.ReferenceCost, l.SavingsAmount = domain.Decimal(estimatedCost), domain.Decimal(referenceCost), domain.Decimal(savingsAmount)
 		_ = json.Unmarshal(reason, &l.SchedulerReason)
 		out = append(out, l)
 	}
@@ -203,8 +207,9 @@ func (s *Store) Dashboard(ctx context.Context, userID *string) (map[string]any, 
 		args = append(args, *userID)
 	}
 	var requests, input, cached, output, errorsCount int64
-	var cost, avgLatency, p95Latency float64
-	err := s.pool.QueryRow(ctx, `SELECT count(*),COALESCE(sum(input_tokens),0),COALESCE(sum(cached_input_tokens),0),COALESCE(sum(output_tokens),0),COALESCE(sum(estimated_cost),0)::float8,COALESCE(sum(CASE WHEN status_code>=400 THEN 1 ELSE 0 END),0),COALESCE(avg(latency_ms),0)::float8,COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),0)::float8 FROM request_logs`+where, args...).Scan(&requests, &input, &cached, &output, &cost, &errorsCount, &avgLatency, &p95Latency)
+	var cost string
+	var avgLatency, p95Latency float64
+	err := s.pool.QueryRow(ctx, `SELECT count(*),COALESCE(sum(input_tokens),0),COALESCE(sum(cached_input_tokens),0),COALESCE(sum(output_tokens),0),COALESCE(sum(estimated_cost_exact),0)::text,COALESCE(sum(CASE WHEN status_code>=400 THEN 1 ELSE 0 END),0),COALESCE(avg(latency_ms),0)::float8,COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),0)::float8 FROM request_logs`+where, args...).Scan(&requests, &input, &cached, &output, &cost, &errorsCount, &avgLatency, &p95Latency)
 	if err != nil {
 		return nil, err
 	}
@@ -243,9 +248,9 @@ func (s *Store) Dashboard(ctx context.Context, userID *string) (map[string]any, 
 		}
 	}
 	var todayTokens int64
-	var todayCost, savings float64
-	todayQuery := `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(estimated_cost),0)::float8,
-		COALESCE(sum(savings_amount),0)::float8 FROM request_logs WHERE created_at>=date_trunc('day',now())`
+	var todayCost, savings string
+	todayQuery := `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(estimated_cost_exact),0)::text,
+		COALESCE(sum(savings_amount_exact),0)::text FROM request_logs WHERE created_at>=date_trunc('day',now())`
 	todayArgs := []any{}
 	if userID != nil {
 		todayQuery += ` AND user_id=$1`
@@ -255,9 +260,9 @@ func (s *Store) Dashboard(ctx context.Context, userID *string) (map[string]any, 
 		return nil, err
 	}
 	return map[string]any{"total_requests": requests, "requests_today": today, "today_tokens": todayTokens,
-		"today_cost": todayCost, "savings_amount": savings, "input_tokens": input, "total_input_tokens": input,
+		"today_cost": domain.Decimal(todayCost), "savings_amount": domain.Decimal(savings), "input_tokens": input, "total_input_tokens": input,
 		"cached_input_tokens": cached, "total_cached_tokens": cached, "output_tokens": output, "total_output_tokens": output,
-		"estimated_cost": cost, "errors": errorsCount, "success_rate": success, "average_latency_ms": avgLatency,
+		"estimated_cost": domain.Decimal(cost), "errors": errorsCount, "success_rate": success, "average_latency_ms": avgLatency,
 		"p95_latency_ms": p95Latency, "active_credentials": active, "healthy_credentials": healthy,
 		"rate_limited_credentials": rateLimited, "request_trend": requestTrend, "token_trend": tokenTrend,
 		"model_distribution": modelDistribution, "status_code_distribution": statusDistribution, "alerts": alerts}, nil
@@ -347,7 +352,7 @@ func (s *Store) UsageSeries(ctx context.Context, userID *string, days int) ([]ma
 	if days <= 0 || days > 365 {
 		days = 30
 	}
-	q := `SELECT date::text,sum(requests),sum(input_tokens),sum(cached_input_tokens),sum(output_tokens),sum(cost)::float8,sum(errors) FROM usage_daily WHERE date>=current_date-$1::int`
+	q := `SELECT date::text,sum(requests),sum(input_tokens),sum(cached_input_tokens),sum(output_tokens),sum(cost_exact)::text,sum(errors) FROM usage_daily WHERE date>=current_date-$1::int`
 	args := []any{days}
 	if userID != nil {
 		q += ` AND user_id=$2`
@@ -363,11 +368,11 @@ func (s *Store) UsageSeries(ctx context.Context, userID *string, days int) ([]ma
 	for rows.Next() {
 		var date string
 		var req, in, cached, outTok, errs int64
-		var cost float64
+		var cost string
 		if err := rows.Scan(&date, &req, &in, &cached, &outTok, &cost, &errs); err != nil {
 			return nil, err
 		}
-		out = append(out, map[string]any{"date": date, "requests": req, "input_tokens": in, "cached_input_tokens": cached, "output_tokens": outTok, "cost": cost, "errors": errs})
+		out = append(out, map[string]any{"date": date, "requests": req, "input_tokens": in, "cached_input_tokens": cached, "output_tokens": outTok, "cost": domain.Decimal(cost), "errors": errs})
 	}
 	return out, rows.Err()
 }
@@ -378,16 +383,16 @@ func (s *Store) UsageSummary(ctx context.Context, userID string, days int) (map[
 		return nil, err
 	}
 	var requests, input, cached, output, errs int64
-	var cost float64
+	cost := domain.Decimal("0")
 	for _, row := range daily {
 		requests += asInt64(row["requests"])
 		input += asInt64(row["input_tokens"])
 		cached += asInt64(row["cached_input_tokens"])
 		output += asInt64(row["output_tokens"])
 		errs += asInt64(row["errors"])
-		cost += asFloat(row["cost"])
+		cost = cost.Add(asDecimal(row["cost"]))
 	}
-	rows, err := s.pool.Query(ctx, `SELECT model,sum(requests),sum(input_tokens+output_tokens),sum(cost)::float8 FROM usage_daily WHERE user_id=$1 AND date>=current_date-$2::int GROUP BY model ORDER BY sum(requests) DESC`, userID, days)
+	rows, err := s.pool.Query(ctx, `SELECT model,sum(requests),sum(input_tokens+output_tokens),sum(cost_exact)::text FROM usage_daily WHERE user_id=$1 AND date>=current_date-$2::int GROUP BY model ORDER BY sum(requests) DESC`, userID, days)
 	if err != nil {
 		return nil, err
 	}
@@ -396,25 +401,25 @@ func (s *Store) UsageSummary(ctx context.Context, userID string, days int) (map[
 	for rows.Next() {
 		var model string
 		var req, tokens int64
-		var modelCost float64
+		var modelCost string
 		if err := rows.Scan(&model, &req, &tokens, &modelCost); err != nil {
 			return nil, err
 		}
-		byModel = append(byModel, map[string]any{"model": model, "requests": req, "tokens": tokens, "cost": modelCost})
+		byModel = append(byModel, map[string]any{"model": model, "requests": req, "tokens": tokens, "cost": domain.Decimal(modelCost)})
 	}
 	return map[string]any{"requests": requests, "input_tokens": input, "cached_input_tokens": cached, "output_tokens": output, "estimated_cost": cost, "errors": errs, "daily": daily, "by_model": byModel}, rows.Err()
 }
 
 func (s *Store) ConsoleOverview(ctx context.Context, userID string) (map[string]any, error) {
 	var requests, tokens, errorsToday int64
-	var cost float64
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(requests),0),COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost),0)::float8,COALESCE(sum(errors),0) FROM usage_daily WHERE user_id=$1 AND date=current_date`, userID).Scan(&requests, &tokens, &cost, &errorsToday)
+	var cost string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(requests),0),COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost_exact),0)::text,COALESCE(sum(errors),0) FROM usage_daily WHERE user_id=$1 AND date=current_date`, userID).Scan(&requests, &tokens, &cost, &errorsToday)
 	if err != nil {
 		return nil, err
 	}
 	var monthlyTokens int64
-	var monthlyCost float64
-	_ = s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost),0)::float8 FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&monthlyTokens, &monthlyCost)
+	var monthlyCost string
+	_ = s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&monthlyTokens, &monthlyCost)
 	var activeKeys, models int64
 	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE user_id=$1 AND status='ACTIVE' AND (expires_at IS NULL OR expires_at>now())`, userID).Scan(&activeKeys)
 	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM model_routes WHERE enabled=true`).Scan(&models)
@@ -438,7 +443,7 @@ func (s *Store) ConsoleOverview(ctx context.Context, userID string) (map[string]
 	if requests > 0 {
 		errorRate = float64(errorsToday) * 100 / float64(requests)
 	}
-	return map[string]any{"requests_today": requests, "tokens_today": tokens, "estimated_cost_today": cost, "error_rate": errorRate, "monthly_tokens_used": monthlyTokens, "monthly_cost_used": monthlyCost, "monthly_token_limit": u.MonthlyTokenLimit, "monthly_cost_limit": u.MonthlyCostLimit, "active_api_keys": activeKeys, "available_models": models, "recent_requests": recent, "request_trend": trend}, nil
+	return map[string]any{"requests_today": requests, "tokens_today": tokens, "estimated_cost_today": domain.Decimal(cost), "error_rate": errorRate, "monthly_tokens_used": monthlyTokens, "monthly_cost_used": domain.Decimal(monthlyCost), "monthly_token_limit": u.MonthlyTokenLimit, "monthly_cost_limit": u.MonthlyCostLimit, "active_api_keys": activeKeys, "available_models": models, "recent_requests": recent, "request_trend": trend}, nil
 }
 
 func asInt64(v any) int64 {
@@ -452,16 +457,23 @@ func asInt64(v any) int64 {
 	}
 	return 0
 }
-func asFloat(v any) float64 {
-	switch n := v.(type) {
-	case float64:
-		return n
-	case int64:
-		return float64(n)
-	case int:
-		return float64(n)
+func asDecimal(v any) domain.Decimal {
+	switch value := v.(type) {
+	case domain.Decimal:
+		return value
+	case string:
+		return domain.Decimal(value)
+	default:
+		return domain.Decimal("0")
 	}
-	return 0
+}
+
+func decimalFromStringPointer(value *string) *domain.Decimal {
+	if value == nil {
+		return nil
+	}
+	decimal := domain.Decimal(*value)
+	return &decimal
 }
 
 func (s *Store) Audit(ctx context.Context, actor, action, resourceType, resourceID, ip string, after any) {

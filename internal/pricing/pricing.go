@@ -64,6 +64,9 @@ func Calculate(cost, retail Rate, tokens Tokens, promotion, taxRate, exchangeRat
 	if cost.Unit <= 0 || retail.Unit <= 0 {
 		return Result{}, ErrInvalidUnit
 	}
+	if !strings.EqualFold(strings.TrimSpace(cost.Currency), strings.TrimSpace(retail.Currency)) && strings.TrimSpace(exchangeRate) == "" {
+		return Result{}, errors.New("an explicit exchange rate is required for different currencies")
+	}
 	if strings.TrimSpace(exchangeRate) == "" {
 		exchangeRate = "1"
 	}

@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_profile:
+        description: Fail-closed release profile
+        required: true
+        default: COMMERCIAL_BETA
+        type: choice
+        options:
+          - ENGINEERING_PREVIEW
+          - COMMERCIAL_BETA
+          - MARKETPLACE_PRODUCTION
 
 permissions:
   contents: read
@@ -26,6 +37,8 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.metadata.outputs.version }}
+      profile: ${{ steps.metadata.outputs.profile }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
       build_date: ${{ steps.metadata.outputs.build_date }}
       source_epoch: ${{ steps.metadata.outputs.source_epoch }}
       owner: ${{ steps.metadata.outputs.owner }}
@@ -34,11 +47,19 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Download exact-commit commercial test evidence
+        if: (github.event.inputs.release_profile || vars.MODELDOCK_RELEASE_PROFILE || 'COMMERCIAL_BETA') != 'ENGINEERING_PREVIEW'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: commercial-integration-${{ github.sha }}
+          path: .cache/commercial-evidence
+          merge-multiple: true
       - name: Validate tag ancestry, version, changelog, and licensing decision
         id: metadata
         shell: pwsh
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_PROFILE: ${{ github.event.inputs.release_profile || vars.MODELDOCK_RELEASE_PROFILE || 'COMMERCIAL_BETA' }}
         run: |
           if ((git cat-file -t $env:GITHUB_REF).Trim() -ne 'tag') {
             throw 'Formal releases require an annotated Git tag.'
@@ -46,15 +67,24 @@ jobs:
           git fetch origin $env:DEFAULT_BRANCH --quiet
           git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
           if ($LASTEXITCODE -ne 0) { throw 'Release commit is not on the default branch.' }
-          if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-            throw 'Release tag must exactly match vMAJOR.MINOR.PATCH.'
+          $semverTag = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          if ($env:GITHUB_REF_NAME -notmatch $semverTag) {
+            throw 'Release tag must exactly match v plus a Semantic Version 2.0 value.'
           }
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $buildTime = ([DateTimeOffset]::Parse((git show -s --format=%cI $env:GITHUB_SHA).Trim())).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           $sourceEpoch = (git show -s --format=%ct $env:GITHUB_SHA).Trim()
           $owner = $env:GITHUB_REPOSITORY_OWNER.ToLowerInvariant()
-          ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md -RequireApprovedLicense
+          if ($env:RELEASE_PROFILE -eq 'ENGINEERING_PREVIEW') {
+            ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md
+            ./scripts/verify-commercial-readiness.ps1 -Profile ENGINEERING_PREVIEW -Commit $env:GITHUB_SHA -ReportOutput .cache/commercial-readiness-report.md
+          } else {
+            ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md -RequireApprovedLicense
+            ./scripts/verify-commercial-readiness.ps1 -Profile $env:RELEASE_PROFILE -Commit $env:GITHUB_SHA -TestReportPath .cache/commercial-evidence/commercial-test-evidence.json -ReportOutput .cache/commercial-readiness-report.md
+          }
           "version=$version" >> $env:GITHUB_OUTPUT
+          "profile=$env:RELEASE_PROFILE" >> $env:GITHUB_OUTPUT
+          "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "build_date=$buildTime" >> $env:GITHUB_OUTPUT
           "source_epoch=$sourceEpoch" >> $env:GITHUB_OUTPUT
           "owner=$owner" >> $env:GITHUB_OUTPUT
@@ -65,10 +95,38 @@ jobs:
           path: .cache/release-notes.md
           if-no-files-found: error
           retention-days: 7
+      - name: Upload commercial gate report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: commercial-readiness-${{ github.sha }}
+          path: .cache/commercial-readiness-report.md
+          if-no-files-found: error
+          retention-days: 30
+
+  engineering-preview:
+    name: Create non-production engineering preview artifact
+    needs: validate
+    if: needs.validate.outputs.profile == 'ENGINEERING_PREVIEW'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact tag source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Package source-only preview
+        run: git archive --format=tar.gz --output=modeldock-engineering-preview-${{ github.sha }}.tar.gz HEAD
+      - name: Upload explicitly non-production preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engineering-preview-NOT-FOR-PRODUCTION-${{ github.sha }}
+          path: modeldock-engineering-preview-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
 
   images:
     name: Build, attest, and scan ${{ matrix.component }}
     needs: validate
+    if: needs.validate.outputs.profile != 'ENGINEERING_PREVIEW'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -184,6 +242,7 @@ jobs:
   publish:
     name: Promote verified digests to formal tags
     needs: [validate, images]
+    if: needs.validate.outputs.profile != 'ENGINEERING_PREVIEW'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -269,6 +328,7 @@ jobs:
   release:
     name: Create formal GitHub Release
     needs: [validate, publish]
+    if: needs.validate.outputs.profile != 'ENGINEERING_PREVIEW'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -298,8 +358,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
-          gh release create "$GITHUB_REF_NAME" release-artifacts/*.spdx.json release-artifacts/release-image-digests.md \
-            --verify-tag \
-            --title "ModelDock $VERSION" \
-            --notes-file release-notes/release-notes.md
+          args=(release create "$GITHUB_REF_NAME" release-artifacts/*.spdx.json release-artifacts/release-image-digests.md --verify-tag --title "ModelDock $VERSION" --notes-file release-notes/release-notes.md)
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh "${args[@]}"

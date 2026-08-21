@@ -80,6 +80,9 @@ var supplierSettlementSchema string
 //go:embed 0023_marketplace_launch_acceptance.sql
 var marketplaceLaunchAcceptanceSchema string
 
+//go:embed 0024_exact_money_and_release_evidence.sql
+var exactMoneyAndReleaseEvidenceSchema string
+
 // All is ordered oldest to newest.  Never edit a released migration; append a
 // new entry instead so checksum validation can detect binary/schema drift.
 var All = []Migration{
@@ -106,4 +109,5 @@ var All = []Migration{
 	{Version: 21, Name: "provider_quality", SQL: providerQualitySchema},
 	{Version: 22, Name: "supplier_settlement", SQL: supplierSettlementSchema},
 	{Version: 23, Name: "marketplace_launch_acceptance", SQL: marketplaceLaunchAcceptanceSchema},
+	{Version: 24, Name: "exact_money_and_release_evidence", SQL: exactMoneyAndReleaseEvidenceSchema},
 }

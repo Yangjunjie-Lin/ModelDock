@@ -475,7 +475,7 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			openAIError(c, 503, "service_unavailable", "Quota state is temporarily unavailable.")
 			return
 		}
-		if used >= *key.MonthlyCostLimit {
+		if used.Compare(*key.MonthlyCostLimit) >= 0 {
 			logEntry.StatusCode = 403
 			logEntry.ErrorCode = "quota_exceeded"
 			d.Metrics.Error()
@@ -500,7 +500,7 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			openAIError(c, 503, "service_unavailable", "Quota state is temporarily unavailable.")
 			return
 		}
-		if (user.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *user.MonthlyTokenLimit) || (user.MonthlyCostLimit != nil && cost >= *user.MonthlyCostLimit) {
+		if (user.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *user.MonthlyTokenLimit) || (user.MonthlyCostLimit != nil && cost.Compare(*user.MonthlyCostLimit) >= 0) {
 			logEntry.StatusCode = 403
 			logEntry.ErrorCode = "quota_exceeded"
 			d.Metrics.Error()
@@ -527,7 +527,7 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 				return
 			}
 			if (team.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *team.MonthlyTokenLimit) ||
-				(team.MonthlyCostLimit != nil && cost >= *team.MonthlyCostLimit) {
+				(team.MonthlyCostLimit != nil && cost.Compare(*team.MonthlyCostLimit) >= 0) {
 				logEntry.StatusCode = http.StatusForbidden
 				logEntry.ErrorCode = "team_quota_exceeded"
 				d.Metrics.Error()
@@ -867,8 +867,8 @@ streamLoop:
 	if routingDecision.Strategy != "manual" {
 		if reference, err := d.Store.CalculateProjectReferenceCost(c.Request.Context(), key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
 			logEntry.ReferenceCost = reference
-			if reference > logEntry.EstimatedCost {
-				logEntry.SavingsAmount = reference - logEntry.EstimatedCost
+			if reference.Compare(logEntry.EstimatedCost) > 0 {
+				logEntry.SavingsAmount = reference.Subtract(logEntry.EstimatedCost)
 			}
 		}
 	}

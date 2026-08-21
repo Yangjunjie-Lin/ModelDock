@@ -2,6 +2,16 @@
 
 **中国开发者可用的 AI Model Gateway + Model Marketplace**
 
+<!-- commercial-status:start -->
+| Release profile | Machine decision |
+| --- | --- |
+| Engineering implementation | GO — ENGINEERING_PREVIEW |
+| Commercial operation | NO-GO |
+| Marketplace production | NO-GO |
+
+Last verified commit: `9ef82a669b704028f1919e094b0bd82a11dba866` · Latest migration: `0024` · Evidence date: `2026-08-21`
+<!-- commercial-status:end -->
+
 ModelDock is the commercial evolution of RelayDock: a self-hosted,
 OpenAI-compatible model gateway that lets applications reach global and Chinese
 model providers without changing SDK code. The existing `rdk_*` key format,
@@ -126,7 +136,7 @@ behavior.
 Prerequisites: Docker Engine/Desktop 24+ and Docker Compose v2.
 
 ```powershell
-Set-Location D:\RelayDock
+Set-Location D:\ModelDock
 Copy-Item .env.example .env
 .\deploy\scripts\prepare-data.ps1
 ```
@@ -183,10 +193,10 @@ reverse-proxy, backups, Linux permissions, upgrades, and production hardening.
 7. Sign in to the console and issue a project-scoped `rdk_live_...` or
    `rdk_test_...` key. Copy the secret from its one-time display.
 
-RelayDock stores only the downstream key prefix and HMAC digest. Losing the
+ModelDock stores only the downstream key prefix and HMAC digest. Losing the
 one-time value requires issuing a replacement key.
 
-## Call RelayDock
+## Call ModelDock
 
 Python with the official OpenAI SDK:
 
@@ -332,7 +342,7 @@ All secrets are injected through the environment. The main variables are:
 | `RELAYDOCK_PAYMENT_ALLOWED_REGIONS` | Explicit payment-adapter region allowlist |
 | `RELAYDOCK_PAYMENT_SANDBOX_ENABLED`, `RELAYDOCK_PAYMENT_SANDBOX_SECRET` | Test-only signed sandbox switch and environment-injected secret |
 | `RELAYDOCK_PAYMENT_MANUAL_ENABLED` | Administrator-reviewed manual-transfer switch |
-| `LOG_DIR` | Optional directory for append-only `relaydock.jsonl`; Compose uses `/app/logs` bound to `D:\RelayDock\logs` |
+| `LOG_DIR` | Optional directory for append-only `relaydock.jsonl`; Compose uses `/app/logs` bound to `D:\ModelDock\logs` |
 | `LOG_PROMPT_CONTENT` | Keep `false` unless a governed logging policy explicitly permits content |
 | `COCKPIT_SNAPSHOT_PATH` | Read-only path to the sanitized Cockpit account snapshot |
 | `COCKPIT_BASE_URL`, `COCKPIT_API_KEY` | Optional local sidecar endpoint and client key for the live fixed-response check |
@@ -383,7 +393,7 @@ configuration—never place a secret in a `VITE_*` variable.
 ## Repository layout
 
 ```text
-RelayDock/
+ModelDock/
 ├── cmd/relaydock/             single Go entry point
 ├── internal/                  domain, auth, crypto, routing, scheduler, provider, usage
 ├── migrations/                PostgreSQL schema
@@ -486,19 +496,27 @@ constraints, project-scoped versioned keys, budget policies/events, signed
 durable webhooks, project CSV export, and alert acknowledgement. Existing V1
 data is preserved in deterministic `Legacy` organization/project records.
 
+## Implemented but not production-approved
+
+Supplier onboarding, KYB state, endpoint verification, quality probes, canary
+controls, payables, settlement batches, disputes, and supplier exit are
+implemented and covered by synthetic tests. They remain commercially blocked
+until the machine-verifiable external evidence in
+`release/commercial-gates.yaml` is genuinely approved.
+
 ## V3 roadmap
 
 Potential future work, subject to the same authorization and compliance rules:
 
 - distributed budget reservations with post-response reconciliation;
 - payment processor and invoice integrations;
-- supplier onboarding, verification, SLA probes, and settlement;
+- contracted payment, payout, tax, and invoice adapters;
 - richer policy/region/data-residency-aware routing;
 - webhook replay observability, additional approved event types, and external
   alert integrations;
 - provider failover policies with replay-safety proofs;
-- high availability, horizontal scaling, external secret managers, and
-  Kubernetes deployment.
+- production-validated high availability, horizontal scaling, external secret
+  managers, and managed multi-zone deployment.
 
 Registration automation, CAPTCHA bypass, consumer session pooling, promotion
 abuse, and upstream-limit evasion are permanent exclusions, not roadmap items.
@@ -550,9 +568,8 @@ consumer session scraping, automated benefit acquisition, or policy evasion.
 No license file has been selected for this repository yet. Until a license is
 added by the project owner, do not assume permission to copy, redistribute, or
 create derivative works. Reference repositories retain their own licenses; no
-code from them is included in RelayDock.
+code from them is included in ModelDock.
 
 The owner decision and consequences of proprietary, Apache-2.0, AGPL, and dual
 licensing are tracked in [licensing-decision.md](docs/licensing-decision.md).
 Its unresolved status is an automated formal-release blocker.
-- verified recharge orders with replay-safe sandbox webhooks, administrator-reviewed manual transfers, recoverable atomic wallet credit, refunds, and reconciliation evidence

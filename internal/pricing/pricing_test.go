@@ -54,6 +54,17 @@ func TestCalculateUsesIndependentProviderAndRetailUnits(t *testing.T) {
 	}
 }
 
+func TestCalculateRequiresExplicitExchangeRateAcrossCurrencies(t *testing.T) {
+	cost := Rate{Input: "1", Cached: "0", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}
+	retail := Rate{Input: "7", Cached: "0", Output: "0", Fixed: "0", Unit: 1, Currency: "CNY"}
+	if _, err := Calculate(cost, retail, Tokens{Input: 1}, "0", "0", ""); err == nil {
+		t.Fatal("different currencies were combined without an explicit exchange rate")
+	}
+	if _, err := Calculate(cost, retail, Tokens{Input: 1}, "0", "0", "7"); err != nil {
+		t.Fatalf("explicit exchange rate rejected: %v", err)
+	}
+}
+
 func TestMinimumMarginRejectsNegativeMargin(t *testing.T) {
 	cost := Rate{Input: "1", Cached: "1", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}
 	retail := Rate{Input: "0.5", Cached: "0.5", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}

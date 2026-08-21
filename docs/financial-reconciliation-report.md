@@ -2,7 +2,7 @@
 
 **Overall release decision:** `NO-GO`  
 **Synthetic financial test result:** PASS with zero reconciliation differences  
-**Run date:** 2026-08-17 (Asia/Shanghai)
+**Revalidation date:** 2026-08-21 (Asia/Shanghai)
 
 This report records exact results from a disposable database, signed sandbox
 payments, and a deterministic local Provider. It demonstrates implementation
@@ -11,14 +11,19 @@ statement.
 
 ## Scope and representations
 
-The commercial path stores currency amounts as PostgreSQL `NUMERIC` and returns
-fixed-scale decimal strings. Funding, payment, price snapshot, promotion,
-refund, wallet, journal, Provider statement, and reconciliation operations use
-idempotency keys, transactions, terminal-state checks, and audit evidence.
+Migration 0024 extends exact PostgreSQL `NUMERIC(30,12)` representations to the
+legacy budget, model price, request cost, savings, and usage aggregate paths.
+The application uses decimal strings/rational arithmetic for monetary values;
+JSON and CSV preserve decimal text. Funding, payment, price snapshot,
+promotion, refund, wallet, journal, Provider statement, supplier payable, and
+reconciliation operations use idempotency keys, transactions, terminal-state
+checks, and audit evidence.
 
-Release is nevertheless blocked because older budget, usage aggregate, catalog,
-and model-cost paths still use Go `float64` and PostgreSQL `::float8`. A zero
-difference in this synthetic commercial run does not waive the no-float rule.
+Populated V1, V12, V21, and V22 fixtures upgraded through Migration 24. Exact
+12-place writes and legacy-only compatibility writes passed, and
+`exact_money_migration_differences` reported zero differences. The static
+exact-money scanner found no monetary floating-point path; retained floats are
+explicitly allowlisted non-monetary telemetry/routing values.
 
 ## Recharge and webhook replay
 
@@ -110,21 +115,26 @@ write transactions to avoid a busy PostgreSQL connection.
 - Payment, pricing, subscription, and financial-close integration suites passed
   replay, lifecycle, concurrent-version, margin, recovery, and traceability
   assertions.
+- Supplier and Marketplace suites passed platform-measured payable accrual,
+  commission/reserve, refund allocation, bill/dispute reconciliation, stable
+  payout retry, suspension/cutover/exit, and historical-evidence retention.
 
 ## Release blockers and required financial revalidation
 
 The following prevent commercial release despite the passing synthetic close:
 
-1. replace all remaining money/quota/catalog `float64` and `::float8` paths with
-   exact representations through a separately reviewed compatibility migration;
-2. reconcile an approved payment partner's sandbox settlement/export, fees,
+1. commit and review Migration 0024 and reproduce all exact-money and financial
+   suites on the exact clean release commit and immutable image digests;
+2. reconcile an approved payment partner's production settlement/export, fees,
    refunds, and replay behavior;
 3. reconcile an approved real Provider billing export under its signed contract;
 4. approve tax, invoice, promotion, refund, chargeback, FX, rounding, and minor
    unit policies for each currency/region;
 5. exercise production worker restart, managed database failover, object backup,
    and PITR with finance evidence retained; and
-6. rerun the full suite on the exact immutable release artifacts.
+6. for Marketplace production, reconcile a real approved supplier bill, tax,
+   reserve, dispute/refund allocation, and bank/payout statement; and
+7. rerun the full suite on the exact immutable release artifacts.
 
 Any non-zero unexplained difference is an automatic release blocker and must
 not be converted to a manual success status.

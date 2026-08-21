@@ -61,8 +61,8 @@ export type BudgetPolicy = {
   name: string
   period: string
   token_limit?: number
-  cost_limit?: number
-  alert_threshold: number
+  cost_limit?: string
+  alert_threshold: string
   enforce_hard_limit: boolean
   status: string
   created_at?: string
@@ -77,7 +77,7 @@ export type BudgetUsage = {
   cached_input_tokens?: number
   output_tokens?: number
   total_tokens?: number
-  cost?: number
+  cost?: string
   errors?: number
 }
 
@@ -85,7 +85,7 @@ export type BudgetEvent = {
   id: string
   event_type: string
   tokens?: number
-  cost?: number
+  cost?: string
   request_id?: string
   created_at?: string
 }

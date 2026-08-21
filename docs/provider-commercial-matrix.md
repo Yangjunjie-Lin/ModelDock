@@ -2,7 +2,7 @@
 
 **Decision:** no standard Provider is approved for commercial production
 routing.  
-**Evidence date:** 2026-08-17 (current local upgraded database, read-only query)
+**Evidence date:** 2026-08-21 (Migration-24 revalidation; no production approval evidence)
 
 The routing implementation is fail-closed: a technical `enabled=true` value is
 insufficient. New attempts require `COMMERCIAL_APPROVED`, resale `APPROVED`, a

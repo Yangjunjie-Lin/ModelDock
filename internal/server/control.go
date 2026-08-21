@@ -574,7 +574,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		}
 		model.Enabled = true
 		out, err := d.Store.CreateModel(c.Request.Context(), model)
-		if err == nil && (model.InputPrice > 0 || model.OutputPrice > 0) {
+		if err == nil && (model.InputPrice.IsPositive() || model.OutputPrice.IsPositive()) {
 			_, err = d.Store.CreateModelPrice(c.Request.Context(), domain.ModelPrice{ModelID: out.ID, InputPrice: model.InputPrice,
 				OutputPrice: model.OutputPrice, Currency: firstNonEmpty(model.PriceCurrency, "USD"), Source: "manual"})
 			if err == nil {
@@ -831,7 +831,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 	g.POST("/pricing/quote", func(c *gin.Context) { pricingQuoteHandler(c, d) })
 	g.POST("/models/:id/prices", func(c *gin.Context) {
 		var v domain.ModelPrice
-		if c.ShouldBindJSON(&v) != nil || v.InputPrice < 0 || v.CachedInputPrice < 0 || v.OutputPrice < 0 {
+		if c.ShouldBindJSON(&v) != nil || v.InputPrice.IsNegative() || v.CachedInputPrice.IsNegative() || v.OutputPrice.IsNegative() {
 			openAIError(c, 400, "invalid_request", "Non-negative input, cached input, and output prices are required.")
 			return
 		}
@@ -1716,18 +1716,18 @@ func syncModels(c *gin.Context, d Dependencies) {
 
 func createAPIKey(c *gin.Context, d Dependencies, admin bool) {
 	var in struct {
-		UserID            string   `json:"user_id"`
-		OrganizationID    string   `json:"organization_id"`
-		ProjectID         string   `json:"project_id"`
-		TeamID            string   `json:"team_id"`
-		Name              string   `json:"name"`
-		Environment       string   `json:"environment"`
-		ExpiresAt         string   `json:"expires_at"`
-		RateLimitRPM      int      `json:"rate_limit_rpm"`
-		RateLimitTPM      int      `json:"rate_limit_tpm"`
-		MonthlyTokenLimit *int64   `json:"monthly_token_limit"`
-		MonthlyCostLimit  *float64 `json:"monthly_cost_limit"`
-		AllowedModels     []string `json:"allowed_models"`
+		UserID            string          `json:"user_id"`
+		OrganizationID    string          `json:"organization_id"`
+		ProjectID         string          `json:"project_id"`
+		TeamID            string          `json:"team_id"`
+		Name              string          `json:"name"`
+		Environment       string          `json:"environment"`
+		ExpiresAt         string          `json:"expires_at"`
+		RateLimitRPM      int             `json:"rate_limit_rpm"`
+		RateLimitTPM      int             `json:"rate_limit_tpm"`
+		MonthlyTokenLimit *int64          `json:"monthly_token_limit"`
+		MonthlyCostLimit  *domain.Decimal `json:"monthly_cost_limit"`
+		AllowedModels     []string        `json:"allowed_models"`
 	}
 	if c.ShouldBindJSON(&in) != nil || in.Name == "" {
 		openAIError(c, 400, "invalid_request", "name is required.")

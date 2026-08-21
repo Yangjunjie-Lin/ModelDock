@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
-  title: RelayDock API
-  version: 2.0.0
+  title: ModelDock API
+  version: 3.0.0-beta.1
   summary: Authorized-credential AI gateway and control plane
   description: |
     RelayDock exposes an OpenAI-compatible data plane and a separate control
@@ -5945,7 +5945,9 @@ components:
           type: [integer, 'null']
           format: int64
         monthly_cost_limit:
-          type: [number, 'null']
+          oneOf:
+            - $ref: '#/components/schemas/ExactDecimal'
+            - type: 'null'
         created_at:
           type: string
           format: date-time
@@ -6597,14 +6599,11 @@ components:
           type: string
           format: date-time
         input_price:
-          type: number
-          minimum: 0
+          $ref: '#/components/schemas/ExactDecimal'
         cached_input_price:
-          type: number
-          minimum: 0
+          $ref: '#/components/schemas/ExactDecimal'
         output_price:
-          type: number
-          minimum: 0
+          $ref: '#/components/schemas/ExactDecimal'
         currency:
           type: string
           default: USD
@@ -6628,17 +6627,14 @@ components:
           type: string
           format: date-time
         input_price:
-          type: number
-          minimum: 0
-          default: 0
+          allOf: [{ $ref: '#/components/schemas/ExactDecimal' }]
+          default: '0'
         cached_input_price:
-          type: number
-          minimum: 0
-          default: 0
+          allOf: [{ $ref: '#/components/schemas/ExactDecimal' }]
+          default: '0'
         output_price:
-          type: number
-          minimum: 0
-          default: 0
+          allOf: [{ $ref: '#/components/schemas/ExactDecimal' }]
+          default: '0'
         currency:
           type: string
           default: USD
@@ -6818,7 +6814,9 @@ components:
           type: [integer, 'null']
           format: int64
         monthly_cost_limit:
-          type: [number, 'null']
+          oneOf:
+            - $ref: '#/components/schemas/ExactDecimal'
+            - type: 'null'
         allowed_models:
           type: array
           items:
@@ -6865,7 +6863,9 @@ components:
           type: [integer, 'null']
           format: int64
         monthly_cost_limit:
-          type: [number, 'null']
+          oneOf:
+            - $ref: '#/components/schemas/ExactDecimal'
+            - type: 'null'
         allowed_models:
           type: array
           items:
@@ -6913,7 +6913,7 @@ components:
           type: integer
           format: int64
         estimated_cost:
-          type: number
+          $ref: '#/components/schemas/ExactDecimal'
         errors:
           type: integer
           format: int64
@@ -7079,7 +7079,7 @@ components:
           type: integer
           format: int64
         estimated_cost:
-          type: number
+          $ref: '#/components/schemas/ExactDecimal'
         errors:
           type: integer
           format: int64
@@ -7191,7 +7191,7 @@ components:
           type: integer
           format: int64
         estimated_cost:
-          type: number
+          $ref: '#/components/schemas/ExactDecimal'
         latency_ms:
           type: integer
           format: int64
@@ -7539,12 +7539,11 @@ components:
           format: int64
           minimum: 0
         cost_limit:
-          type: [number, 'null']
-          minimum: 0
+          oneOf:
+            - $ref: '#/components/schemas/ExactDecimal'
+            - type: 'null'
         alert_threshold:
-          type: number
-          minimum: 0
-          maximum: 1
+          $ref: '#/components/schemas/ExactDecimal'
         enforce_hard_limit:
           type: boolean
         status:
@@ -7572,13 +7571,12 @@ components:
           format: int64
           minimum: 0
         cost_limit:
-          type: [number, 'null']
-          minimum: 0
+          oneOf:
+            - $ref: '#/components/schemas/ExactDecimal'
+            - type: 'null'
         alert_threshold:
-          type: number
-          minimum: 0
-          maximum: 1
-          default: 0.8
+          allOf: [{ $ref: '#/components/schemas/ExactDecimal' }]
+          default: '0.8'
         enforce_hard_limit:
           type: boolean
           default: false
@@ -7596,8 +7594,7 @@ components:
         - required: [cost_limit]
           properties:
             cost_limit:
-              type: number
-              minimum: 0
+              $ref: '#/components/schemas/ExactDecimal'
     ProjectBudgetPolicyList:
       type: object
       required: [data]

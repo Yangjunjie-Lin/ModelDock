@@ -6,6 +6,23 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0-beta.1] - 2026-08-21
+
+### Changed
+
+- Migrated legacy budgets, catalog prices, usage estimates, reports, API
+  responses, and CSV exports to exact `NUMERIC(30,12)`-compatible decimals.
+- Added fail-closed commercial and marketplace evidence gates, exact-commit
+  test binding, full SemVer prerelease validation, and mandatory commercial CI.
+- Revalidated migrations 20–24 and separated engineering readiness from legal,
+  payment, Provider, supplier, and production-operation approval.
+
+### Security
+
+- Prevented sandbox payment or payout adapters, expired or future-dated
+  approvals, stale test reports, and approvals for another commit from
+  satisfying a commercial gate.
+
 ## [2.0.0] - 2026-08-10
 
 ### Added
@@ -30,5 +47,6 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Upgraded the pinned Go toolchain and reachable Go dependencies to remove the
   HIGH/CRITICAL findings detected by govulncheck and final-image scanning.
 
-[Unreleased]: https://github.com/Yangjunjie-Lin/RelayDock/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/Yangjunjie-Lin/RelayDock/releases/tag/v2.0.0
+[Unreleased]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.1...HEAD
+[3.0.0-beta.1]: https://github.com/Yangjunjie-Lin/ModelDock/releases/tag/v3.0.0-beta.1
+[2.0.0]: https://github.com/Yangjunjie-Lin/ModelDock/releases/tag/v2.0.0

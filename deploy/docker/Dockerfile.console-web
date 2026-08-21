@@ -9,10 +9,10 @@ ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build && find dist -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
 
 FROM nginx:1.30.4-alpine3.24@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
-ARG VERSION=2.0.0
+ARG VERSION=3.0.0-beta.1
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
-ARG REPOSITORY_URL=https://github.com/Yangjunjie-Lin/RelayDock
+ARG REPOSITORY_URL=https://github.com/Yangjunjie-Lin/ModelDock
 LABEL org.opencontainers.image.title="ModelDock Console Web" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \

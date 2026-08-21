@@ -2,7 +2,8 @@
 param(
     [switch]$ConfirmIsolatedTestDatabase,
     [ValidateRange(60, 240)]
-    [int]$StartupTimeoutSeconds = 150
+    [int]$StartupTimeoutSeconds = 150,
+    [string]$ExistingServerImage = ""
 )
 
 Set-StrictMode -Version 3.0
@@ -20,7 +21,8 @@ $redis = "modeldock-onboarding-redis-$runID"
 $mock = "modeldock-onboarding-mock-$runID"
 $server = "modeldock-onboarding-app-$runID"
 $failoverServer = "modeldock-onboarding-app2-$runID"
-$serverImage = "modeldock/onboarding-integration:$runID"
+$serverImage = if ($ExistingServerImage) { $ExistingServerImage } else { "modeldock/onboarding-integration:$runID" }
+$ownsServerImage = -not [bool]$ExistingServerImage
 $mockImage = "modeldock/onboarding-mock:$runID"
 $sandboxSecret = "synthetic-sandbox-secret-32-bytes-$runID"
 $mockAPIKey = "synthetic-mock-provider-key"
@@ -259,7 +261,11 @@ function Get-HMACSHA256Hex {
 }
 
 try {
-    [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/docker/Dockerfile.relaydock"), "-t", $serverImage, $repoRoot) -Operation "Building the onboarding server image")
+    if ($ownsServerImage) {
+        [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/docker/Dockerfile.relaydock"), "-t", $serverImage, $repoRoot) -Operation "Building the onboarding server image")
+    } else {
+        [void](Invoke-Docker -Arguments @("image", "inspect", $serverImage) -Operation "Inspecting the prebuilt onboarding server image")
+    }
     [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/mock-openai/Dockerfile"), "-t", $mockImage, $repoRoot) -Operation "Building the deterministic Provider image")
     [void](Invoke-Docker -Arguments @("network", "create", $network) -Operation "Creating the isolated network")
 
@@ -880,7 +886,7 @@ SELECT concat_ws('|',
     [void](Invoke-Docker -Arguments @("exec", $postgres, "pg_restore", "--username", "postgres", "--dbname", $restoreDatabase, "--no-owner", $backupPath) -Operation "Restoring the isolated PostgreSQL backup")
     $restoreEvidence = [string]::Join("`n", (Invoke-Docker -Arguments @("exec", $postgres, "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--username", "postgres", "--dbname", $restoreDatabase, "--command", "SELECT concat_ws('|',(SELECT max(version) FROM schema_migrations),(SELECT count(*) FROM funding_operation),(SELECT count(*) FROM ledger_journal WHERE status='POSTED'),(SELECT count(*) FROM audit_logs));") -Operation "Validating the restored database")).Trim()
     $liveEvidence = Invoke-Psql -SQL "SELECT concat_ws('|',(SELECT max(version) FROM schema_migrations),(SELECT count(*) FROM funding_operation),(SELECT count(*) FROM ledger_journal WHERE status='POSTED'),(SELECT count(*) FROM audit_logs));"
-    Assert-True ($restoreEvidence -eq $liveEvidence -and $restoreEvidence.StartsWith("19|")) "The restored backup did not preserve schema, funding, posted ledger, and audit evidence counts."
+    Assert-True ($restoreEvidence -eq $liveEvidence -and $restoreEvidence.StartsWith("24|")) "The restored backup did not preserve schema, funding, posted ledger, and audit evidence counts."
 
     $pendingRecharge = Invoke-SessionJSON -Method POST -URL "$controlURL/api/console/organizations/$organizationID/recharge-orders" -Session $consoleSession -CSRF $consoleCSRF -Body @{
         amount = "1.000000000000"; currency = "USD"; region = "CN"; payment_provider = "sandbox"; idempotency_key = "worker-recharge-$runID"
@@ -957,6 +963,8 @@ SELECT concat_ws('|',
 
     $migrationVersion = Invoke-Psql -SQL "SELECT name FROM schema_migrations WHERE version=19;"
     Assert-True ($migrationVersion -eq "public_commercial_onboarding") "Migration 19 is absent from the isolated ledger."
+    $latestMigrationVersion = Invoke-Psql -SQL "SELECT max(version) FROM schema_migrations;"
+    Assert-True ($latestMigrationVersion -eq "24") "The isolated commercial onboarding ledger is not current through migration 24."
     $evidenceTableCount = Invoke-Psql -SQL "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('public_commercial_terms','public_payment_fee_schedule','commercial_funnel_events','commercial_funnel_api_call_counter');"
     Assert-True ([int]$evidenceTableCount -eq 4) "The commercial onboarding evidence schema is incomplete."
     $auditCount = Invoke-Psql -SQL "SELECT count(*) FROM audit_logs WHERE action IN ('commercial.public_terms.publish','commercial.payment_fee.publish');"
@@ -983,7 +991,7 @@ SELECT concat_ws('|',
     Write-Host "PASS public configuration, legal-review disclosure, and pre-purchase fail-closed pricing"
     Write-Host "PASS exact subscription, Token, payment fee, bonus, tax, refund, Provider, and region disclosure"
     Write-Host "PASS registration, email verification, explicit plan, signed recharge, rdk_test_* key, first and second /v1 calls"
-    Write-Host "PASS server-derived onboarding, exact usage/charge visibility, funnel idempotency, privacy, audit, and migration 19"
+    Write-Host "PASS server-derived onboarding, exact usage/charge visibility, funnel idempotency, privacy, audit, and migrations 19-24"
     Write-Host "PASS ordinary/SSE/fallback/client-abort flows, exact reserve-settle-release, concurrent wallet requests, and request replay"
     Write-Host "PASS Provider timeout/429/500, Redis/database interruption, in-flight price version switch, and zero-difference four-way reconciliation"
     Write-Host "PASS sandbox refund replay, PostgreSQL backup restore, application failover, ledger/payment worker recovery, and monthly statement"
@@ -1003,5 +1011,6 @@ SELECT concat_ws('|',
     if ($network -match "^modeldock-onboarding-$runID$") {
         & docker network rm $network *> $null
     }
-    & docker image rm $serverImage $mockImage *> $null
+    if ($ownsServerImage) { & docker image rm $serverImage *> $null }
+    & docker image rm $mockImage *> $null
 }

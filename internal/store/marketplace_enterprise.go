@@ -106,12 +106,14 @@ func (s *Store) DeleteMarketplaceListing(ctx context.Context, listingID string) 
 func scanTeam(row pgx.Row) (domain.Team, error) {
 	var team domain.Team
 	var metadata []byte
+	var monthlyCostLimit *string
 	err := row.Scan(&team.ID, &team.OrganizationID, &team.Name, &team.Slug, &team.Status, &team.MonthlyTokenLimit,
-		&team.MonthlyCostLimit, &metadata, &team.CreatedAt, &team.UpdatedAt)
+		&monthlyCostLimit, &metadata, &team.CreatedAt, &team.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return team, ErrNotFound
 	}
 	if err == nil {
+		team.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
 		_ = json.Unmarshal(metadata, &team.Metadata)
 		if team.Metadata == nil {
 			team.Metadata = map[string]any{}
@@ -120,7 +122,7 @@ func scanTeam(row pgx.Row) (domain.Team, error) {
 	return team, err
 }
 
-const teamColumns = `id,organization_id,name,slug,status,monthly_token_limit,monthly_cost_limit::float8,metadata,created_at,updated_at`
+const teamColumns = `id,organization_id,name,slug,status,monthly_token_limit,COALESCE(monthly_cost_limit_exact,monthly_cost_limit)::text,metadata,created_at,updated_at`
 
 func (s *Store) ListTeams(ctx context.Context, organizationID string) ([]domain.Team, error) {
 	query := `SELECT ` + teamColumns + ` FROM teams`
@@ -150,13 +152,13 @@ func (s *Store) TeamByID(ctx context.Context, teamID string) (domain.Team, error
 	return scanTeam(s.pool.QueryRow(ctx, `SELECT `+teamColumns+` FROM teams WHERE id=$1`, teamID))
 }
 
-func (s *Store) TeamMonthlyUsage(ctx context.Context, teamID string) (int64, float64, error) {
+func (s *Store) TeamMonthlyUsage(ctx context.Context, teamID string) (int64, domain.Decimal, error) {
 	var tokens int64
-	var cost float64
+	var cost string
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(r.input_tokens+r.output_tokens),0),
-		COALESCE(sum(r.estimated_cost),0)::float8 FROM request_logs r JOIN api_keys k ON k.id=r.api_key_id
+		COALESCE(sum(r.estimated_cost_exact),0)::text FROM request_logs r JOIN api_keys k ON k.id=r.api_key_id
 		WHERE k.team_id=$1 AND r.created_at>=date_trunc('month',now())`, teamID).Scan(&tokens, &cost)
-	return tokens, cost, err
+	return tokens, domain.Decimal(cost), err
 }
 
 func (s *Store) UpsertTeam(ctx context.Context, team domain.Team) (domain.Team, error) {
@@ -171,8 +173,8 @@ func (s *Store) UpsertTeam(ctx context.Context, team domain.Team) (domain.Team, 
 	}
 	if team.ID != "" {
 		tag, err := s.pool.Exec(ctx, `UPDATE teams SET organization_id=$2,name=$3,slug=$4,status=$5,monthly_token_limit=$6,
-			monthly_cost_limit=$7,metadata=$8,updated_at=now() WHERE id=$1`, team.ID, team.OrganizationID, team.Name,
-			team.Slug, team.Status, team.MonthlyTokenLimit, team.MonthlyCostLimit, jsonBytes(team.Metadata))
+			monthly_cost_limit=round($7::numeric,8),monthly_cost_limit_exact=$7,metadata=$8,updated_at=now() WHERE id=$1`, team.ID, team.OrganizationID, team.Name,
+			team.Slug, team.Status, team.MonthlyTokenLimit, decimalPointer(team.MonthlyCostLimit), jsonBytes(team.Metadata))
 		if err == nil && tag.RowsAffected() == 0 {
 			return domain.Team{}, ErrNotFound
 		}
@@ -182,11 +184,11 @@ func (s *Store) UpsertTeam(ctx context.Context, team domain.Team) (domain.Team, 
 		return s.TeamByID(ctx, team.ID)
 	}
 	team.ID = id.UUID()
-	_, err := s.pool.Exec(ctx, `INSERT INTO teams(id,organization_id,name,slug,status,monthly_token_limit,monthly_cost_limit,metadata)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(organization_id,slug) DO UPDATE SET name=EXCLUDED.name,
-		status=EXCLUDED.status,monthly_token_limit=EXCLUDED.monthly_token_limit,monthly_cost_limit=EXCLUDED.monthly_cost_limit,
+	_, err := s.pool.Exec(ctx, `INSERT INTO teams(id,organization_id,name,slug,status,monthly_token_limit,monthly_cost_limit,monthly_cost_limit_exact,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,round($7::numeric,8),$7,$8) ON CONFLICT(organization_id,slug) DO UPDATE SET name=EXCLUDED.name,
+		status=EXCLUDED.status,monthly_token_limit=EXCLUDED.monthly_token_limit,monthly_cost_limit=EXCLUDED.monthly_cost_limit,monthly_cost_limit_exact=EXCLUDED.monthly_cost_limit_exact,
 		metadata=EXCLUDED.metadata,updated_at=now()`, team.ID, team.OrganizationID, team.Name, team.Slug, team.Status,
-		team.MonthlyTokenLimit, team.MonthlyCostLimit, jsonBytes(team.Metadata))
+		team.MonthlyTokenLimit, decimalPointer(team.MonthlyCostLimit), jsonBytes(team.Metadata))
 	if err != nil {
 		return domain.Team{}, err
 	}

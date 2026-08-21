@@ -34,7 +34,7 @@ type routeCandidate struct {
 const routeCandidateSelect = `SELECT pmr.id,p.organization_id,pmr.project_id,pmr.model_route_id,pmr.alias,pmr.enabled,
 	pmr.routing_config,r.provider_id,pr.provider_type,pr.base_url,r.upstream_model,r.credential_group_id,r.fallback_group_id,
 	r.routing_policy,r.fallback_config,pmr.created_at,pmr.updated_at,m.model_type,m.capabilities,
-	COALESCE(mp.input_price,0)::text,COALESCE(mp.output_price,0)::text,(mp.model_id IS NOT NULL),
+	COALESCE(mp.input_price_exact,mp.input_price,0)::text,COALESCE(mp.output_price_exact,mp.output_price,0)::text,(mp.model_id IS NOT NULL),
 	CASE WHEN COALESCE(qp.enabled,false) THEN qs.quality_score::float8 ELSE 50::float8 END,
 	CASE WHEN COALESCE(qp.enabled,false) THEN LEAST(100,COALESCE(qs.p95_full_latency_ms,5000)::float8/100) ELSE 50::float8 END,
 	CASE WHEN COALESCE(qp.enabled,false) THEN qs.routing_multiplier::float8 ELSE 1::float8 END,
@@ -44,7 +44,7 @@ const routeCandidateSelect = `SELECT pmr.id,p.organization_id,pmr.project_id,pmr
 	JOIN models m ON m.provider_id=r.provider_id AND m.provider_model_id=r.upstream_model
 	LEFT JOIN provider_quality_policies qp ON qp.provider_id=pr.id
 	LEFT JOIN provider_quality_states qs ON qs.provider_id=pr.id
-	LEFT JOIN LATERAL (SELECT model_id,input_price,output_price FROM model_prices
+	LEFT JOIN LATERAL (SELECT model_id,input_price,input_price_exact,output_price,output_price_exact FROM model_prices
 		WHERE model_id=m.id AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true`
 
 func scanRouteCandidate(row pgx.Row) (routeCandidate, error) {

@@ -43,7 +43,7 @@ func consoleProjectOverview(c *gin.Context, d Dependencies, project domain.Proje
 		return nil, err
 	}
 	var tokenLimit int64
-	var costLimit float64
+	costLimit := domain.Decimal("0")
 	for _, policy := range policies {
 		if policy.Status != "ACTIVE" || policy.Period != "MONTHLY" {
 			continue
@@ -51,7 +51,7 @@ func consoleProjectOverview(c *gin.Context, d Dependencies, project domain.Proje
 		if policy.TokenLimit != nil && *policy.TokenLimit > tokenLimit {
 			tokenLimit = *policy.TokenLimit
 		}
-		if policy.CostLimit != nil && *policy.CostLimit > costLimit {
+		if policy.CostLimit != nil && policy.CostLimit.Compare(costLimit) > 0 {
 			costLimit = *policy.CostLimit
 		}
 	}

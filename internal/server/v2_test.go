@@ -165,15 +165,15 @@ func TestMergeCredentialConstraintsIsStableAndFailClosed(t *testing.T) {
 
 func TestBudgetThresholdAndHardLimitBoundaries(t *testing.T) {
 	tokenLimit := int64(100)
-	costLimit := 10.0
-	policy := domain.ProjectBudgetPolicy{TokenLimit: &tokenLimit, CostLimit: &costLimit, AlertThreshold: 0.8}
-	if budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 79, Cost: 7.99}) {
+	costLimit := domain.Decimal("10")
+	policy := domain.ProjectBudgetPolicy{TokenLimit: &tokenLimit, CostLimit: &costLimit, AlertThreshold: domain.Decimal("0.8")}
+	if budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 79, Cost: domain.Decimal("7.99")}) {
 		t.Fatal("threshold triggered before either dimension reached 80 percent")
 	}
 	if !budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 80}) {
 		t.Fatal("token threshold did not trigger at the boundary")
 	}
-	if !budgetLimitReached(policy, domain.ProjectBudgetUsage{Cost: 10}) {
+	if !budgetLimitReached(policy, domain.ProjectBudgetUsage{Cost: domain.Decimal("10")}) {
 		t.Fatal("hard cost limit did not trigger at the boundary")
 	}
 }

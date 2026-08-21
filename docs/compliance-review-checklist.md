@@ -1,7 +1,7 @@
 # Commercial beta compliance review checklist
 
 **Decision: NO-GO**  
-**Review date:** 2026-08-17  
+**Review date:** 2026-08-21
 **Nature of review:** engineering evidence review, not legal advice
 
 All public legal source files explicitly state `PENDING COUNSEL REVIEW`. No

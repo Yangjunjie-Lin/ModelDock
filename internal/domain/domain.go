@@ -11,8 +11,8 @@ import (
 
 // Decimal preserves the exact base-10 representation used by PostgreSQL
 // NUMERIC. It accepts either a JSON number or string for control-plane
-// compatibility and emits a JSON number without binary floating-point
-// conversion.
+// compatibility and emits a JSON string so JavaScript and other clients cannot
+// silently round a NUMERIC value while decoding it.
 type Decimal string
 
 func (d *Decimal) UnmarshalJSON(raw []byte) error {
@@ -42,7 +42,7 @@ func (d Decimal) MarshalJSON() ([]byte, error) {
 	if _, ok := new(big.Rat).SetString(value); !ok {
 		return nil, errors.New("invalid decimal")
 	}
-	return json.RawMessage(value).MarshalJSON()
+	return json.Marshal(value)
 }
 func (d Decimal) String() string {
 	if strings.TrimSpace(string(d)) == "" {
@@ -63,10 +63,43 @@ func (d Decimal) IsPositive() bool {
 	return ok && r.Sign() > 0
 }
 func (d Decimal) Add(other Decimal) Decimal {
-	a, _ := new(big.Rat).SetString(d.String())
-	b, _ := new(big.Rat).SetString(other.String())
+	a := decimalRatOrZero(d)
+	b := decimalRatOrZero(other)
 	a.Add(a, b)
 	return Decimal(a.FloatString(12))
+}
+
+func (d Decimal) Subtract(other Decimal) Decimal {
+	a := decimalRatOrZero(d)
+	b := decimalRatOrZero(other)
+	a.Sub(a, b)
+	return Decimal(a.FloatString(12))
+}
+
+// Compare returns -1, 0, or 1 without crossing a binary floating-point
+// boundary. Decimal values are validated when they enter the JSON or database
+// boundary; an invalid in-process value is treated as zero as a fail-closed
+// compatibility default.
+func (d Decimal) Compare(other Decimal) int {
+	a := decimalRatOrZero(d)
+	b := decimalRatOrZero(other)
+	return a.Cmp(b)
+}
+
+// Multiply returns an exact base-10 product normalized to the database money
+// scale. It is used for thresholds and reports as well as settled amounts.
+func (d Decimal) Multiply(other Decimal) Decimal {
+	a := decimalRatOrZero(d)
+	b := decimalRatOrZero(other)
+	return Decimal(new(big.Rat).Mul(a, b).FloatString(12))
+}
+
+func decimalRatOrZero(value Decimal) *big.Rat {
+	parsed, ok := new(big.Rat).SetString(value.String())
+	if !ok {
+		return new(big.Rat)
+	}
+	return parsed
 }
 
 type User struct {
@@ -77,7 +110,7 @@ type User struct {
 	Role                 string     `json:"role"`
 	Status               string     `json:"status"`
 	MonthlyTokenLimit    *int64     `json:"monthly_token_limit,omitempty"`
-	MonthlyCostLimit     *float64   `json:"monthly_cost_limit,omitempty"`
+	MonthlyCostLimit     *Decimal   `json:"monthly_cost_limit,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 	LastLoginAt          *time.Time `json:"last_login_at,omitempty"`
@@ -232,8 +265,8 @@ type Model struct {
 	ContextWindow                   *int           `json:"context_window,omitempty"`
 	LatencyScore                    float64        `json:"latency_score"`
 	QualityScore                    float64        `json:"quality_score"`
-	InputPrice                      float64        `json:"input_price"`
-	OutputPrice                     float64        `json:"output_price"`
+	InputPrice                      Decimal        `json:"input_price"`
+	OutputPrice                     Decimal        `json:"output_price"`
 	PriceCurrency                   string         `json:"price_currency,omitempty"`
 	Metadata                        map[string]any `json:"metadata"`
 	AllowedRegions                  []string       `json:"allowed_regions,omitempty"`
@@ -265,9 +298,9 @@ type ModelPrice struct {
 	ModelID          string    `json:"model_id"`
 	Version          int       `json:"version"`
 	EffectiveFrom    time.Time `json:"effective_from"`
-	InputPrice       float64   `json:"input_price"`
-	CachedInputPrice float64   `json:"cached_input_price"`
-	OutputPrice      float64   `json:"output_price"`
+	InputPrice       Decimal   `json:"input_price"`
+	CachedInputPrice Decimal   `json:"cached_input_price"`
+	OutputPrice      Decimal   `json:"output_price"`
 	Currency         string    `json:"currency"`
 	Unit             int64     `json:"unit"`
 	Source           string    `json:"source"`
@@ -289,7 +322,7 @@ type APIKey struct {
 	RateLimitRPM       int        `json:"rate_limit_rpm"`
 	RateLimitTPM       int        `json:"rate_limit_tpm"`
 	MonthlyTokenLimit  *int64     `json:"monthly_token_limit,omitempty"`
-	MonthlyCostLimit   *float64   `json:"monthly_cost_limit,omitempty"`
+	MonthlyCostLimit   *Decimal   `json:"monthly_cost_limit,omitempty"`
 	AllowedModels      []string   `json:"allowed_models"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
@@ -319,9 +352,9 @@ type RequestLog struct {
 	CachedInputTokens   int64          `json:"cached_input_tokens"`
 	OutputTokens        int64          `json:"output_tokens"`
 	TotalTokens         int64          `json:"total_tokens"`
-	EstimatedCost       float64        `json:"estimated_cost"`
-	ReferenceCost       float64        `json:"reference_cost"`
-	SavingsAmount       float64        `json:"savings_amount"`
+	EstimatedCost       Decimal        `json:"estimated_cost"`
+	ReferenceCost       Decimal        `json:"reference_cost"`
+	SavingsAmount       Decimal        `json:"savings_amount"`
 	LatencyMS           int64          `json:"latency_ms"`
 	TTFTMS              *int64         `json:"ttft_ms,omitempty"`
 	UpstreamRequestID   string         `json:"upstream_request_id,omitempty"`
@@ -642,7 +675,7 @@ type Team struct {
 	Slug              string         `json:"slug"`
 	Status            string         `json:"status"`
 	MonthlyTokenLimit *int64         `json:"monthly_token_limit,omitempty"`
-	MonthlyCostLimit  *float64       `json:"monthly_cost_limit,omitempty"`
+	MonthlyCostLimit  *Decimal       `json:"monthly_cost_limit,omitempty"`
 	Metadata          map[string]any `json:"metadata"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
@@ -1039,8 +1072,8 @@ type ProjectBudgetPolicy struct {
 	Name             string    `json:"name"`
 	Period           string    `json:"period"`
 	TokenLimit       *int64    `json:"token_limit,omitempty"`
-	CostLimit        *float64  `json:"cost_limit,omitempty"`
-	AlertThreshold   float64   `json:"alert_threshold"`
+	CostLimit        *Decimal  `json:"cost_limit,omitempty"`
+	AlertThreshold   Decimal   `json:"alert_threshold"`
 	EnforceHardLimit bool      `json:"enforce_hard_limit"`
 	Status           string    `json:"status"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -1058,7 +1091,7 @@ type ProjectBudgetUsage struct {
 	CachedTokens   int64     `json:"cached_input_tokens"`
 	OutputTokens   int64     `json:"output_tokens"`
 	TotalTokens    int64     `json:"total_tokens"`
-	Cost           float64   `json:"cost"`
+	Cost           Decimal   `json:"cost"`
 	Errors         int64     `json:"errors"`
 }
 
@@ -1072,7 +1105,7 @@ type BudgetEvent struct {
 	RequestID      string         `json:"request_id,omitempty"`
 	EventType      string         `json:"event_type"`
 	Tokens         int64          `json:"tokens"`
-	Cost           float64        `json:"cost"`
+	Cost           Decimal        `json:"cost"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
 	Metadata       map[string]any `json:"metadata"`
 	CreatedAt      time.Time      `json:"created_at"`
@@ -1165,7 +1198,7 @@ type UsageExportRow struct {
 	CachedTokens   int64     `json:"cached_input_tokens"`
 	OutputTokens   int64     `json:"output_tokens"`
 	TotalTokens    int64     `json:"total_tokens"`
-	EstimatedCost  float64   `json:"estimated_cost"`
+	EstimatedCost  Decimal   `json:"estimated_cost"`
 	LatencyMS      int64     `json:"latency_ms"`
 	CreatedAt      time.Time `json:"created_at"`
 }

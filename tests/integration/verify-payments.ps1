@@ -1,7 +1,18 @@
+[CmdletBinding()]
+param(
+    [string]$EnvFile = ".env"
+)
+
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$envPath = if ([System.IO.Path]::IsPathRooted($EnvFile)) {
+    [System.IO.Path]::GetFullPath($EnvFile)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $EnvFile))
+}
+if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) { throw "The payment integration environment file does not exist." }
 $values = @{}
-Get-Content (Join-Path $repoRoot ".env") | ForEach-Object {
+Get-Content -LiteralPath $envPath | ForEach-Object {
     if ($_ -match '^\s*([^#=]+)=(.*)$') { $values[$matches[1].Trim()] = $matches[2].Trim() }
 }
 foreach ($name in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL")) {
@@ -9,7 +20,7 @@ foreach ($name in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL")) {
 }
 $run = [Guid]::NewGuid().ToString("N").Substring(0, 20)
 $databaseName = "relaydock_payment_test_$run"
-$container = (docker compose --env-file (Join-Path $repoRoot ".env") ps -q postgres).Trim()
+$container = (docker compose --env-file $envPath ps -q postgres).Trim()
 if (-not $container) { throw "The local Compose PostgreSQL service must be running." }
 $created = $false
 $oldExists = Test-Path Env:TEST_DATABASE_URL

@@ -52,7 +52,8 @@ $expectedLedger = @(
 	"20:supplier_onboarding",
 	"21:provider_quality",
 	"22:supplier_settlement",
-	"23:marketplace_launch_acceptance"
+	"23:marketplace_launch_acceptance",
+	"24:exact_money_and_release_evidence"
 )
 $expectedProviderSeeds = @(
     "anthropic|anthropic|https://api.anthropic.com/v1",
@@ -844,7 +845,45 @@ try {
     Wait-ForSuccessfulStartup -Name $firstContainer
     $firstSnapshot = Get-LedgerSnapshot
     Remove-TestContainer -Name $firstContainer
-    Write-Host "PASS empty database applied migrations 1:core through 23:marketplace_launch_acceptance"
+    Write-Host "PASS empty database applied migrations 1:core through 24:exact_money_and_release_evidence"
+
+    $exactWrite = Invoke-PsqlChecked -Database $testDatabase `
+        -Sql "WITH target AS (UPDATE users SET monthly_cost_limit_exact=0.100000000001 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT monthly_cost_limit::text||'|'||monthly_cost_limit_exact::text FROM target" `
+        -Operation "Verifying exact-first compatibility write"
+    if ($exactWrite.Output.Trim() -ne "0.10000000|0.100000000001") {
+        throw "Exact-first compatibility write did not retain 12 decimal places and deterministic legacy rounding."
+    }
+    $legacyWrite = Invoke-PsqlChecked -Database $testDatabase `
+        -Sql "WITH target AS (UPDATE users SET monthly_cost_limit=0.2 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT monthly_cost_limit::text||'|'||monthly_cost_limit_exact::text FROM target" `
+        -Operation "Verifying legacy rollback compatibility write"
+    if ($legacyWrite.Output.Trim() -ne "0.20000000|0.200000000000") {
+        throw "Legacy-only compatibility write was not promoted exactly."
+    }
+    $maximumWrite = Invoke-PsqlChecked -Database $testDatabase `
+        -Sql "WITH target AS (UPDATE users SET monthly_cost_limit_exact=999999999999.999999990000 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT monthly_cost_limit::text||'|'||monthly_cost_limit_exact::text FROM target" `
+        -Operation "Verifying maximum compatible exact-money write"
+    if ($maximumWrite.Output.Trim() -ne "999999999999.99999999|999999999999.999999990000") {
+        throw "Maximum compatible exact amount was not retained without implicit rounding."
+    }
+    $negativeWrite = Invoke-PsqlRaw -Database $testDatabase `
+        -Sql "UPDATE users SET monthly_cost_limit_exact=-0.000000000001 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1)"
+    if ($negativeWrite.ExitCode -eq 0) { throw "Negative exact amount bypassed the database range constraint." }
+    $overflowWrite = Invoke-PsqlRaw -Database $testDatabase `
+        -Sql "UPDATE users SET monthly_cost_limit_exact=999999999999.999999994999 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1)"
+    if ($overflowWrite.ExitCode -eq 0) { throw "Out-of-range exact amount bypassed the compatibility range constraint." }
+    $nullWrite = Invoke-PsqlChecked -Database $testDatabase `
+        -Sql "WITH target AS (UPDATE users SET monthly_cost_limit=NULL,monthly_cost_limit_exact=NULL WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT COALESCE(monthly_cost_limit::text,'NULL')||'|'||COALESCE(monthly_cost_limit_exact::text,'NULL') FROM target" `
+        -Operation "Verifying nullable exact-money write"
+    if ($nullWrite.Output.Trim() -ne "NULL|NULL") { throw "Nullable exact amount was not preserved." }
+    $zeroWrite = Invoke-PsqlChecked -Database $testDatabase `
+        -Sql "WITH target AS (UPDATE users SET monthly_cost_limit_exact=0 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT monthly_cost_limit::text||'|'||monthly_cost_limit_exact::text FROM target" `
+        -Operation "Verifying zero exact-money write"
+    if ($zeroWrite.Output.Trim() -ne "0.00000000|0.000000000000") { throw "Zero exact amount was not preserved." }
+    $moneyDifferences = Invoke-PsqlChecked -Database $testDatabase `
+        -Sql "SELECT COALESCE(sum(differences),0) FROM exact_money_migration_differences" `
+        -Operation "Reconciling exact-money compatibility fields"
+    if ($moneyDifferences.Output.Trim() -ne "0") { throw "Exact-money migration reconciliation reported differences." }
+    Write-Host "PASS exact-money 12-place, maximum, negative, overflow, null, zero, legacy rollback, and zero-difference checks"
 
     $secondContainer = "relaydock-migration-$runID-second"
     Start-TestServer -Name $secondContainer
@@ -892,7 +931,7 @@ try {
     Wait-ForSuccessfulStartup -Name $upgradeContainer
     Assert-PopulatedV1Upgrade
     Remove-TestContainer -Name $upgradeContainer
-    Write-Host "PASS populated V1 database upgraded through 23:marketplace_launch_acceptance without losing legacy data"
+    Write-Host "PASS populated V1 database upgraded through 24:exact_money_and_release_evidence without losing legacy data"
 
     Recreate-TestDatabase
     Initialize-PopulatedV12FinancialDatabase
@@ -901,7 +940,7 @@ try {
     Wait-ForSuccessfulStartup -Name $v12UpgradeContainer
     Assert-PopulatedV12FinancialUpgrade
     Remove-TestContainer -Name $v12UpgradeContainer
-    Write-Host "PASS populated V12 funding and refund holds upgraded through 23 without becoming refundable"
+    Write-Host "PASS populated V12 funding and refund holds upgraded through 24 without becoming refundable"
 
     Write-Host "Migration contract verification passed for empty and populated-upgrade databases. Cleanup will now remove only this run's containers and random database."
 } finally {

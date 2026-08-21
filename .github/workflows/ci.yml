@@ -35,6 +35,11 @@ jobs:
         run: |
           unformatted="$(gofmt -l cmd internal migrations tests/backend)"
           test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+      - name: Verify exact money and generated release status
+        shell: pwsh
+        run: |
+          ./scripts/verify-exact-money.ps1
+          ./tests/release/verify-commercial-readiness.ps1
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -66,6 +71,9 @@ jobs:
       - name: Typecheck
         working-directory: apps/${{ matrix.app }}
         run: npm run typecheck
+      - name: Test when defined
+        working-directory: apps/${{ matrix.app }}
+        run: npm run test --if-present
       - name: Build
         working-directory: apps/${{ matrix.app }}
         run: npm run build
@@ -159,7 +167,7 @@ jobs:
         id: source
         shell: bash
         run: |
-          version="$(sed -nE 's/^[[:space:]]*Current[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/version/version.go)"
+          version="$(tr -d '\r\n' < VERSION)"
           test -n "$version"
           {
             echo "version=$version"
@@ -217,7 +225,7 @@ jobs:
       - name: Build migration test image from this commit
         shell: bash
         run: |
-          version="$(sed -nE 's/^[[:space:]]*Current[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/version/version.go)"
+          version="$(tr -d '\r\n' < VERSION)"
           build_date="$(git show -s --format=%cI "$GITHUB_SHA" | xargs -I{} date -u -d '{}' +%Y-%m-%dT%H:%M:%SZ)"
           source_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
           test -n "$version"
@@ -234,3 +242,52 @@ jobs:
       - name: Stop isolated services
         if: always()
         run: docker compose --env-file .cache/ci.env down --remove-orphans
+
+  commercial-integration:
+    name: Commercial and Marketplace integration gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Create isolated test configuration
+        shell: pwsh
+        run: ./scripts/new-ci-env.ps1 -OutputPath .env
+      - name: Prepare isolated bind and result directories
+        run: mkdir -p data/postgres data/redis data/cockpit logs .cache/commercial-results
+      - name: Start isolated PostgreSQL and Redis
+        run: docker compose --env-file .env up -d --wait --wait-timeout 120 postgres redis
+      - name: Build exact-commit integration image
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA" | xargs -I{} date -u -d '{}' +%Y-%m-%dT%H:%M:%SZ)"
+          source_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          docker build -f deploy/docker/Dockerfile.relaydock \
+            --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$build_date" --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
+            -t relaydock/server:local .
+      - name: Run every commercial and Marketplace suite
+        shell: pwsh
+        run: ./scripts/verify-commercial-integration.ps1 -EnvFile .env -ConfirmIsolatedTestDatabase -OutputDirectory .cache/commercial-results
+      - name: Collect safe service state on failure
+        if: failure()
+        run: docker compose --env-file .env ps > .cache/commercial-results/compose-state.txt
+      - name: Upload exact-commit commercial evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: commercial-integration-${{ github.sha }}
+          path: .cache/commercial-results
+          if-no-files-found: error
+          retention-days: 30
+      - name: Stop isolated services
+        if: always()
+        run: docker compose --env-file .env down --remove-orphans
