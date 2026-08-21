@@ -1,0 +1,305 @@
+name: ModelDock Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: Required CI gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  validate:
+    name: Validate release contract
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      build_date: ${{ steps.metadata.outputs.build_date }}
+      source_epoch: ${{ steps.metadata.outputs.source_epoch }}
+      owner: ${{ steps.metadata.outputs.owner }}
+    steps:
+      - name: Check out tag and complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Validate tag ancestry, version, changelog, and licensing decision
+        id: metadata
+        shell: pwsh
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ((git cat-file -t $env:GITHUB_REF).Trim() -ne 'tag') {
+            throw 'Formal releases require an annotated Git tag.'
+          }
+          git fetch origin $env:DEFAULT_BRANCH --quiet
+          git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
+          if ($LASTEXITCODE -ne 0) { throw 'Release commit is not on the default branch.' }
+          if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw 'Release tag must exactly match vMAJOR.MINOR.PATCH.'
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $buildTime = ([DateTimeOffset]::Parse((git show -s --format=%cI $env:GITHUB_SHA).Trim())).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $sourceEpoch = (git show -s --format=%ct $env:GITHUB_SHA).Trim()
+          $owner = $env:GITHUB_REPOSITORY_OWNER.ToLowerInvariant()
+          ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md -RequireApprovedLicense
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build_date=$buildTime" >> $env:GITHUB_OUTPUT
+          "source_epoch=$sourceEpoch" >> $env:GITHUB_OUTPUT
+          "owner=$owner" >> $env:GITHUB_OUTPUT
+      - name: Upload exact changelog release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-notes
+          path: .cache/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  images:
+    name: Build, attest, and scan ${{ matrix.component }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: server
+            dockerfile: deploy/docker/Dockerfile.relaydock
+            image_suffix: modeldock-server
+          - component: admin-web
+            dockerfile: deploy/docker/Dockerfile.admin-web
+            image_suffix: modeldock-admin-web
+          - component: console-web
+            dockerfile: deploy/docker/Dockerfile.console-web
+            image_suffix: modeldock-console-web
+    steps:
+      - name: Check out exact tag source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push unique candidate image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ needs.validate.outputs.build_date }}
+            SOURCE_DATE_EPOCH=${{ needs.validate.outputs.source_epoch }}
+            REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,push=true,rewrite-timestamp=true
+          cache-from: type=gha,scope=release-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.component }}
+      - name: Record GitHub build provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-name: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+          upload-artifact: false
+      - name: Scan final release image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Install Cosign when repository signing is enabled
+        if: vars.MODELDOCK_SIGN_IMAGES == 'true'
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Sign immutable image digest with GitHub OIDC
+        if: vars.MODELDOCK_SIGN_IMAGES == 'true'
+        env:
+          IMAGE: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      - name: Upload SBOM for formal release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ matrix.component }}
+          path: sbom-${{ matrix.component }}.spdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write candidate digest metadata
+        shell: pwsh
+        env:
+          IMAGE: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+          CANDIDATE_TAG: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          [ordered]@{
+            component = $env:COMPONENT
+            image = $env:IMAGE
+            digest = $env:DIGEST
+            candidate_tag = $env:CANDIDATE_TAG
+            commit = $env:GITHUB_SHA
+          } | ConvertTo-Json | Set-Content -LiteralPath "image-$env:COMPONENT.json" -Encoding utf8
+      - name: Upload verified image metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-metadata-${{ matrix.component }}
+          path: image-${{ matrix.component }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Promote verified digests to formal tags
+    needs: [validate, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out tag and complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Download verified image metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-metadata-*
+          path: release-image-metadata
+          merge-multiple: true
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reject tag races and existing formal image tags
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find release-image-metadata -maxdepth 1 -type f -name 'image-*.json' -print | sort)
+          test "${#files[@]}" -eq 3
+          remote_commit="$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME^{}" | awk '{print $1}')"
+          test "$remote_commit" = "$GITHUB_SHA"
+          for file in "${files[@]}"; do
+            image="$(jq -er '.image' "$file")"
+            digest="$(jq -er '.digest' "$file")"
+            commit="$(jq -er '.commit' "$file")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            test "$commit" = "$GITHUB_SHA"
+            for tag in "$VERSION" "sha-$GITHUB_SHA"; do
+              if docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
+                actual="sha256:$(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum | awk '{print $1}')"
+                if [ "$actual" != "$digest" ]; then
+                  echo "Refusing to overwrite existing formal image tag $image:$tag" >&2
+                  exit 1
+                fi
+              fi
+            done
+          done
+      - name: Promote only verified digests
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          : > release-image-digests.md
+          printf "Built from commit %c%s%c.\n\n" 96 "$GITHUB_SHA" 96 >> release-image-digests.md
+          while IFS= read -r file; do
+            image="$(jq -er ".image" "$file")"
+            digest="$(jq -er ".digest" "$file")"
+            for tag in "$VERSION" "sha-$GITHUB_SHA"; do
+              if docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
+                read -r existing_hash _ < <(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum)
+                test "sha256:$existing_hash" = "$digest"
+              else
+                docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
+              fi
+              read -r manifest_hash _ < <(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum)
+              actual="sha256:$manifest_hash"
+              test "$actual" = "$digest"
+            done
+            printf -- "- %c%s@%s%c (%c%s%c, %csha-%s%c)\n" 96 "$image" "$digest" 96 96 "$VERSION" 96 96 "$GITHUB_SHA" 96 >> release-image-digests.md
+          done < <(find release-image-metadata -maxdepth 1 -type f -name "image-*.json" -print | sort)
+      - name: Upload promoted digest record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-image-digests
+          path: release-image-digests.md
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Create formal GitHub Release
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-notes
+          path: release-notes
+      - name: Download all SBOMs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: sbom-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Download promoted digest record
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-image-digests
+          path: release-artifacts
+      - name: Add immutable image digests to release notes
+        run: |
+          printf '\n## Verified images\n\n' >> release-notes/release-notes.md
+          cat release-artifacts/release-image-digests.md >> release-notes/release-notes.md
+      - name: Create release only after every required gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-artifacts/*.spdx.json release-artifacts/release-image-digests.md \
+            --verify-tag \
+            --title "ModelDock $VERSION" \
+            --notes-file release-notes/release-notes.md

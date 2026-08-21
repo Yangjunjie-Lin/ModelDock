@@ -161,7 +161,7 @@ func (c *Client) Test(ctx context.Context) (TestResult, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 		return TestResult{}, fmt.Errorf("Cockpit sidecar returned HTTP %d", response.StatusCode)
 	}
 	var out struct {

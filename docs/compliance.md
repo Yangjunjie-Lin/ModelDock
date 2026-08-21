@@ -4,6 +4,11 @@ RelayDock is an authorized credential control plane for official provider APIs.
 It is not an account creation, consumer-session aggregation, promotion
 automation, or policy-evasion product.
 
+ModelDock never buys or sells API keys, shares ordinary consumer accounts,
+automatically registers Provider accounts, bypasses geographic restrictions,
+or bypasses Provider safety/security mechanisms. BYOK requires an attributed
+ownership confirmation and remains isolated to one organization.
+
 ## Allowed use
 
 - Import API/project/service credentials that your organization is authorized
@@ -39,6 +44,11 @@ already-issued official API credentials controlled by the administrator; it is
 not a registration pipeline.
 
 ## Operator responsibilities
+
+Risk, retention, cross-border routing, filing/registration, generated-content
+labels, and disclosure fields are implementation controls that require legal
+review for the deployment's jurisdictions. ModelDock does not automatically
+claim full regulatory compliance.
 
 Operators are responsible for:
 
@@ -80,4 +90,3 @@ Operators are responsible for:
 Security reports should include the RelayDock version, deployment topology,
 redacted request IDs, and reproduction steps that contain no live credentials
 or personal data.
-

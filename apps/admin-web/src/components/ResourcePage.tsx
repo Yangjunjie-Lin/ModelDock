@@ -110,7 +110,9 @@ function FormField({ field, value, onChange }: { field: FieldConfig; value: stri
 }
 
 function normalizeForm(form: Record<string, string>, fields: FieldConfig[]) {
-  return Object.fromEntries(Object.entries(form).map(([key, value]) => [key, fields.find((field) => field.name === key)?.type === 'number' ? Number(value) : value]))
+  const regionArrays = new Set(['allowed_regions', 'allowed_customer_regions', 'prohibited_regions', 'data_processing_regions'])
+  const booleans = new Set(['pricing_disabled', 'emergency_kill_switch'])
+  return Object.fromEntries(Object.entries(form).map(([key, value]) => [key, regionArrays.has(key) ? value.split(',').map((item) => item.trim()).filter(Boolean) : booleans.has(key) ? value === 'true' : fields.find((field) => field.name === key)?.type === 'number' ? Number(value) : value]))
 }
 
 function display(value: unknown) {

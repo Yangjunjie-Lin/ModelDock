@@ -1,0 +1,81 @@
+groups:
+  - name: modeldock-critical
+    rules:
+      - alert: ModelDockProviderFleetFailure
+        expr: sum(rate(relaydock_provider_failures_total[5m])) / clamp_min(sum(rate(relaydock_provider_requests_total[5m])), 0.001) > 0.20
+        for: 5m
+        labels: { severity: critical, runbook: provider-outage }
+        annotations:
+          summary: Provider failure rate exceeds 20 percent
+          description: Stop routing to the failing Provider and verify fallback capacity.
+      - alert: ModelDockProviderQualityCircuitOpen
+        expr: relaydock_provider_quality_circuit_open == 1
+        for: 1m
+        labels: { severity: critical, runbook: provider-quality }
+        annotations:
+          summary: Platform-measured Provider quality circuit is open
+          description: Inspect immutable observations and SLA events; recover through measured half-open checks.
+      - alert: ModelDockProviderQualityRateLimited
+        expr: relaydock_provider_quality_429_percent > 10
+        for: 5m
+        labels: { severity: warning, runbook: provider-quality }
+        annotations:
+          summary: Platform-measured Provider 429 ratio exceeds 10 percent
+          description: Reduce admitted traffic and honor Provider reset/cooldown; do not rotate identity or region to evade the limit.
+      - alert: ModelDockSettlementBacklog
+        expr: relaydock_settlement_backlog > 0
+        for: 10m
+        labels: { severity: critical, runbook: duplicate-charge }
+        annotations:
+          summary: Ledger settlement backlog is not draining
+          description: Freeze risky dispatches and run the funding recovery procedure.
+      - alert: ModelDockSettlementFailure
+        expr: increase(relaydock_settlement_failures_total[10m]) > 0
+        labels: { severity: critical, runbook: duplicate-charge }
+        annotations:
+          summary: A funding settlement failed
+          description: Investigate by request ID and funding operation before manual repair.
+      - alert: ModelDockPaymentWebhookFailure
+        expr: relaydock_payment_webhook_failures > 0 or increase(relaydock_payment_attempts_total{status=~"webhook_failed|credit_pending"}[10m]) > 0
+        labels: { severity: critical, runbook: payment-success-not-credited }
+        annotations:
+          summary: Payment callback processing is failing
+          description: Keep verified webhook evidence and retry wallet credit idempotently.
+      - alert: ModelDockPostgreSQLUnavailable
+        expr: relaydock_dependency_postgres_up == 0 or up{job="modeldock"} == 0
+        for: 1m
+        labels: { severity: critical, runbook: database-outage }
+        annotations: { summary: ModelDock or PostgreSQL is unavailable }
+      - alert: ModelDockRedisUnavailable
+        expr: relaydock_dependency_redis_up == 0
+        for: 1m
+        labels: { severity: critical, runbook: provider-outage }
+        annotations: { summary: Redis is unavailable and gateway admission fails closed }
+      - alert: ModelDockNegativeMargin
+        expr: increase(relaydock_negative_margin_requests_total[5m]) > 0
+        labels: { severity: critical, runbook: mass-negative-margin }
+        annotations: { summary: One or more requests have negative gross margin }
+      - alert: ModelDockWalletBalanceAnomaly
+        expr: relaydock_wallet_balance_anomalies > 0
+        for: 2m
+        labels: { severity: critical, runbook: duplicate-charge }
+        annotations: { summary: Wallet balance or credit exposure invariant is abnormal }
+      - alert: ModelDockAPIKeyLeak
+        expr: relaydock_api_key_leak_alerts > 0
+        labels: { severity: critical, runbook: api-key-leak }
+        annotations: { summary: A RelayDock API key was automatically frozen after leak detection }
+      - alert: ModelDockPostgreSQLPoolExhaustion
+        expr: relaydock_postgres_pool_acquired_connections / clamp_min(relaydock_postgres_pool_max_connections, 1) > 0.90
+        for: 5m
+        labels: { severity: warning, runbook: database-outage }
+        annotations: { summary: PostgreSQL connection pool is above 90 percent utilization }
+      - alert: ModelDockRedisPoolExhaustion
+        expr: relaydock_redis_pool_total_connections / clamp_min(relaydock_redis_pool_max_connections, 1) > 0.90
+        for: 5m
+        labels: { severity: warning, runbook: provider-outage }
+        annotations: { summary: Redis connection pool is above 90 percent utilization }
+      - alert: ModelDockDiskExhaustion
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.10
+        for: 10m
+        labels: { severity: critical, runbook: database-outage }
+        annotations: { summary: Host filesystem has less than 10 percent free space }

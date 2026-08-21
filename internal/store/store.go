@@ -18,7 +18,15 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
+	ErrNotFound           = errors.New("not found")
+	ErrInvalidToken       = errors.New("invalid or expired token")
+	ErrInviteRequired     = errors.New("a valid invitation is required")
+	ErrRegistrationClosed = errors.New("registration is closed")
+	ErrPasswordRequired   = errors.New("a password is required")
+	ErrMFAReplay          = errors.New("MFA code was already used")
+	ErrRiskRestricted     = errors.New("risk policy restricts this operation")
+	ErrRiskFrozen         = errors.New("risk policy has frozen this account or key")
+	ErrKeyCreationRate    = errors.New("API key creation rate limit exceeded")
 
 	// ErrCredentialGroupProviderMismatch is returned when a credential is
 	// assigned to a group owned by another provider.
@@ -63,6 +71,13 @@ func OpenWithPoolConfig(ctx context.Context, databaseURL string, poolConfig Pool
 	cfg.MinConns = poolConfig.MinConns
 	cfg.MaxConnIdleTime = poolConfig.MaxConnIdleTime
 	cfg.MaxConnLifetime = poolConfig.MaxConnLifetime
+	// Financial business dates and monthly boundaries are defined in UTC. Set
+	// the PostgreSQL session explicitly so deployment host/database time zones
+	// cannot move timestamptz evidence into a neighboring accounting period.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["timezone"] = "UTC"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
@@ -76,6 +91,28 @@ func OpenWithPoolConfig(ctx context.Context, databaseURL string, poolConfig Pool
 
 func (s *Store) Close()                         { s.pool.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+// VerifySchemaCurrent is used by stateless application replicas when an
+// external migration job owns DDL. It requires every migration known to this
+// binary and validates checksums, while allowing newer additive versions so an
+// older replica can stay online during a rolling compatibility window.
+func (s *Store) VerifySchemaCurrent(ctx context.Context) error {
+	for _, migration := range migrations.All {
+		sum := sha256.Sum256([]byte(migration.SQL))
+		var checksum string
+		err := s.pool.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE version=$1`, migration.Version).Scan(&checksum)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("database migration %04d_%s has not been applied", migration.Version, migration.Name)
+		}
+		if err != nil {
+			return fmt.Errorf("verify database migration %04d_%s: %w", migration.Version, migration.Name, err)
+		}
+		if checksum != hex.EncodeToString(sum[:]) {
+			return fmt.Errorf("migration %04d_%s checksum mismatch", migration.Version, migration.Name)
+		}
+	}
+	return nil
+}
 
 func (s *Store) Migrate(ctx context.Context) error {
 	if len(migrations.All) == 0 {
@@ -231,8 +268,8 @@ func (s *Store) BootstrapAdmin(ctx context.Context, email, password, displayName
 			return hashErr
 		}
 		adminID = id.UUID()
-		tag, insertErr := tx.Exec(ctx, `INSERT INTO users (id,email,password_hash,display_name,role,status)
-			VALUES ($1,$2,$3,$4,'SUPER_ADMIN','ACTIVE') ON CONFLICT (email) DO NOTHING`, adminID, email, hash, displayName)
+		tag, insertErr := tx.Exec(ctx, `INSERT INTO users (id,email,password_hash,display_name,role,status,email_verified_at)
+			VALUES ($1,$2,$3,$4,'SUPER_ADMIN','ACTIVE',now()) ON CONFLICT (email) DO NOTHING`, adminID, email, hash, displayName)
 		if insertErr != nil {
 			return insertErr
 		}
@@ -263,14 +300,16 @@ func jsonBytes(v any) []byte {
 func scanUser(row pgx.Row) (domain.User, error) {
 	var u domain.User
 	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.Status,
-		&u.MonthlyTokenLimit, &u.MonthlyCostLimit, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+		&u.MonthlyTokenLimit, &u.MonthlyCostLimit, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
+		&u.EmailVerifiedAt, &u.SessionVersion, &u.MFAEnabled, &u.RiskScore, &u.VerificationLevel,
+		&u.PaymentRisk, &u.AbuseStatus, &u.ManualReviewStatus, &u.NewAccountSpendLimit, &u.ClosedAt, &u.LegalHold)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
 	return u, err
 }
 
-const userColumns = `id,email,password_hash,display_name,role,status,monthly_token_limit,monthly_cost_limit,created_at,updated_at,last_login_at`
+const userColumns = `id,email,password_hash,display_name,role,status,monthly_token_limit,monthly_cost_limit,created_at,updated_at,last_login_at,email_verified_at,session_version,(totp_enrolled_at IS NOT NULL),risk_score,verification_level,payment_risk,abuse_status,manual_review_status,COALESCE(new_account_spend_limit::text,''),closed_at,legal_hold`
 
 func (s *Store) UserByEmail(ctx context.Context, email string) (domain.User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE lower(email)=lower($1)`, email))
@@ -319,13 +358,16 @@ func (s *Store) CreateUser(ctx context.Context, email, password, displayName, ro
 		return domain.User{}, err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `INSERT INTO users(id,email,password_hash,display_name,role,status) VALUES($1,lower($2),$3,$4,$5,'ACTIVE')`, userID, email, hash, displayName, role)
+	_, err = tx.Exec(ctx, `INSERT INTO users(id,email,password_hash,display_name,role,status,email_verified_at) VALUES($1,lower($2),$3,$4,$5,'ACTIVE',now())`, userID, email, hash, displayName, role)
 	if err != nil {
 		return domain.User{}, err
 	}
 	organizationRole, projectRole := "MEMBER", "DEVELOPER"
 	if role == "ADMIN" {
 		organizationRole, projectRole = "ADMIN", "ADMIN"
+	}
+	if err = enforceOrganizationMemberActivationTx(ctx, tx, domain.LegacyOrganizationID, userID); err != nil {
+		return domain.User{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO organization_memberships(organization_id,user_id,role,status) VALUES($1,$2,$3,'ACTIVE')`,
 		domain.LegacyOrganizationID, userID, organizationRole); err != nil {
@@ -342,10 +384,13 @@ func (s *Store) CreateUser(ctx context.Context, email, password, displayName, ro
 }
 
 func (s *Store) UpdateUserStatus(ctx context.Context, userID, status string) error {
-	if status != "ACTIVE" && status != "DISABLED" {
+	if status == "DISABLED" {
+		status = "SUSPENDED"
+	}
+	if status != "ACTIVE" && status != "SUSPENDED" && status != "CLOSED" {
 		return errors.New("invalid user status")
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE users SET status=$2,updated_at=now() WHERE id=$1`, userID, status)
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET status=$2,session_version=session_version+1,updated_at=now() WHERE id=$1`, userID, status)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}

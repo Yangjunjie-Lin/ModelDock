@@ -17,8 +17,8 @@ export function Button({ className = '', variant = 'default', size = 'md', child
   return <button className={`button button-${variant} button-${size} ${className}`} {...props}>{children}</button>
 }
 
-export function Badge({ children, tone = 'neutral', dot = false }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'violet'; dot?: boolean }) {
-  return <span className={`badge badge-${tone}`}>{dot && <span className="badge-dot" />}{children}</span>
+export function Badge({ children, value, tone = 'neutral', dot = false }: { children?: ReactNode; value?: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'violet'; dot?: boolean }) {
+  return <span className={`badge badge-${tone}`}>{dot && <span className="badge-dot" />}{children ?? value}</span>
 }
 
 export function StatusBadge({ value }: { value?: unknown }) {

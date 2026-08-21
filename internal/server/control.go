@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -11,10 +14,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/relayedock/relayedock/internal/apikey"
 	"github.com/relayedock/relayedock/internal/auth"
 	"github.com/relayedock/relayedock/internal/cockpit"
+	secretcrypto "github.com/relayedock/relayedock/internal/crypto"
 	"github.com/relayedock/relayedock/internal/domain"
 	"github.com/relayedock/relayedock/internal/id"
+	"github.com/relayedock/relayedock/internal/payment"
+	"github.com/relayedock/relayedock/internal/pricesync"
 	"github.com/relayedock/relayedock/internal/providers"
 	provideropenai "github.com/relayedock/relayedock/internal/providers/openai"
 	"github.com/relayedock/relayedock/internal/store"
@@ -24,7 +31,7 @@ import (
 func ControlEngine(d Dependencies) *gin.Engine {
 	r := gin.New()
 	configureTrustedProxies(r, d)
-	r.Use(recovery(d.Logger), requestMiddleware(d.Logger), cors(d.Config.AllowedOrigins))
+	r.Use(recovery(d.Logger), requestMiddleware(d.Logger, d.Metrics, "control_plane"), cors(d.Config.AllowedOrigins), requestBodyLimit(d.Config.MaxBodyBytes))
 	registerHealth(r, d)
 	r.POST("/api/auth/login", func(c *gin.Context) { loginHandler(c, d, "shared") })
 	r.POST("/api/admin/auth/login", func(c *gin.Context) { loginHandler(c, d, "admin") })
@@ -32,64 +39,220 @@ func ControlEngine(d Dependencies) *gin.Engine {
 	r.POST("/api/auth/refresh", func(c *gin.Context) { refreshHandler(c, d, "shared") })
 	r.POST("/api/admin/auth/refresh", func(c *gin.Context) { refreshHandler(c, d, "admin") })
 	r.POST("/api/console/auth/refresh", func(c *gin.Context) { refreshHandler(c, d, "console") })
+	registerPublicAccountRoutes(r, d)
+	registerPublicCommercialRoutes(r, d)
+	registerPaymentWebhookRoutes(r, d)
+	r.GET("/status", func(c *gin.Context) { publicStatusHandler(c, d) })
+	r.GET("/api/status", func(c *gin.Context) { publicStatusHandler(c, d) })
 	authenticated := r.Group("/api")
 	authenticated.Use(controlAuth(d))
 	authenticated.GET("/auth/me", func(c *gin.Context) { meHandler(c, d) })
 	authenticated.POST("/auth/logout", func(c *gin.Context) { logoutHandler(c, d, "shared") })
+	authenticated.POST("/pricing/quote", func(c *gin.Context) { pricingQuoteHandler(c, d) })
+	registerAuthenticatedAccountRoutes(authenticated, d, "shared")
 	admin := authenticated.Group("/admin")
-	admin.Use(requireAdmin())
+	admin.Use(requireAdmin(d))
+	admin.GET("/auth/me", func(c *gin.Context) { meHandler(c, d) })
 	admin.POST("/auth/logout", func(c *gin.Context) { logoutHandler(c, d, "admin") })
+	registerAuthenticatedAccountRoutes(admin, d, "admin")
 	registerAdmin(admin, d)
+	registerAdminCommercialRoutes(admin, d)
+	registerObservabilityRoutes(admin, d, true)
+	registerSupportRoutes(admin, d, true)
+	registerGovernanceRoutes(admin, d, true)
+	registerSupplierAdminRoutes(admin, d)
+	registerProviderQualityAdminRoutes(admin, d)
+	registerMarketplaceLaunchAdminRoutes(admin, d)
+	admin.POST("/api-keys/leak-check", func(c *gin.Context) {
+		var in struct {
+			APIKey string `json:"api_key"`
+		}
+		if c.ShouldBindJSON(&in) != nil || !apikey.LooksValid(strings.TrimSpace(in.APIKey)) {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "A valid RelayDock API key is required.")
+			return
+		}
+		err := d.Store.FreezeAPIKeyByHash(c.Request.Context(), d.APIKeys.Hash(strings.TrimSpace(in.APIKey)), "suspected_leak", claimsFrom(c).Subject, c.ClientIP())
+		if errors.Is(err, store.ErrNotFound) {
+			c.JSON(http.StatusOK, gin.H{"detected": false})
+			return
+		}
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"detected": true, "frozen": true})
+	})
 	console := authenticated.Group("/console")
+	console.GET("/auth/me", func(c *gin.Context) { meHandler(c, d) })
 	console.POST("/auth/logout", func(c *gin.Context) { logoutHandler(c, d, "console") })
+	registerAuthenticatedAccountRoutes(console, d, "console")
 	registerConsole(console, d)
+	registerConsoleOnboardingRoutes(console, d)
+	registerSupplierConsoleRoutes(console, d)
+	registerObservabilityRoutes(console, d, false)
+	registerSupportRoutes(console, d, false)
+	registerGovernanceRoutes(console, d, false)
 	return r
 }
 
 func registerHealth(r *gin.Engine, d Dependencies) {
 	r.GET("/healthz", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "relayedock", "version": version.Current})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "relayedock", "version": version.Current, "commit": version.Commit})
 	})
-	r.GET("/api/version", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"name": "RelayDock", "version": version.Current}) })
+	r.GET("/startupz", func(c *gin.Context) {
+		if d.StartupComplete != nil && !d.StartupComplete.Load() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "starting"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "started"})
+	})
+	r.GET("/api/version", func(c *gin.Context) {
+		metadata := version.Metadata()
+		c.JSON(http.StatusOK, gin.H{
+			// Keep name=RelayDock for clients that compare the legacy field.
+			"name": metadata.CompatibilityName, "product": metadata.Product,
+			"compatibility_name": metadata.CompatibilityName, "version": metadata.Version,
+			"commit": metadata.Commit, "build_time": metadata.BuildTime,
+		})
+	})
 	r.GET("/readyz", func(c *gin.Context) {
+		if d.Draining != nil && d.Draining.Load() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "draining"})
+			return
+		}
+		if d.StartupComplete != nil && !d.StartupComplete.Load() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "starting"})
+			return
+		}
+		if d.Store == nil || d.Redis == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "postgres": d.Store != nil, "redis": d.Redis != nil})
+			return
+		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 1500*time.Millisecond)
 		defer cancel()
 		dbErr := d.Store.Ping(ctx)
 		redisErr := d.Redis.Ping(ctx).Err()
 		if dbErr != nil || redisErr != nil {
+			if dbErr != nil {
+				_ = d.Store.RecordOperationalAlert(ctx, "POSTGRES_UNAVAILABLE", "CRITICAL", "PostgreSQL readiness checks are failing.", "dependency:postgres", map[string]any{"component": "postgres"})
+			}
+			if redisErr != nil {
+				_ = d.Store.RecordOperationalAlert(ctx, "REDIS_UNAVAILABLE", "CRITICAL", "Redis readiness checks are failing.", "dependency:redis", map[string]any{"component": "redis"})
+			}
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "postgres": dbErr == nil, "redis": redisErr == nil})
 			return
 		}
+		_ = d.Store.ResolveOperationalAlert(ctx, "dependency:postgres")
+		_ = d.Store.ResolveOperationalAlert(ctx, "dependency:redis")
 		c.JSON(http.StatusOK, gin.H{"status": "ready", "postgres": true, "redis": true})
 	})
-	r.GET("/metrics", func(c *gin.Context) { c.Header("Content-Type", "text/plain; version=0.0.4"); d.Metrics.Write(c.Writer) })
+	r.GET("/metrics", func(c *gin.Context) {
+		c.Header("Content-Type", "text/plain; version=0.0.4")
+		if d.Metrics == nil {
+			c.String(http.StatusServiceUnavailable, "# ModelDock metrics are not initialized.\n")
+			return
+		}
+		if d.Store != nil {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
+			defer cancel()
+			if gauges, err := d.Store.ObservabilityGauges(ctx); err == nil {
+				d.Metrics.SetGauge("relaydock_dependency_postgres_up", 1)
+				for name, value := range gauges {
+					d.Metrics.SetGauge(name, value)
+				}
+			} else {
+				d.Metrics.SetGauge("relaydock_dependency_postgres_up", 0)
+			}
+			if summaries, err := d.Store.ListProviderQualitySummaries(ctx); err == nil {
+				for _, summary := range summaries {
+					throughput := ""
+					if summary.State.ThroughputTPS != nil {
+						throughput = summary.State.ThroughputTPS.String()
+					}
+					d.Metrics.SetProviderQuality(summary.ProviderSlug, summary.State.Grade, summary.State.QualityScore.String(),
+						summary.State.AvailabilityPct.String(), summary.State.ErrorRatePct.String(), summary.State.RateLimitedPct.String(),
+						throughput, summary.State.RoutingMultiplier.String(), summary.State.TrafficCapBPS, summary.State.CircuitState == "OPEN")
+				}
+			}
+		}
+		if d.Redis != nil {
+			pool := d.Redis.PoolStats()
+			redisUp := int64(1)
+			if err := d.Redis.Ping(c.Request.Context()).Err(); err != nil {
+				redisUp = 0
+			}
+			d.Metrics.SetGauge("relaydock_dependency_redis_up", redisUp)
+			d.Metrics.SetGauge("relaydock_redis_pool_total_connections", int64(pool.TotalConns))
+			d.Metrics.SetGauge("relaydock_redis_pool_idle_connections", int64(pool.IdleConns))
+			d.Metrics.SetGauge("relaydock_redis_pool_max_connections", int64(d.Config.RedisPoolSize))
+		}
+		d.Metrics.Write(c.Writer)
+	})
 }
 
 func loginHandler(c *gin.Context, d Dependencies, realm string) {
 	var in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		MFACode  string `json:"mfa_code"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		openAIError(c, 400, "invalid_request", "A valid email and password are required.")
 		return
 	}
-	u, err := d.Store.UserByEmail(c.Request.Context(), strings.ToLower(strings.TrimSpace(in.Email)))
-	if err != nil || u.Status != "ACTIVE" || !authVerify(u.PasswordHash, in.Password) {
+	normalizedEmail := strings.ToLower(strings.TrimSpace(in.Email))
+	if !allowIdentity(c, d, "login", c.ClientIP()+"|"+normalizedEmail, d.Config.LoginRateLimit) {
+		return
+	}
+	u, err := d.Store.UserByEmail(c.Request.Context(), normalizedEmail)
+	passwordHash := dummyPasswordHash
+	if err != nil {
+		u = domain.User{}
+	} else {
+		passwordHash = u.PasswordHash
+	}
+	validPassword := authVerify(passwordHash, in.Password)
+	validPassword = validPassword && err == nil && u.Status == "ACTIVE"
+	if !validPassword {
+		d.Store.Audit(c.Request.Context(), "", "security.login_failed", "user", "", c.ClientIP(), map[string]any{"result": "invalid_credentials"})
 		openAIError(c, 401, "invalid_credentials", "Email or password is incorrect.")
 		return
+	}
+	if u.AbuseStatus == "FROZEN" || u.PaymentRisk == "BLOCKED" {
+		d.Store.Audit(c.Request.Context(), u.ID, "security.login_risk_blocked", "user", u.ID, c.ClientIP(), map[string]any{"abuse_status": u.AbuseStatus, "payment_risk": u.PaymentRisk})
+		openAIError(c, http.StatusForbidden, "risk_frozen", "This account is frozen pending review.")
+		return
+	}
+	mfaVerified := false
+	if u.Role == "ADMIN" || u.Role == "SUPER_ADMIN" {
+		if u.MFAEnabled {
+			if strings.TrimSpace(in.MFACode) == "" {
+				d.Store.Audit(c.Request.Context(), u.ID, "security.login_mfa_required", "user", u.ID, c.ClientIP(), nil)
+				openAIError(c, 401, "mfa_required", "Email or password is incorrect.")
+				return
+			}
+			envelope, secretErr := d.Store.TOTPSecret(c.Request.Context(), u.ID)
+			secret, decryptErr := d.Vault.Decrypt(envelope, "mfa:"+u.ID)
+			step, codeErr := auth.ValidateTOTP(secret, in.MFACode, time.Now().UTC())
+			if secretErr != nil || decryptErr != nil || codeErr != nil || d.Store.ConsumeTOTPStep(c.Request.Context(), u.ID, step) != nil {
+				d.Store.Audit(c.Request.Context(), u.ID, "security.login_mfa_failed", "user", u.ID, c.ClientIP(), nil)
+				openAIError(c, 401, "mfa_required", "Email or password is incorrect.")
+				return
+			}
+			mfaVerified = true
+		}
 	}
 	if strings.HasPrefix(u.PasswordHash, "$2") {
 		if upgraded, hashErr := auth.HashPassword(in.Password); hashErr == nil {
 			d.Store.UpgradePasswordHash(c.Request.Context(), u.ID, upgraded)
 		}
 	}
-	signed, expires, err := d.Auth.Issue(u.ID, u.Email, u.Role)
+	signed, expires, err := d.Auth.IssueVersioned(u.ID, u.Email, u.Role, u.SessionVersion, mfaVerified)
 	if err != nil {
 		openAIError(c, 500, "internal_error", "Could not create the session.")
 		return
 	}
-	refreshToken, refreshExpires, err := d.Auth.IssueRefresh(u.ID, u.Email, u.Role)
+	refreshToken, refreshExpires, err := d.Auth.IssueRefreshVersioned(u.ID, u.Email, u.Role, u.SessionVersion, mfaVerified)
 	if err != nil {
 		openAIError(c, 500, "internal_error", "Could not create the session.")
 		return
@@ -107,8 +270,10 @@ func loginHandler(c *gin.Context, d Dependencies, realm string) {
 	c.SetCookie(cookies.Refresh, refreshToken, refreshMaxAge, "/", "", d.Config.CookieSecure, true)
 	c.SetCookie(cookies.CSRF, csrf, refreshMaxAge, "/", "", d.Config.CookieSecure, false)
 	d.Store.TouchLogin(c.Request.Context(), u.ID)
+	d.Store.Audit(c.Request.Context(), u.ID, "security.login_succeeded", "user", u.ID, c.ClientIP(), map[string]any{"mfa": mfaVerified})
 	u.PasswordHash = ""
-	c.JSON(200, gin.H{"user": u, "expires_at": expires, "csrf_token": csrf})
+	c.JSON(200, gin.H{"user": u, "expires_at": expires, "csrf_token": csrf,
+		"mfa_enrollment_required": d.Config.AdminMFARequired && (u.Role == "ADMIN" || u.Role == "SUPER_ADMIN") && !u.MFAEnabled})
 }
 
 func refreshHandler(c *gin.Context, d Dependencies, realm string) {
@@ -128,16 +293,16 @@ func refreshHandler(c *gin.Context, d Dependencies, realm string) {
 		return
 	}
 	u, err := d.Store.UserByID(c.Request.Context(), claims.Subject)
-	if err != nil || u.Status != "ACTIVE" {
+	if err != nil || u.Status != "ACTIVE" || u.SessionVersion != claims.SessionVersion {
 		openAIError(c, http.StatusUnauthorized, "invalid_session", "The session user is unavailable.")
 		return
 	}
-	accessToken, accessExpires, err := d.Auth.Issue(u.ID, u.Email, u.Role)
+	accessToken, accessExpires, err := d.Auth.IssueVersioned(u.ID, u.Email, u.Role, u.SessionVersion, claims.MFA)
 	if err != nil {
 		openAIError(c, http.StatusInternalServerError, "internal_error", "Could not refresh the session.")
 		return
 	}
-	refreshToken, refreshExpires, err := d.Auth.IssueRefresh(u.ID, u.Email, u.Role)
+	refreshToken, refreshExpires, err := d.Auth.IssueRefreshVersioned(u.ID, u.Email, u.Role, u.SessionVersion, claims.MFA)
 	if err != nil {
 		openAIError(c, http.StatusInternalServerError, "internal_error", "Could not refresh the session.")
 		return
@@ -169,6 +334,9 @@ func logoutHandler(c *gin.Context, d Dependencies, realm string) {
 
 func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 	registerAdminV2(g, d)
+	registerAdminPaymentRoutes(g, d)
+	registerAdminSubscriptionRoutes(g, d)
+	registerAdminFinanceRoutes(g, d)
 	g.GET("/cockpit/accounts", func(c *gin.Context) { cockpitPool(c, d) })
 	g.POST("/cockpit/refresh", func(c *gin.Context) { cockpitPool(c, d) })
 	g.POST("/cockpit/test", func(c *gin.Context) { cockpitTest(c, d) })
@@ -210,6 +378,17 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		}
 		v, err := d.Store.UpdateProvider(c.Request.Context(), p)
 		audit(c, d, "provider.update", "provider", p.ID, v)
+		respond(c, v, err)
+	})
+	g.POST("/providers/:id/kill-switch", func(c *gin.Context) {
+		var in struct {
+			Enabled bool `json:"enabled"`
+		}
+		if c.ShouldBindJSON(&in) != nil {
+			openAIError(c, 400, "invalid_request", "enabled is required.")
+			return
+		}
+		v, err := d.Store.SetProviderKillSwitch(c.Request.Context(), c.Param("id"), in.Enabled, stringPtr(claimsFrom(c).Subject))
 		respond(c, v, err)
 	})
 	g.DELETE("/providers/:id", func(c *gin.Context) {
@@ -426,6 +605,230 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		v, err := d.Store.ListModelPrices(c.Request.Context(), c.Param("id"))
 		respondList(c, v, err)
 	})
+	g.GET("/pricing/provider-cost-price-books", func(c *gin.Context) {
+		v, err := d.Store.ListProviderCostPriceBooks(c.Request.Context(), c.Query("provider_id"), c.Query("model_id"))
+		respondList(c, v, err)
+	})
+	g.POST("/pricing/provider-cost-price-books", func(c *gin.Context) {
+		var v domain.ProviderCostChangeRequest
+		if c.ShouldBindJSON(&v) != nil {
+			openAIError(c, 400, "invalid_request", "A valid provider cost price book is required.")
+			return
+		}
+		if v.SourceType == "" {
+			v.SourceType = "MANUAL"
+		}
+		if v.IdempotencyKey == "" {
+			v.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		out, replayed, err := d.Store.CreateProviderCostChange(c.Request.Context(), v, stringPtr(claimsFrom(c).Subject))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"change_request": out, "replayed": replayed})
+	})
+	g.POST("/pricing/provider-cost-changes/manual", func(c *gin.Context) {
+		var change domain.ProviderCostChangeRequest
+		if c.ShouldBindJSON(&change) != nil {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "A valid manual Provider cost change is required.")
+			return
+		}
+		change.SourceType = "MANUAL"
+		if change.IdempotencyKey == "" {
+			change.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		out, replayed, err := d.Store.CreateProviderCostChange(c.Request.Context(), change, stringPtr(claimsFrom(c).Subject))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"change_request": out, "replayed": replayed})
+	})
+	g.POST("/pricing/provider-cost-changes/fetch", func(c *gin.Context) {
+		var in struct {
+			ProviderID string `json:"provider_id"`
+			SourceURL  string `json:"source_url"`
+			BatchKey   string `json:"batch_idempotency_key"`
+		}
+		if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.ProviderID) == "" || strings.TrimSpace(in.SourceURL) == "" {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "provider_id and source_url are required.")
+			return
+		}
+		if in.BatchKey == "" {
+			in.BatchKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		if in.BatchKey == "" || len(in.BatchKey) > 190 {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "A batch idempotency key of at most 190 characters is required.")
+			return
+		}
+		provider, err := d.Store.ProviderByID(c.Request.Context(), in.ProviderID)
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		result, err := pricesync.FetchAPI(c.Request.Context(), in.SourceURL, in.ProviderID, in.BatchKey, providerPricingHosts(provider))
+		if err != nil {
+			openAIError(c, http.StatusUnprocessableEntity, "provider_pricing_fetch_failed", "The approved Provider pricing source could not be fetched or validated.")
+			return
+		}
+		for index := range result.Changes {
+			result.Changes[index].SourceReference = result.SourceReference
+		}
+		changes, replayed, err := d.Store.CreateProviderCostChanges(c.Request.Context(), result.Changes, stringPtr(claimsFrom(c).Subject))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"change_requests": changes, "replayed_count": replayed, "source_reference": result.SourceReference})
+	})
+	g.POST("/pricing/provider-cost-changes/import-csv", func(c *gin.Context) {
+		providerID := strings.TrimSpace(c.Query("provider_id"))
+		batchKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		if providerID == "" || batchKey == "" || len(batchKey) > 190 {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "provider_id and an Idempotency-Key of at most 190 characters are required.")
+			return
+		}
+		if mediaType := strings.ToLower(strings.TrimSpace(strings.Split(c.GetHeader("Content-Type"), ";")[0])); mediaType != "text/csv" && mediaType != "application/csv" {
+			openAIError(c, http.StatusUnsupportedMediaType, "invalid_content_type", "Content-Type must be text/csv.")
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, pricesync.MaxFeedBytes))
+		if err != nil {
+			openAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "The CSV import exceeds the 1 MiB limit.")
+			return
+		}
+		hash := sha256.Sum256(body)
+		reference := "csv:sha256:" + hex.EncodeToString(hash[:])
+		changes, err := pricesync.ParseCSV(body, providerID, batchKey, reference)
+		if err != nil {
+			openAIError(c, http.StatusBadRequest, "invalid_csv", err.Error())
+			return
+		}
+		created, replayed, err := d.Store.CreateProviderCostChanges(c.Request.Context(), changes, stringPtr(claimsFrom(c).Subject))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"change_requests": created, "replayed_count": replayed, "source_reference": reference})
+	})
+	g.GET("/pricing/provider-cost-changes", func(c *gin.Context) {
+		v, err := d.Store.ListProviderCostChanges(c.Request.Context(), c.Query("status"))
+		respondList(c, v, err)
+	})
+	g.POST("/pricing/provider-cost-changes/:id/review", func(c *gin.Context) {
+		var in struct {
+			Decision string `json:"decision"`
+			Reason   string `json:"reason"`
+		}
+		if c.ShouldBindJSON(&in) != nil {
+			openAIError(c, 400, "invalid_request", "decision and reason are required.")
+			return
+		}
+		v, err := d.Store.ReviewProviderCostChange(c.Request.Context(), c.Param("id"), in.Decision, in.Reason, stringPtr(claimsFrom(c).Subject))
+		respond(c, v, err)
+	})
+	g.GET("/pricing/byok-service-fee-policies", func(c *gin.Context) {
+		policies, err := d.Store.ListBYOKServiceFeePolicies(c.Request.Context())
+		respondList(c, policies, err)
+	})
+	g.POST("/pricing/byok-service-fee-policies", func(c *gin.Context) {
+		var policy domain.BYOKServiceFeePolicy
+		if c.ShouldBindJSON(&policy) != nil {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "A valid BYOK service fee policy is required.")
+			return
+		}
+		created, err := d.Store.CreateBYOKServiceFeePolicy(c.Request.Context(), policy, stringPtr(claimsFrom(c).Subject))
+		respondCreated(c, created, err)
+	})
+	g.DELETE("/pricing/byok-service-fee-policies/:id", func(c *gin.Context) {
+		respondNoContent(c, d.Store.DisableBYOKServiceFeePolicy(c.Request.Context(), c.Param("id"), stringPtr(claimsFrom(c).Subject)))
+	})
+	g.GET("/pricing/customer-retail-price-books", func(c *gin.Context) {
+		v, err := d.Store.ListCustomerRetailPriceBooks(c.Request.Context(), c.Query("organization_id"), c.Query("provider_id"), c.Query("model_id"))
+		respondList(c, v, err)
+	})
+	g.POST("/pricing/customer-retail-price-books", func(c *gin.Context) {
+		var in struct {
+			domain.CustomerRetailPriceBook
+			ForceOverride bool   `json:"force_override"`
+			Confirmation  string `json:"confirmation"`
+		}
+		if c.ShouldBindJSON(&in) != nil {
+			openAIError(c, 400, "invalid_request", "A valid customer retail price book is required.")
+			return
+		}
+		out, err := d.Store.CreateCustomerRetailPriceBook(c.Request.Context(), in.CustomerRetailPriceBook, stringPtr(claimsFrom(c).Subject), in.ForceOverride, in.Confirmation)
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		audit(c, d, "pricing.customer_retail_price_book.create", "customer_retail_price_book", out.ID, gin.H{"price": out, "force_override": in.ForceOverride})
+		respondCreated(c, out, nil)
+	})
+	g.GET("/pricing/organization-price-plans", func(c *gin.Context) {
+		v, err := d.Store.ListOrganizationPricePlans(c.Request.Context(), c.Query("organization_id"))
+		respondList(c, v, err)
+	})
+	g.POST("/pricing/organization-price-plans", func(c *gin.Context) {
+		var in struct {
+			domain.OrganizationPricePlan
+			ForceOverride bool   `json:"force_override"`
+			Confirmation  string `json:"confirmation"`
+		}
+		if c.ShouldBindJSON(&in) != nil {
+			openAIError(c, 400, "invalid_request", "A valid organization price plan is required.")
+			return
+		}
+		out, err := d.Store.CreateOrganizationPricePlan(c.Request.Context(), in.OrganizationPricePlan, stringPtr(claimsFrom(c).Subject), in.ForceOverride, in.Confirmation)
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		audit(c, d, "pricing.organization_price_plan.create", "organization_price_plan", out.ID, gin.H{"price": out, "force_override": in.ForceOverride})
+		respondCreated(c, out, nil)
+	})
+	g.GET("/pricing/margin-policies", func(c *gin.Context) {
+		v, err := d.Store.ListPricingMarginPolicies(c.Request.Context())
+		respondList(c, v, err)
+	})
+	g.POST("/pricing/margin-policies", func(c *gin.Context) {
+		var v domain.PricingMarginPolicy
+		if c.ShouldBindJSON(&v) != nil {
+			openAIError(c, 400, "invalid_request", "A valid pricing margin policy is required.")
+			return
+		}
+		out, err := d.Store.CreatePricingMarginPolicy(c.Request.Context(), v, stringPtr(claimsFrom(c).Subject))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		audit(c, d, "pricing.margin_policy.create", "pricing_margin_policy", out.ID, out)
+		respondCreated(c, out, nil)
+	})
+	g.GET("/pricing/promotion-credits", func(c *gin.Context) {
+		v, err := d.Store.ListPromotionCredits(c.Request.Context(), c.Query("organization_id"))
+		respondList(c, v, err)
+	})
+	g.POST("/pricing/promotion-credits", func(c *gin.Context) {
+		var v domain.PromotionCredit
+		if c.ShouldBindJSON(&v) != nil {
+			openAIError(c, 400, "invalid_request", "A valid non-refundable promotion credit is required.")
+			return
+		}
+		if v.IdempotencyKey == "" {
+			v.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		out, err := d.Store.CreatePromotionCredit(c.Request.Context(), v, stringPtr(claimsFrom(c).Subject))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		audit(c, d, "pricing.promotion_credit.create", "promotion_credit", out.ID, out)
+		respondCreated(c, out, nil)
+	})
+	g.POST("/pricing/quotes", func(c *gin.Context) { pricingQuoteHandler(c, d) })
+	g.POST("/pricing/quote", func(c *gin.Context) { pricingQuoteHandler(c, d) })
 	g.POST("/models/:id/prices", func(c *gin.Context) {
 		var v domain.ModelPrice
 		if c.ShouldBindJSON(&v) != nil || v.InputPrice < 0 || v.CachedInputPrice < 0 || v.OutputPrice < 0 {
@@ -485,12 +888,29 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 
 	g.GET("/wallets", func(c *gin.Context) { v, err := d.Store.ListWallets(c.Request.Context()); respondList(c, v, err) })
 	g.PUT("/wallets/:id", func(c *gin.Context) {
-		var wallet domain.Wallet
-		if c.ShouldBindJSON(&wallet) != nil || !validBillingMode(wallet.BillingMode) || !validWalletStatus(wallet.Status) || wallet.CreditLimit < 0 {
-			openAIError(c, 400, "invalid_request", "billing_mode, status, and a non-negative credit_limit are required.")
+		var in struct {
+			BillingMode    string          `json:"billing_mode"`
+			CreditLimit    domain.Decimal  `json:"credit_limit"`
+			RiskLimit      *domain.Decimal `json:"risk_limit"`
+			CreditEnforced *bool           `json:"credit_enforced"`
+			Status         string          `json:"status"`
+		}
+		if c.ShouldBindJSON(&in) != nil || !validBillingMode(in.BillingMode) || !validWalletStatus(in.Status) || in.CreditLimit.IsNegative() || (in.RiskLimit != nil && in.RiskLimit.IsNegative()) {
+			openAIError(c, 400, "invalid_request", "billing_mode, status, and non-negative credit/risk limits are required.")
 			return
 		}
-		wallet.ID = c.Param("id")
+		wallet, err := d.Store.WalletByID(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		wallet.BillingMode, wallet.CreditLimit, wallet.Status = in.BillingMode, in.CreditLimit, in.Status
+		if in.RiskLimit != nil {
+			wallet.RiskLimit = *in.RiskLimit
+		}
+		if in.CreditEnforced != nil {
+			wallet.CreditEnforced = *in.CreditEnforced
+		}
 		out, err := d.Store.UpdateWallet(c.Request.Context(), wallet)
 		audit(c, d, "wallet.update", "wallet", wallet.ID, out)
 		respond(c, out, err)
@@ -499,6 +919,61 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 		limit, offset := page(c)
 		v, err := d.Store.ListWalletTransactions(c.Request.Context(), c.Param("id"), limit, offset)
 		respondList(c, v, err)
+	})
+	g.GET("/wallets/:id/funding-operations", func(c *gin.Context) {
+		limit, offset := page(c)
+		v, err := d.Store.ListFundingOperations(c.Request.Context(), c.Param("id"), limit, offset)
+		respondList(c, v, err)
+	})
+	g.GET("/wallets/:id/journals", func(c *gin.Context) {
+		limit, offset := page(c)
+		v, err := d.Store.ListJournals(c.Request.Context(), c.Param("id"), limit, offset)
+		respondList(c, v, err)
+	})
+	g.POST("/funding-operations/:id/late-usage", func(c *gin.Context) {
+		var in struct {
+			InputTokens       int64  `json:"input_tokens"`
+			CachedInputTokens int64  `json:"cached_input_tokens"`
+			OutputTokens      int64  `json:"output_tokens"`
+			UsageSource       string `json:"usage_source"`
+			IdempotencyKey    string `json:"idempotency_key"`
+		}
+		if c.ShouldBindJSON(&in) != nil || in.InputTokens < 0 || in.CachedInputTokens < 0 || in.OutputTokens < 0 || in.CachedInputTokens > in.InputTokens {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "Non-negative, internally consistent usage is required.")
+			return
+		}
+		if in.IdempotencyKey == "" {
+			in.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		if in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200 {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "An Idempotency-Key of at most 200 characters is required.")
+			return
+		}
+		claims := claimsFrom(c)
+		out, err := d.Store.AdjustLateFundingUsage(c.Request.Context(), store.LateUsageRequest{OperationID: c.Param("id"),
+			IdempotencyKey: in.IdempotencyKey, InputTokens: in.InputTokens, CachedInput: in.CachedInputTokens,
+			OutputTokens: in.OutputTokens, UsageSource: firstNonEmpty(in.UsageSource, "PROVIDER_LATE"), CreatedBy: stringPtr(claims.Subject)})
+		respond(c, out, err)
+	})
+	g.POST("/funding-operations/:id/reversals", func(c *gin.Context) {
+		var in struct {
+			Reason         string `json:"reason"`
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if c.ShouldBindJSON(&in) != nil {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "A reversal reason is required.")
+			return
+		}
+		if in.IdempotencyKey == "" {
+			in.IdempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		if in.IdempotencyKey == "" || len(in.IdempotencyKey) > 200 || strings.TrimSpace(in.Reason) == "" {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "A reason and Idempotency-Key of at most 200 characters are required.")
+			return
+		}
+		claims := claimsFrom(c)
+		out, err := d.Store.ReverseFunding(c.Request.Context(), c.Param("id"), in.IdempotencyKey, strings.TrimSpace(in.Reason), stringPtr(claims.Subject))
+		respond(c, out, err)
 	})
 	g.POST("/wallets/:id/topups", func(c *gin.Context) { createWalletAdjustment(c, d, "TOPUP") })
 	g.POST("/wallets/:id/adjustments", func(c *gin.Context) { createWalletAdjustment(c, d, "ADJUSTMENT") })
@@ -636,8 +1111,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 			openAIError(c, 400, "invalid_request", "status is required.")
 			return
 		}
-		err := d.Store.UpdateUserStatus(c.Request.Context(), c.Param("id"), in.Status)
-		audit(c, d, "user.status", "user", c.Param("id"), in)
+		err := d.Store.UpdateUserStatusAudited(c.Request.Context(), c.Param("id"), in.Status, claimsFrom(c).Subject, c.ClientIP())
 		respond(c, gin.H{"status": in.Status}, err)
 	})
 	g.GET("/request-logs", func(c *gin.Context) {
@@ -706,6 +1180,64 @@ func cockpitTest(c *gin.Context, d Dependencies) {
 
 func registerConsole(g *gin.RouterGroup, d Dependencies) {
 	registerConsoleV2(g, d)
+	registerConsolePaymentRoutes(g, d)
+	registerConsoleSubscriptionRoutes(g, d)
+	registerConsoleFinanceRoutes(g, d)
+	g.GET("/byok/credentials", func(c *gin.Context) {
+		organizationID := strings.TrimSpace(c.Query("organization_id"))
+		if organizationID == "" {
+			openAIError(c, 400, "invalid_request", "organization_id is required.")
+			return
+		}
+		if err := d.Store.CheckOrganizationPricingAccess(c.Request.Context(), claimsFrom(c).Subject, organizationID); err != nil {
+			respond(c, nil, err)
+			return
+		}
+		v, err := d.Store.ListBYOKCredentials(c.Request.Context(), organizationID)
+		respondList(c, v, err)
+	})
+	g.POST("/byok/credentials", func(c *gin.Context) {
+		var in struct {
+			ProviderID         string `json:"provider_id"`
+			ProjectID          string `json:"project_id"`
+			Name               string `json:"name"`
+			Secret             string `json:"secret"`
+			TermsVersion       string `json:"terms_version"`
+			OwnershipConfirmed bool   `json:"ownership_confirmed"`
+		}
+		if c.ShouldBindJSON(&in) != nil || in.ProviderID == "" || in.ProjectID == "" || in.Name == "" || strings.TrimSpace(in.Secret) == "" || !in.OwnershipConfirmed || in.TermsVersion == "" {
+			openAIError(c, 400, "invalid_request", "provider_id, project_id, name, secret, terms_version, and ownership confirmation are required.")
+			return
+		}
+		project, ok := requireProjectIDAccess(c, d, false, in.ProjectID, "DEVELOPER")
+		if !ok {
+			return
+		}
+		credentialID := id.UUID()
+		encrypted, err := d.Vault.Encrypt(strings.TrimSpace(in.Secret), credentialID)
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		now := time.Now().UTC()
+		actor := claimsFrom(c).Subject
+		owner := project.OrganizationID
+		credential := domain.Credential{ID: credentialID, ProviderID: in.ProviderID, Name: in.Name, CredentialType: "api_key", EncryptedSecret: encrypted, SecretLast4: secretcrypto.Last4(strings.TrimSpace(in.Secret)), Status: "ACTIVE", Weight: 100, MaxConcurrency: 10, CredentialOwner: domain.CredentialOwnerCustomer, OwnerOrganizationID: &owner, OwnershipConfirmedAt: &now, OwnershipConfirmedBy: &actor, OwnershipTermsVersion: in.TermsVersion}
+		out, err := d.Store.CreateBYOKCredential(c.Request.Context(), credential, in.ProjectID)
+		respondCreated(c, out, err)
+	})
+	g.DELETE("/byok/credentials/:id", func(c *gin.Context) {
+		organizationID := strings.TrimSpace(c.Query("organization_id"))
+		if organizationID == "" {
+			openAIError(c, 400, "invalid_request", "organization_id is required.")
+			return
+		}
+		if err := d.Store.CheckOrganizationPricingAccess(c.Request.Context(), claimsFrom(c).Subject, organizationID); err != nil {
+			respond(c, nil, err)
+			return
+		}
+		respondNoContent(c, d.Store.DisableBYOKCredential(c.Request.Context(), c.Param("id"), organizationID, stringPtr(claimsFrom(c).Subject)))
+	})
 	g.GET("/overview", func(c *gin.Context) {
 		uid := claimsFrom(c).Subject
 		if projectID := strings.TrimSpace(c.Query("project_id")); projectID != "" {
@@ -747,11 +1279,20 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 	g.GET("/usage", func(c *gin.Context) {
 		uid := claimsFrom(c).Subject
 		if projectID := strings.TrimSpace(c.Query("project_id")); projectID != "" {
-			if _, ok := requireProjectIDAccess(c, d, false, projectID, "VIEWER"); !ok {
+			project, ok := requireProjectIDAccess(c, d, false, projectID, "VIEWER")
+			if !ok {
+				return
+			}
+			if err := d.Store.RequireBooleanEntitlement(c.Request.Context(), project.OrganizationID, "cost_analysis"); err != nil {
+				respond(c, nil, err)
 				return
 			}
 			v, err := consoleProjectUsage(c.Request.Context(), d, projectID, days(c))
 			respond(c, v, err)
+			return
+		}
+		if err := requireUserOrganizationCapability(c, d, uid, "cost_analysis"); err != nil {
+			respond(c, nil, err)
 			return
 		}
 		v, err := d.Store.UsageSummary(c.Request.Context(), uid, periodDays(c))
@@ -763,12 +1304,19 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 		var v []domain.RequestLog
 		var err error
 		if projectID := strings.TrimSpace(c.Query("project_id")); projectID != "" {
-			if _, ok := requireProjectIDAccess(c, d, false, projectID, "VIEWER"); !ok {
+			project, ok := requireProjectIDAccess(c, d, false, projectID, "VIEWER")
+			if !ok {
 				return
 			}
 			v, err = d.Store.ListProjectRequestLogs(c.Request.Context(), projectID, &uid, limit, offset)
+			if err == nil {
+				v, err = enforceLogRetention(c, d, project.OrganizationID, v)
+			}
 		} else {
 			v, err = d.Store.ListRequestLogs(c.Request.Context(), &uid, limit, offset)
+			if err == nil {
+				v, err = enforceUserLogRetention(c, d, uid, v)
+			}
 		}
 		sanitizeConsoleRequestLogs(v)
 		respondList(c, v, err)
@@ -777,8 +1325,9 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 	g.GET("/logs", projectLogs)
 	g.GET("/models", func(c *gin.Context) {
 		projectID := strings.TrimSpace(c.Query("project_id"))
-		// Console users only need stable RelayDock aliases. Provider base URLs,
-		// credential-group identifiers, and upstream routing details remain in
+		// Project-scoped responses include only the provider/model correlation
+		// keys required to join an alias to the public catalog. Provider base
+		// URLs, credential groups, and fallback configuration remain confined to
 		// the administrator control plane.
 		models := make([]gin.H, 0)
 		if projectID != "" {
@@ -792,7 +1341,7 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 			}
 			for _, route := range routes {
 				if route.Enabled {
-					models = append(models, gin.H{"id": route.Alias, "id_alias": route.Alias, "alias": route.Alias, "display_name": route.Alias, "enabled": true, "capabilities": []string{}, "context_window": nil})
+					models = append(models, consoleProjectModel(route))
 				}
 			}
 		} else {
@@ -813,6 +1362,64 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 		}
 		respondList(c, models, nil)
 	})
+}
+
+func consoleProjectModel(route domain.ProjectModelRoute) gin.H {
+	return gin.H{
+		"id": route.Alias, "id_alias": route.Alias, "alias": route.Alias,
+		"display_name": route.Alias, "enabled": true, "capabilities": []string{}, "context_window": nil,
+		"provider_id": route.ProviderID, "upstream_model": route.UpstreamModel,
+	}
+}
+
+func requireUserOrganizationCapability(c *gin.Context, d Dependencies, userID, capability string) error {
+	organizations, err := d.Store.ListOrganizations(c.Request.Context(), &userID, 200, 0)
+	if err != nil {
+		return err
+	}
+	for _, organization := range organizations {
+		if err = d.Store.RequireBooleanEntitlement(c.Request.Context(), organization.ID, capability); err == nil {
+			return nil
+		}
+	}
+	return store.ErrEntitlementRequired
+}
+
+func enforceUserLogRetention(c *gin.Context, d Dependencies, userID string, logs []domain.RequestLog) ([]domain.RequestLog, error) {
+	organizations, err := d.Store.ListOrganizations(c.Request.Context(), &userID, 200, 0)
+	if err != nil {
+		return nil, err
+	}
+	retention := make(map[string]time.Time, len(organizations))
+	for _, organization := range organizations {
+		entitlements, entitlementErr := d.Store.EffectiveEntitlements(c.Request.Context(), organization.ID)
+		if entitlementErr != nil {
+			return nil, entitlementErr
+		}
+		retention[organization.ID] = time.Now().UTC().AddDate(0, 0, -int(entitlements.LogRetentionDays))
+	}
+	out := logs[:0]
+	for _, item := range logs {
+		if cutoff, ok := retention[item.OrganizationID]; ok && !item.CreatedAt.Before(cutoff) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func enforceLogRetention(c *gin.Context, d Dependencies, organizationID string, logs []domain.RequestLog) ([]domain.RequestLog, error) {
+	entitlements, err := d.Store.EffectiveEntitlements(c.Request.Context(), organizationID)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -int(entitlements.LogRetentionDays))
+	out := logs[:0]
+	for _, item := range logs {
+		if !item.CreatedAt.Before(cutoff) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 func createCredential(c *gin.Context, d Dependencies) {
@@ -1169,6 +1776,9 @@ func createAPIKey(c *gin.Context, d Dependencies, admin bool) {
 	k := domain.APIKey{UserID: in.UserID, OrganizationID: in.OrganizationID, ProjectID: in.ProjectID, TeamID: in.TeamID, Name: in.Name, Environment: in.Environment, KeyPrefix: prefix, KeyHash: hash, ExpiresAt: expiresAt, RateLimitRPM: in.RateLimitRPM, RateLimitTPM: in.RateLimitTPM, MonthlyTokenLimit: in.MonthlyTokenLimit, MonthlyCostLimit: in.MonthlyCostLimit, AllowedModels: in.AllowedModels}
 	out, err := d.Store.CreateProjectAPIKey(c.Request.Context(), k)
 	if err != nil {
+		if d.Logger != nil {
+			d.Logger.Error("api_key_creation_failed", "error", err, "user_id", in.UserID, "organization_id", in.OrganizationID, "project_id", in.ProjectID)
+		}
 		respond(c, nil, err)
 		return
 	}
@@ -1185,12 +1795,132 @@ func respond(c *gin.Context, v any, err error) {
 		openAIError(c, 404, "not_found", "The requested resource was not found.")
 		return
 	}
+	if errors.Is(err, store.ErrRiskFrozen) {
+		openAIError(c, http.StatusForbidden, "risk_frozen", "This account, organization, or API key is frozen pending review.")
+		return
+	}
+	if errors.Is(err, store.ErrRiskRestricted) {
+		openAIError(c, http.StatusForbidden, "risk_restricted", "This operation is restricted pending risk review.")
+		return
+	}
+	if errors.Is(err, store.ErrKeyCreationRate) {
+		openAIError(c, http.StatusTooManyRequests, "api_key_creation_rate_limited", "Too many API keys were created recently.")
+		return
+	}
 	if errors.Is(err, store.ErrCredentialGroupProviderMismatch) {
 		openAIError(c, http.StatusUnprocessableEntity, "provider_mismatch", "Provider credentials can only be assigned to credential groups owned by the same provider.")
 		return
 	}
 	if errors.Is(err, store.ErrModelRouteProviderMismatch) {
 		openAIError(c, http.StatusUnprocessableEntity, "provider_mismatch", "A model route's provider must match its primary and fallback credential groups.")
+		return
+	}
+	if errors.Is(err, store.ErrPricingUnavailable) {
+		openAIError(c, http.StatusUnprocessableEntity, "pricing_unavailable", "No approved pricing is available for this provider and model.")
+		return
+	}
+	if errors.Is(err, store.ErrProviderNotContracted) {
+		openAIError(c, http.StatusForbidden, "provider_pricing_disabled", "The provider contract, region, or pricing switch does not allow this operation.")
+		return
+	}
+	if errors.Is(err, store.ErrNegativeMargin) {
+		openAIError(c, http.StatusUnprocessableEntity, "negative_margin", "The retail price is below the configured minimum gross margin.")
+		return
+	}
+	if errors.Is(err, store.ErrForceOverrideConfirmation) {
+		openAIError(c, http.StatusConflict, "margin_override_confirmation_required", "A second confirmation is required before forcing a margin override.")
+		return
+	}
+	if errors.Is(err, store.ErrIdempotencyConflict) {
+		openAIError(c, http.StatusConflict, "idempotency_conflict", "The idempotency key was already used with different operation data.")
+		return
+	}
+	if errors.Is(err, store.ErrPriceChangeSelfReview) {
+		openAIError(c, http.StatusConflict, "price_change_self_review_forbidden", "Provider cost changes require review by a different administrator.")
+		return
+	}
+	if errors.Is(err, store.ErrEntitlementExceeded) {
+		openAIError(c, http.StatusForbidden, "subscription_entitlement_exceeded", "The current subscription limit has been reached.")
+		return
+	}
+	if errors.Is(err, store.ErrEntitlementRequired) {
+		openAIError(c, http.StatusForbidden, "subscription_entitlement_required", "The current subscription does not include this capability.")
+		return
+	}
+	if errors.Is(err, store.ErrSubscriptionState) {
+		openAIError(c, http.StatusConflict, "subscription_state_conflict", "The subscription does not allow this state transition.")
+		return
+	}
+	if errors.Is(err, store.ErrPaymentState) {
+		openAIError(c, http.StatusConflict, "payment_state_conflict", "The payment order does not allow this state transition.")
+		return
+	}
+	if errors.Is(err, store.ErrPaymentMismatch) {
+		openAIError(c, http.StatusUnprocessableEntity, "payment_mismatch", "The verified provider payment does not match the local order.")
+		return
+	}
+	if errors.Is(err, payment.ErrProviderDisabled) || errors.Is(err, payment.ErrContractUnavailable) || errors.Is(err, payment.ErrRegionNotAllowed) {
+		openAIError(c, http.StatusForbidden, "payment_provider_unavailable", "The payment provider switch, contract, or allowed region does not permit this operation.")
+		return
+	}
+	if errors.Is(err, payment.ErrProviderNotRegistered) || errors.Is(err, payment.ErrWebhookUnsupported) || errors.Is(err, payment.ErrReconcileUnsupported) {
+		openAIError(c, http.StatusUnprocessableEntity, "payment_provider_unsupported", "The requested payment provider capability is unavailable.")
+		return
+	}
+	if errors.Is(err, store.ErrFundingInProgress) {
+		openAIError(c, http.StatusConflict, "funding_in_progress", "The funding operation has not reached a terminal settlement state.")
+		return
+	}
+	if errors.Is(err, store.ErrFundingTerminal) {
+		openAIError(c, http.StatusConflict, "funding_terminal", "The funding operation cannot accept this transition.")
+		return
+	}
+	if errors.Is(err, store.ErrPricingCurrencyMismatch) {
+		openAIError(c, http.StatusUnprocessableEntity, "pricing_currency_mismatch", "Provider cost and retail price currencies must match until an approved FX pricing policy is configured.")
+		return
+	}
+	if errors.Is(err, store.ErrFinanceState) {
+		openAIError(c, http.StatusConflict, "finance_state_conflict", "The financial record does not allow this operation.")
+		return
+	}
+	if errors.Is(err, store.ErrRefundNotEligible) {
+		openAIError(c, http.StatusUnprocessableEntity, "refund_not_eligible", "The requested amount is not eligible for a refund.")
+		return
+	}
+	if errors.Is(err, store.ErrInvoiceAmount) {
+		openAIError(c, http.StatusUnprocessableEntity, "invoice_amount_not_eligible", "The requested invoice amount exceeds eligible settled revenue.")
+		return
+	}
+	if errors.Is(err, store.ErrStatementMismatch) {
+		openAIError(c, http.StatusUnprocessableEntity, "provider_statement_mismatch", "The Provider statement total does not equal its line totals.")
+		return
+	}
+	if errors.Is(err, store.ErrSupplierBillMismatch) {
+		openAIError(c, http.StatusUnprocessableEntity, "supplier_bill_mismatch", "The supplier-declared bill total does not equal its line totals.")
+		return
+	}
+	if errors.Is(err, store.ErrMinimumSettlement) {
+		openAIError(c, http.StatusUnprocessableEntity, "minimum_settlement_not_met", "Eligible platform-measured payable is below the configured minimum settlement amount.")
+		return
+	}
+	if errors.Is(err, store.ErrSupplierPayoutBlocked) {
+		openAIError(c, http.StatusConflict, "supplier_payout_blocked", "Payout requires settled platform usage, verified bill matches, approved tax/invoice status, and no open dispute.")
+		return
+	}
+	if errors.Is(err, store.ErrSupplierSettlementState) {
+		openAIError(c, http.StatusConflict, "supplier_settlement_state_conflict", "The supplier settlement does not allow this state transition.")
+		return
+	}
+	if errors.Is(err, store.ErrMarketplaceLaunchState) {
+		openAIError(c, http.StatusConflict, "marketplace_launch_state_conflict", "Marketplace launch gates or lifecycle state do not allow this operation.")
+		return
+	}
+	if errors.Is(err, store.ErrMarketplaceGateEvidence) {
+		openAIError(c, http.StatusUnprocessableEntity, "marketplace_gate_evidence_invalid", "The gate requires bounded administrator evidence and a valid decision.")
+		return
+	}
+	if errors.Is(err, store.ErrMarketplacePayoutReadiness) {
+		openAIError(c, http.StatusConflict, "marketplace_payout_readiness_incomplete", "Contract, tax, payment, and security evidence must be independently approved before production payout.")
 		return
 	}
 	var pgErr *pgconn.PgError
@@ -1202,9 +1932,61 @@ func respond(c *gin.Context, v any, err error) {
 		case "23503", "23514", "23502":
 			openAIError(c, http.StatusUnprocessableEntity, "invalid_reference", "The request violates a resource relationship or constraint.")
 			return
+		case "42501":
+			openAIError(c, http.StatusForbidden, "policy_forbidden", "A protected administrator or release policy forbids this transition.")
+			return
 		}
 	}
 	openAIError(c, 500, "internal_error", "The operation could not be completed.")
+}
+
+func pricingQuoteHandler(c *gin.Context, d Dependencies) {
+	var in struct {
+		OrganizationID             string `json:"organization_id"`
+		ProviderID                 string `json:"provider_id"`
+		Model                      string `json:"model"`
+		InputTokens                int64  `json:"input_tokens"`
+		CachedInputTokens          int64  `json:"cached_input_tokens"`
+		OutputTokens               int64  `json:"output_tokens"`
+		EstimatedInputTokens       int64  `json:"estimated_input_tokens"`
+		EstimatedCachedInputTokens int64  `json:"estimated_cached_input_tokens"`
+		EstimatedOutputTokens      int64  `json:"estimated_output_tokens"`
+		PromotionAmount            string `json:"promotion_amount"`
+		TaxRate                    string `json:"tax_rate"`
+		ExchangeRate               string `json:"exchange_rate"`
+		IdempotencyKey             string `json:"idempotency_key"`
+	}
+	if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.OrganizationID) == "" || strings.TrimSpace(in.Model) == "" {
+		openAIError(c, http.StatusBadRequest, "invalid_request", "organization_id and model are required.")
+		return
+	}
+	if len(in.IdempotencyKey) > 200 {
+		openAIError(c, http.StatusBadRequest, "invalid_request", "idempotency_key must not exceed 200 characters.")
+		return
+	}
+	if in.InputTokens == 0 {
+		in.InputTokens = in.EstimatedInputTokens
+	}
+	if in.CachedInputTokens == 0 {
+		in.CachedInputTokens = in.EstimatedCachedInputTokens
+	}
+	if in.OutputTokens == 0 {
+		in.OutputTokens = in.EstimatedOutputTokens
+	}
+	claims := claimsFrom(c)
+	if claims.Role != "ADMIN" && claims.Role != "SUPER_ADMIN" {
+		if err := d.Store.CheckOrganizationPricingAccess(c.Request.Context(), claims.Subject, in.OrganizationID); err != nil {
+			openAIError(c, http.StatusForbidden, "forbidden", "The organization is outside this session's scope.")
+			return
+		}
+	}
+	actor := stringPtr(claims.Subject)
+	out, err := d.Store.QuotePricing(c.Request.Context(), store.PriceQuoteRequest{OrganizationID: in.OrganizationID, ProviderID: in.ProviderID, Model: strings.TrimSpace(in.Model), InputTokens: in.InputTokens, CachedInputTokens: in.CachedInputTokens, OutputTokens: in.OutputTokens, PromotionAmount: in.PromotionAmount, TaxRate: in.TaxRate, ExchangeRate: in.ExchangeRate, IdempotencyKey: in.IdempotencyKey, CreatedBy: actor})
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"quote": out, "data": out})
 }
 func respondCreated(c *gin.Context, v any, err error) {
 	if err != nil {
@@ -1273,6 +2055,8 @@ func deref(v *string) string {
 	}
 	return *v
 }
+
+func stringPtr(value string) *string { return &value }
 func last4(v string) string {
 	v = strings.TrimSpace(v)
 	if len(v) <= 4 {
@@ -1298,6 +2082,15 @@ func upsertRoutingRule(c *gin.Context, d Dependencies, create bool) {
 	} else {
 		rule.ID = ""
 		rule.Enabled = true
+	}
+	project, err := d.Store.ProjectByID(c.Request.Context(), rule.ProjectID)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	if err = d.Store.RequireBooleanEntitlement(c.Request.Context(), project.OrganizationID, "advanced_routing"); err != nil {
+		respond(c, nil, err)
+		return
 	}
 	out, err := d.Store.UpsertRoutingRule(c.Request.Context(), rule)
 	action := "routing_rule.update"
@@ -1339,12 +2132,12 @@ func upsertTeam(c *gin.Context, d Dependencies, create bool) {
 
 func createWalletAdjustment(c *gin.Context, d Dependencies, transactionType string) {
 	var in struct {
-		Amount         float64        `json:"amount"`
+		Amount         domain.Decimal `json:"amount"`
 		IdempotencyKey string         `json:"idempotency_key"`
 		Reference      string         `json:"reference"`
 		Metadata       map[string]any `json:"metadata"`
 	}
-	if c.ShouldBindJSON(&in) != nil || in.Amount == 0 || (transactionType == "TOPUP" && in.Amount < 0) {
+	if c.ShouldBindJSON(&in) != nil || in.Amount.IsZero() || (transactionType == "TOPUP" && in.Amount.IsNegative()) {
 		openAIError(c, 400, "invalid_request", "A non-zero amount is required; topups must be positive.")
 		return
 	}
@@ -1376,11 +2169,28 @@ func validIntelligentStrategy(value string) bool {
 	return value == "cost_optimized" || value == "quality_optimized" || value == "balanced"
 }
 func validMarketplaceStatus(value string) bool {
-	return value == "DRAFT" || value == "REVIEW" || value == "ACTIVE" || value == "SUSPENDED" || value == "REJECTED"
+	return value == "DRAFT" || value == "REVIEW" || value == "CANARY" || value == "ACTIVE" || value == "SUSPENDED" || value == "REJECTED" || value == "EXITED"
 }
 func validBillingMode(value string) bool { return value == "PREPAID" || value == "POSTPAID" }
 func validWalletStatus(value string) bool {
 	return value == "ACTIVE" || value == "FROZEN" || value == "CLOSED"
+}
+
+func providerPricingHosts(provider domain.Provider) []string {
+	configured := make([]string, 0)
+	if raw, ok := provider.Config["pricing_api_hosts"]; ok {
+		switch values := raw.(type) {
+		case []any:
+			for _, value := range values {
+				if host, ok := value.(string); ok && strings.TrimSpace(host) != "" {
+					configured = append(configured, strings.TrimSpace(host))
+				}
+			}
+		case []string:
+			configured = append(configured, values...)
+		}
+	}
+	return configured
 }
 
 func normalizeProviderType(value string) (string, bool) {

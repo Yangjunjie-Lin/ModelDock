@@ -31,10 +31,14 @@ services:
       - wal_compression=on
       - -c
       - checkpoint_completion_target=0.9
+      - -c
+      - log_min_duration_statement=${POSTGRES_SLOW_QUERY_MS:-500}
+      - -c
+      - track_io_timing=on
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -57,6 +61,7 @@ services:
       - -ec
       - >-
         exec redis-server --appendonly yes --appendfsync everysec
+        --aof-use-rdb-preamble yes --save 900 1 --save 300 10
         --requirepass "$${REDIS_PASSWORD}" --maxmemory 128mb
         --maxmemory-policy noeviction --tcp-keepalive 60
     volumes:
@@ -74,8 +79,37 @@ services:
     stop_grace_period: 30s
     logging: *default-logging
 
+  migration:
+    image: ${MODELDOCK_SERVER_IMAGE:-relaydock/server}:${RELAYDOCK_IMAGE_TAG:-production}
+    build:
+      context: ${RELAYDOCK_SOURCE_DIR:-./src}
+      dockerfile: deploy/docker/Dockerfile.relaydock
+      args:
+        GOPROXY: ${GO_MODULE_PROXY:-https://proxy.golang.org,direct}
+    command: ["migrate"]
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+      POSTGRES_MAX_CONNS: ${MIGRATION_POSTGRES_MAX_CONNS:-4}
+      POSTGRES_MIN_CONNS: 1
+      POSTGRES_MAX_CONN_IDLE_TIME: 1m
+      POSTGRES_MAX_CONN_LIFETIME: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 0.5
+    logging: *default-logging
+
   relaydock:
-    image: relaydock/server:${RELAYDOCK_IMAGE_TAG:-production}
+    image: ${MODELDOCK_SERVER_IMAGE:-relaydock/server}:${RELAYDOCK_IMAGE_TAG:-production}
     build:
       context: ${RELAYDOCK_SOURCE_DIR:-./src}
       dockerfile: deploy/docker/Dockerfile.relaydock
@@ -101,11 +135,39 @@ services:
       REDIS_DIAL_TIMEOUT: ${REDIS_DIAL_TIMEOUT:-5s}
       REDIS_READ_TIMEOUT: ${REDIS_READ_TIMEOUT:-3s}
       REDIS_WRITE_TIMEOUT: ${REDIS_WRITE_TIMEOUT:-3s}
+      RELAYDOCK_MIGRATION_MODE: external
       RELAYDOCK_MASTER_KEY: ${RELAYDOCK_MASTER_KEY:?set RELAYDOCK_MASTER_KEY}
       RELAYDOCK_API_KEY_HMAC_SECRET: ${RELAYDOCK_API_KEY_HMAC_SECRET:?set RELAYDOCK_API_KEY_HMAC_SECRET}
       RELAYDOCK_JWT_SECRET: ${RELAYDOCK_JWT_SECRET:?set RELAYDOCK_JWT_SECRET}
+      RELAYDOCK_JWT_PREVIOUS_SECRET: ${RELAYDOCK_JWT_PREVIOUS_SECRET:-}
       RELAYDOCK_JWT_LIFETIME: ${RELAYDOCK_JWT_LIFETIME:-15m}
       RELAYDOCK_JWT_REFRESH_LIFETIME: ${RELAYDOCK_JWT_REFRESH_LIFETIME:-168h}
+      RELAYDOCK_REGISTRATION_MODE: ${RELAYDOCK_REGISTRATION_MODE:-CLOSED}
+      RELAYDOCK_PUBLIC_CONSOLE_URL: ${RELAYDOCK_PUBLIC_CONSOLE_URL:?set RELAYDOCK_PUBLIC_CONSOLE_URL}
+      RELAYDOCK_PUBLIC_SUPPORT_EMAIL: ${RELAYDOCK_PUBLIC_SUPPORT_EMAIL:-support@example.invalid}
+      RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL: ${RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL:-enterprise@example.invalid}
+      RELAYDOCK_EMAIL_VERIFICATION_TTL: ${RELAYDOCK_EMAIL_VERIFICATION_TTL:-24h}
+      RELAYDOCK_PASSWORD_RESET_TTL: ${RELAYDOCK_PASSWORD_RESET_TTL:-1h}
+      RELAYDOCK_INVITATION_TTL: ${RELAYDOCK_INVITATION_TTL:-168h}
+      RELAYDOCK_ADMIN_MFA_REQUIRED: ${RELAYDOCK_ADMIN_MFA_REQUIRED:-true}
+      RELAYDOCK_LOGIN_RATE_LIMIT: ${RELAYDOCK_LOGIN_RATE_LIMIT:-10}
+      RELAYDOCK_REGISTRATION_RATE_LIMIT: ${RELAYDOCK_REGISTRATION_RATE_LIMIT:-5}
+      RELAYDOCK_VERIFICATION_RATE_LIMIT: ${RELAYDOCK_VERIFICATION_RATE_LIMIT:-10}
+      RELAYDOCK_PASSWORD_RESET_RATE_LIMIT: ${RELAYDOCK_PASSWORD_RESET_RATE_LIMIT:-5}
+      RELAYDOCK_PUBLIC_FUNNEL_RATE_LIMIT: ${RELAYDOCK_PUBLIC_FUNNEL_RATE_LIMIT:-120}
+      RELAYDOCK_IDENTITY_RATE_WINDOW: ${RELAYDOCK_IDENTITY_RATE_WINDOW:-15m}
+      RELAYDOCK_CONTENT_POLICY_FAILURE_MODE: ${RELAYDOCK_CONTENT_POLICY_FAILURE_MODE:-FAIL_CLOSED}
+      RELAYDOCK_GOVERNANCE_CLEANUP_INTERVAL: ${RELAYDOCK_GOVERNANCE_CLEANUP_INTERVAL:-1h}
+      RELAYDOCK_REPORT_SLA_HOURS: ${RELAYDOCK_REPORT_SLA_HOURS:-72}
+      RELAYDOCK_MAIL_PROVIDER: ${RELAYDOCK_MAIL_PROVIDER:-smtp}
+      RELAYDOCK_MAIL_FROM: ${RELAYDOCK_MAIL_FROM:?set RELAYDOCK_MAIL_FROM}
+      RELAYDOCK_MAIL_POLL_INTERVAL: ${RELAYDOCK_MAIL_POLL_INTERVAL:-2s}
+      RELAYDOCK_MAIL_MAX_ATTEMPTS: ${RELAYDOCK_MAIL_MAX_ATTEMPTS:-6}
+      RELAYDOCK_SMTP_HOST: ${RELAYDOCK_SMTP_HOST:?set RELAYDOCK_SMTP_HOST}
+      RELAYDOCK_SMTP_PORT: ${RELAYDOCK_SMTP_PORT:-587}
+      RELAYDOCK_SMTP_USERNAME: ${RELAYDOCK_SMTP_USERNAME:-}
+      RELAYDOCK_SMTP_PASSWORD: ${RELAYDOCK_SMTP_PASSWORD:-}
+      RELAYDOCK_SMTP_TLS_MODE: ${RELAYDOCK_SMTP_TLS_MODE:-starttls}
       RELAYDOCK_ADMIN_EMAIL: ${RELAYDOCK_ADMIN_EMAIL:?set RELAYDOCK_ADMIN_EMAIL}
       RELAYDOCK_ADMIN_PASSWORD: ${RELAYDOCK_ADMIN_PASSWORD:?set RELAYDOCK_ADMIN_PASSWORD}
       RELAYDOCK_ADMIN_DISPLAY_NAME: ${RELAYDOCK_ADMIN_DISPLAY_NAME:-RelayDock Administrator}
@@ -113,29 +175,55 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/32}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      LOG_DIR: /app/logs
+      # Keep replicas stateless; ship stdout/stderr through the container
+      # runtime or OTLP instead of a per-node bind mount.
+      LOG_DIR: ""
+      RELAYDOCK_OTEL_EXPORTER_OTLP_ENDPOINT: ${RELAYDOCK_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      RELAYDOCK_OTEL_EXPORTER_OTLP_INSECURE: ${RELAYDOCK_OTEL_EXPORTER_OTLP_INSECURE:-false}
       LOG_PROMPT_CONTENT: "false"
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-10485760}
+      RELAYDOCK_STREAM_MAX_BYTES: ${RELAYDOCK_STREAM_MAX_BYTES:-67108864}
+      RELAYDOCK_PROVIDER_ALLOWED_HOSTS: ${RELAYDOCK_PROVIDER_ALLOWED_HOSTS:-api.openai.com,api.deepseek.com,openrouter.ai,api.anthropic.com,generativelanguage.googleapis.com,open.bigmodel.cn,api.moonshot.cn,dashscope.aliyuncs.com}
+      RELAYDOCK_PROVIDER_ALLOW_PRIVATE_NETWORK: "false"
+      RELAYDOCK_PROVIDER_ALLOW_HTTP: "false"
       CREDENTIAL_COOLDOWN: ${CREDENTIAL_COOLDOWN:-30s}
+      RELAYDOCK_PROVIDER_TIMEOUT: ${RELAYDOCK_PROVIDER_TIMEOUT:-10m}
+      RELAYDOCK_PROVIDER_QUALITY_PROBE_REGION: ${RELAYDOCK_PROVIDER_QUALITY_PROBE_REGION:-}
+      RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL: ${RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL:-30s}
+      RELAYDOCK_PROVIDER_QUALITY_LEASE: ${RELAYDOCK_PROVIDER_QUALITY_LEASE:-2m}
+      RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE: ${RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE:-20}
+      RELAYDOCK_SUPPLIER_SETTLEMENT_POLL_INTERVAL: ${RELAYDOCK_SUPPLIER_SETTLEMENT_POLL_INTERVAL:-1m}
+      RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE: ${RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE:-100}
+      RELAYDOCK_PAYOUT_ALLOWED_REGIONS: ${RELAYDOCK_PAYOUT_ALLOWED_REGIONS:-US,CN}
+      RELAYDOCK_PAYOUT_SANDBOX_ENABLED: ${RELAYDOCK_PAYOUT_SANDBOX_ENABLED:-false}
+      RELAYDOCK_PAYOUT_SANDBOX_SECRET: ${RELAYDOCK_PAYOUT_SANDBOX_SECRET:-}
+      RELAYDOCK_FUNDING_RECOVERY_INTERVAL: ${RELAYDOCK_FUNDING_RECOVERY_INTERVAL:-30s}
+      RELAYDOCK_FUNDING_STALE_AFTER: ${RELAYDOCK_FUNDING_STALE_AFTER:-15m}
+      RELAYDOCK_PAYMENT_ORDER_TTL: ${RELAYDOCK_PAYMENT_ORDER_TTL:-30m}
+      RELAYDOCK_PAYMENT_POLL_INTERVAL: ${RELAYDOCK_PAYMENT_POLL_INTERVAL:-10s}
+      RELAYDOCK_SUBSCRIPTION_POLL_INTERVAL: ${RELAYDOCK_SUBSCRIPTION_POLL_INTERVAL:-1m}
+      RELAYDOCK_RECONCILIATION_INTERVAL: ${RELAYDOCK_RECONCILIATION_INTERVAL:-15m}
+      RELAYDOCK_RECONCILIATION_RUN_AT: ${RELAYDOCK_RECONCILIATION_RUN_AT:-02:00}
+      RELAYDOCK_PAYMENT_WEBHOOK_TIMESTAMP_SKEW: ${RELAYDOCK_PAYMENT_WEBHOOK_TIMESTAMP_SKEW:-5m}
+      RELAYDOCK_PAYMENT_ALLOWED_REGIONS: ${RELAYDOCK_PAYMENT_ALLOWED_REGIONS:-CN}
+      RELAYDOCK_PAYMENT_SANDBOX_ENABLED: ${RELAYDOCK_PAYMENT_SANDBOX_ENABLED:-false}
+      RELAYDOCK_PAYMENT_SANDBOX_SECRET: ${RELAYDOCK_PAYMENT_SANDBOX_SECRET:-}
+      RELAYDOCK_PAYMENT_MANUAL_ENABLED: ${RELAYDOCK_PAYMENT_MANUAL_ENABLED:-false}
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-30s}
+      RELAYDOCK_DRAIN_DELAY: ${RELAYDOCK_DRAIN_DELAY:-10s}
       WEBHOOK_ALLOW_HTTP: "false"
       WEBHOOK_ALLOW_PRIVATE_NETWORK: "false"
       WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-10s}
       WEBHOOK_POLL_INTERVAL: ${WEBHOOK_POLL_INTERVAL:-2s}
       WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-6}
-    ports:
-      - "127.0.0.1:${GATEWAY_DIAGNOSTIC_PORT:-8080}:8080"
-      - "127.0.0.1:${CONTROL_PLANE_PORT:-8081}:8081"
     expose: ["8080", "8081"]
-    volumes:
-      - ./data/relaydock/logs:/app/logs
     depends_on:
-      postgres:
-        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null && wget -qO- http://127.0.0.1:8081/readyz >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/startupz >/dev/null && wget -qO- http://127.0.0.1:8081/readyz >/dev/null"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -145,14 +233,29 @@ services:
     networks: [edge, internal]
     mem_limit: 512m
     cpus: 1.5
-    stop_grace_period: 45s
+    stop_grace_period: 90s
     logging: *default-logging
+    deploy:
+      replicas: ${RELAYDOCK_REPLICAS:-2}
+      update_config:
+        parallelism: 1
+        delay: 15s
+        order: start-first
+        failure_action: rollback
+        monitor: 60s
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
 
   nginx:
     image: nginx:1.27-alpine
     restart: always
     read_only: true
     command: ["/bin/sh", "-c", "while sleep 21600; do nginx -s reload; done & exec nginx -g 'daemon off;'"]
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
+      RELAYDOCK_PUBLIC_SITE_DOMAIN: ${RELAYDOCK_PUBLIC_SITE_DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"
@@ -168,6 +271,8 @@ services:
       - /var/run:size=2m,uid=101,gid=101
     depends_on:
       relaydock:
+        condition: service_healthy
+      console-web:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --header='Host: ${API_DOMAIN:?set API_DOMAIN}' http://127.0.0.1/nginx-health >/dev/null"]
@@ -204,9 +309,78 @@ services:
     cpus: 0.25
     logging: *default-logging
 
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.12.0
+    restart: always
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ${RELAYDOCK_SOURCE_DIR:-./src}/deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${RELAYDOCK_SOURCE_DIR:-./src}/deploy/observability/modeldock-alerts.yml:/etc/prometheus/modeldock-alerts.yml:ro
+      - ./data/prometheus:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      relaydock:
+        condition: service_healthy
+      alertmanager:
+        condition: service_started
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+    mem_limit: 512m
+    cpus: 0.75
+    logging: *default-logging
+
+  alertmanager:
+    profiles: [observability]
+    image: prom/alertmanager:v0.33.1
+    restart: always
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ${RELAYDOCK_SOURCE_DIR:-./src}/deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./data/alertmanager:/alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+    mem_limit: 128m
+    cpus: 0.25
+    logging: *default-logging
+
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    restart: always
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ${RELAYDOCK_SOURCE_DIR:-./src}/deploy/observability/otel-collector.yml:/etc/otelcol/config.yml:ro
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 0.5
+    logging: *default-logging
+
+  node-exporter:
+    profiles: [observability]
+    image: prom/node-exporter:v1.9.1
+    restart: always
+    command: ["--path.rootfs=/host"]
+    volumes:
+      - /:/host:ro,rslave
+    pid: host
+    security_opt: ["no-new-privileges:true"]
+    networks: [internal]
+    mem_limit: 64m
+    cpus: 0.1
+    logging: *default-logging
+
   admin-web:
     profiles: [control-ui]
-    image: relaydock/admin-web:${RELAYDOCK_IMAGE_TAG:-production}
+    image: ${MODELDOCK_ADMIN_WEB_IMAGE:-relaydock/admin-web}:${RELAYDOCK_IMAGE_TAG:-production}
     build:
       context: ${RELAYDOCK_SOURCE_DIR:-./src}
       dockerfile: deploy/docker/Dockerfile.admin-web
@@ -230,8 +404,7 @@ services:
     logging: *default-logging
 
   console-web:
-    profiles: [control-ui]
-    image: relaydock/console-web:${RELAYDOCK_IMAGE_TAG:-production}
+    image: ${MODELDOCK_CONSOLE_WEB_IMAGE:-relaydock/console-web}:${RELAYDOCK_IMAGE_TAG:-production}
     build:
       context: ${RELAYDOCK_SOURCE_DIR:-./src}
       dockerfile: deploy/docker/Dockerfile.console-web

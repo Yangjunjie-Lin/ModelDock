@@ -61,6 +61,20 @@ func TestCORSRejectsUnconfiguredGatewayOrigin(t *testing.T) {
 		t.Fatalf("preflight status = %d; want %d", recorder.Code, http.StatusForbidden)
 	}
 }
+
+func TestRequestBodyLimitRejectsOversizedDeclaredPayload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(requestBodyLimit(8))
+	r.POST("/body", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodPost, "/body", bytes.NewBufferString("123456789"))
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCookieAuthRejectsMissingCSRFEvidence(t *testing.T) {
 	r, session := csrfTestEngine(t)
 	req := httptest.NewRequest(http.MethodPost, "/mutate", nil)

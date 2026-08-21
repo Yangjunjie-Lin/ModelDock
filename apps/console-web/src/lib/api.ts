@@ -104,9 +104,26 @@ export function formatNumber(value: unknown, compact = true) {
   return new Intl.NumberFormat(currentLocale(), compact ? { notation: 'compact', maximumFractionDigits: 1 } : {}).format(number)
 }
 
-export function formatMoney(value: unknown) {
+/**
+ * Formats an exact decimal amount without crossing a binary floating-point
+ * boundary. Finance APIs return amounts as strings; keeping grouping and
+ * fractional handling string-only prevents rounding of NUMERIC values.
+ */
+export function formatMoney(value: unknown, currency = 'USD') {
   if (value === null || value === undefined || value === '') return '—'
-  return new Intl.NumberFormat(currentLocale(), { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(value))
+  const raw = typeof value === 'string' ? value.trim() : String(value)
+  const match = raw.match(/^([+-]?)(\d+)(?:\.(\d+))?$/)
+  const code = currency.trim().toUpperCase() || 'USD'
+  if (!match) return `${code} ${raw}`
+
+  const sign = match[1]
+  const integer = match[2].replace(/^0+(?=\d)/, '')
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  const sourceFraction = match[3] || ''
+  const significantFraction = sourceFraction.replace(/0+$/, '')
+  const fraction = significantFraction.length >= 2 ? significantFraction : significantFraction.padEnd(2, '0') || '00'
+  const visibleSign = /^0+$/.test(`${match[2]}${sourceFraction}`) ? '' : sign
+  return `${code} ${visibleSign}${grouped}.${fraction}`
 }
 
 export function formatDate(value: unknown) {

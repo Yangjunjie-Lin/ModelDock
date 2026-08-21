@@ -14,8 +14,10 @@ import (
 
 func scanOrganization(row pgx.Row) (domain.Organization, error) {
 	var out domain.Organization
-	var metadata []byte
-	err := row.Scan(&out.ID, &out.Name, &out.Slug, &out.Status, &metadata, &out.CreatedAt, &out.UpdatedAt)
+	var metadata, allowedProviders, prohibitedProviders, requiredData []byte
+	err := row.Scan(&out.ID, &out.Name, &out.Slug, &out.Status, &out.BillingRegion, &metadata, &out.CreatedAt, &out.UpdatedAt,
+		&allowedProviders, &prohibitedProviders, &requiredData, &out.MinimumGrossMargin, &out.RiskScore, &out.VerificationLevel,
+		&out.PaymentRisk, &out.AbuseStatus, &out.ManualReviewStatus, &out.NewAccountSpendLimit, &out.LegalHold)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}
@@ -23,13 +25,21 @@ func scanOrganization(row pgx.Row) (domain.Organization, error) {
 		return out, err
 	}
 	_ = json.Unmarshal(metadata, &out.Metadata)
+	_ = json.Unmarshal(allowedProviders, &out.AllowedProviderIDs)
+	_ = json.Unmarshal(prohibitedProviders, &out.ProhibitedProviderIDs)
+	_ = json.Unmarshal(requiredData, &out.RequiredDataRegions)
 	if out.Metadata == nil {
 		out.Metadata = map[string]any{}
 	}
 	return out, nil
 }
 
-const organizationColumns = `id,name,slug,status,metadata,created_at,updated_at`
+const organizationColumns = `id,name,slug,status,billing_region,metadata,created_at,updated_at,allowed_provider_ids,prohibited_provider_ids,required_data_regions,minimum_gross_margin::text,risk_score,verification_level,payment_risk,abuse_status,manual_review_status,COALESCE(new_account_spend_limit::text,''),legal_hold`
+
+// organizationColumnsQualified intentionally qualifies each column explicitly.
+// A simple comma replacement is unsafe here because the COALESCE expression
+// contains its own comma and would produce invalid SQL.
+const organizationColumnsQualified = `o.id,o.name,o.slug,o.status,o.billing_region,o.metadata,o.created_at,o.updated_at,o.allowed_provider_ids,o.prohibited_provider_ids,o.required_data_regions,o.minimum_gross_margin::text,o.risk_score,o.verification_level,o.payment_risk,o.abuse_status,o.manual_review_status,COALESCE(o.new_account_spend_limit::text,''),o.legal_hold`
 
 func (s *Store) OrganizationByID(ctx context.Context, organizationID string) (domain.Organization, error) {
 	return scanOrganization(s.pool.QueryRow(ctx, `SELECT `+organizationColumns+` FROM organizations WHERE id=$1`, organizationID))
@@ -38,8 +48,7 @@ func (s *Store) OrganizationByID(ctx context.Context, organizationID string) (do
 // ListOrganizations returns all organizations for administrators when userID
 // is nil, or only active memberships for the supplied user.
 func (s *Store) ListOrganizations(ctx context.Context, userID *string, limit, offset int) ([]domain.Organization, error) {
-	query := `SELECT ` + strings.ReplaceAll(organizationColumns, ",", ",o.")
-	query = `SELECT o.` + strings.TrimPrefix(query, `SELECT `) + ` FROM organizations o`
+	query := `SELECT ` + organizationColumnsQualified + ` FROM organizations o`
 	args := []any{}
 	if userID != nil {
 		query += ` JOIN organization_memberships m ON m.organization_id=o.id AND m.user_id=$1 AND m.status='ACTIVE'`
@@ -73,13 +82,25 @@ func (s *Store) CreateOrganization(ctx context.Context, organization domain.Orga
 	if organization.Metadata == nil {
 		organization.Metadata = map[string]any{}
 	}
+	if organization.AllowedProviderIDs == nil {
+		organization.AllowedProviderIDs = []string{}
+	}
+	if organization.ProhibitedProviderIDs == nil {
+		organization.ProhibitedProviderIDs = []string{}
+	}
+	if organization.RequiredDataRegions == nil {
+		organization.RequiredDataRegions = []string{}
+	}
+	if strings.TrimSpace(organization.BillingRegion) == "" {
+		organization.BillingRegion = "*"
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return domain.Organization{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `INSERT INTO organizations(id,name,slug,status,metadata) VALUES($1,$2,$3,$4,$5)`,
-		organization.ID, organization.Name, organization.Slug, organization.Status, jsonBytes(organization.Metadata)); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO organizations(id,name,slug,status,billing_region,metadata,allowed_provider_ids,prohibited_provider_ids,required_data_regions,minimum_gross_margin) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		organization.ID, organization.Name, organization.Slug, organization.Status, organization.BillingRegion, jsonBytes(organization.Metadata), jsonBytes(organization.AllowedProviderIDs), jsonBytes(organization.ProhibitedProviderIDs), jsonBytes(organization.RequiredDataRegions), zeroIfEmpty(organization.MinimumGrossMargin)); err != nil {
 		return domain.Organization{}, err
 	}
 	if ownerUserID != "" {
@@ -97,8 +118,20 @@ func (s *Store) UpdateOrganization(ctx context.Context, organization domain.Orga
 	if organization.Metadata == nil {
 		organization.Metadata = map[string]any{}
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE organizations SET name=$2,slug=lower($3),status=$4,metadata=$5,updated_at=now() WHERE id=$1`,
-		organization.ID, strings.TrimSpace(organization.Name), strings.TrimSpace(organization.Slug), organization.Status, jsonBytes(organization.Metadata))
+	if organization.AllowedProviderIDs == nil {
+		organization.AllowedProviderIDs = []string{}
+	}
+	if organization.ProhibitedProviderIDs == nil {
+		organization.ProhibitedProviderIDs = []string{}
+	}
+	if organization.RequiredDataRegions == nil {
+		organization.RequiredDataRegions = []string{}
+	}
+	if strings.TrimSpace(organization.BillingRegion) == "" {
+		organization.BillingRegion = "*"
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE organizations SET name=$2,slug=lower($3),status=$4,billing_region=$5,metadata=$6,allowed_provider_ids=$7,prohibited_provider_ids=$8,required_data_regions=$9,minimum_gross_margin=$10,updated_at=now() WHERE id=$1`,
+		organization.ID, strings.TrimSpace(organization.Name), strings.TrimSpace(organization.Slug), organization.Status, organization.BillingRegion, jsonBytes(organization.Metadata), jsonBytes(organization.AllowedProviderIDs), jsonBytes(organization.ProhibitedProviderIDs), jsonBytes(organization.RequiredDataRegions), zeroIfEmpty(organization.MinimumGrossMargin))
 	if err != nil {
 		return domain.Organization{}, err
 	}
@@ -147,12 +180,20 @@ func (s *Store) SetOrganizationMember(ctx context.Context, member domain.Organiz
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = effectivePlanVersionTx(ctx, tx, member.OrganizationID); err != nil {
+		return err
+	}
 	var currentRole, currentStatus string
 	err = tx.QueryRow(ctx, `SELECT role,status FROM organization_memberships
 		WHERE organization_id=$1 AND user_id=$2 FOR UPDATE`, member.OrganizationID, member.UserID).
 		Scan(&currentRole, &currentStatus)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
+	}
+	if member.Status == "ACTIVE" && (errors.Is(err, pgx.ErrNoRows) || currentStatus != "ACTIVE") {
+		if limitErr := enforceOrganizationMemberActivationTx(ctx, tx, member.OrganizationID, member.UserID); limitErr != nil {
+			return limitErr
+		}
 	}
 	if err == nil && currentRole == "OWNER" && currentStatus == "ACTIVE" && (member.Role != "OWNER" || member.Status != "ACTIVE") {
 		var otherOwners int

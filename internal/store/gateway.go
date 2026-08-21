@@ -12,6 +12,7 @@ import (
 	"github.com/relayedock/relayedock/internal/id"
 )
 
+// #nosec G101 -- SQL projection names API-key columns but contains no credential value.
 const apiKeyColumns = `id,user_id,name,environment,key_prefix,key_hash,status,expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,allowed_models,created_at,updated_at,last_used_at`
 
 func scanAPIKey(row pgx.Row) (domain.APIKey, error) {
@@ -114,6 +115,35 @@ func (s *Store) UpdateAPIKeyStatus(ctx context.Context, keyID, status string) er
 	if status != "ACTIVE" && status != "DISABLED" && status != "REVOKED" {
 		return errors.New("invalid API key status")
 	}
+	if status == "ACTIVE" {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		var organizationID, currentStatus string
+		if err = tx.QueryRow(ctx, `SELECT organization_id,status FROM api_keys WHERE id=$1 FOR UPDATE`, keyID).Scan(&organizationID, &currentStatus); errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if currentStatus != "ACTIVE" {
+			if _, err = effectivePlanVersionTx(ctx, tx, organizationID); err != nil {
+				return err
+			}
+			var activeKeys int64
+			if err = tx.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE organization_id=$1 AND status='ACTIVE'`, organizationID).Scan(&activeKeys); err != nil {
+				return err
+			}
+			if err = enforceIntegerEntitlementTx(ctx, tx, organizationID, "api_key_count", activeKeys, 1); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(ctx, `UPDATE api_keys SET status='ACTIVE',updated_at=now() WHERE id=$1`, keyID); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	tag, err := s.pool.Exec(ctx, `UPDATE api_keys SET status=$2,updated_at=now() WHERE id=$1`, keyID, status)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -131,7 +161,7 @@ func (s *Store) InsertRequestLog(ctx context.Context, l domain.RequestLog) error
 }
 
 func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offset int) ([]domain.RequestLog, error) {
-	q := `SELECT request_id,COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),organization_id::text,project_id::text,
+	q := `SELECT request_id,COALESCE(trace_id,''),COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),organization_id::text,project_id::text,
 		COALESCE(route_id::text,''),COALESCE(provider_id::text,''),COALESCE(credential_id::text,''),
 		COALESCE(requested_model,''),COALESCE(resolved_model,''),endpoint,status_code,streaming,input_tokens,
 		cached_input_tokens,output_tokens,total_tokens,estimated_cost::float8,reference_cost::float8,savings_amount::float8,latency_ms,ttft_ms,
@@ -153,7 +183,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offs
 	for rows.Next() {
 		var l domain.RequestLog
 		var reason []byte
-		if err := rows.Scan(&l.RequestID, &l.UserID, &l.APIKeyID, &l.OrganizationID, &l.ProjectID, &l.RouteID,
+		if err := rows.Scan(&l.RequestID, &l.TraceID, &l.UserID, &l.APIKeyID, &l.OrganizationID, &l.ProjectID, &l.RouteID,
 			&l.ProviderID, &l.CredentialID, &l.RequestedModel, &l.ResolvedModel, &l.Endpoint, &l.StatusCode,
 			&l.Streaming, &l.InputTokens, &l.CachedInputTokens, &l.OutputTokens, &l.TotalTokens,
 			&l.EstimatedCost, &l.ReferenceCost, &l.SavingsAmount, &l.LatencyMS, &l.TTFTMS, &l.UpstreamRequestID, &l.ErrorCode, &reason, &l.CreatedAt); err != nil {

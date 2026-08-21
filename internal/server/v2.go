@@ -48,6 +48,9 @@ func registerConsoleV2(g *gin.RouterGroup, d Dependencies) {
 		userID := claimsFrom(c).Subject
 		organizations, err := d.Store.ListOrganizations(c.Request.Context(), &userID, 200, 0)
 		if err != nil {
+			if d.Logger != nil {
+				d.Logger.Error("console_projects_organizations_failed", "error", err, "user_id", userID)
+			}
 			respond(c, nil, err)
 			return
 		}
@@ -55,6 +58,9 @@ func registerConsoleV2(g *gin.RouterGroup, d Dependencies) {
 		for _, organization := range organizations {
 			items, listErr := d.Store.ListProjects(c.Request.Context(), organization.ID, &userID, 200, 0)
 			if listErr != nil {
+				if d.Logger != nil {
+					d.Logger.Error("console_projects_listing_failed", "error", listErr, "user_id", userID, "organization_id", organization.ID)
+				}
 				respond(c, nil, listErr)
 				return
 			}
@@ -150,19 +156,7 @@ func registerOrganizationV2(g *gin.RouterGroup, d Dependencies, admin bool) {
 			openAIError(c, http.StatusBadRequest, "invalid_request", "A valid organization body is required.")
 			return
 		}
-		input.ID = current.ID
-		if input.Name == "" {
-			input.Name = current.Name
-		}
-		if input.Slug == "" {
-			input.Slug = current.Slug
-		}
-		if input.Status == "" {
-			input.Status = current.Status
-		}
-		if input.Metadata == nil {
-			input.Metadata = current.Metadata
-		}
+		input = mergeOrganizationUpdate(current, input)
 		if strings.TrimSpace(input.Name) == "" || !validTenantSlug(input.Slug) || !validTenantStatus(input.Status) {
 			openAIError(c, http.StatusBadRequest, "invalid_request", "name, slug, or status is invalid.")
 			return
@@ -276,6 +270,41 @@ func registerOrganizationV2(g *gin.RouterGroup, d Dependencies, admin bool) {
 		}
 		respondCreated(c, out, err)
 	})
+}
+
+// mergeOrganizationUpdate preserves fields omitted by the partial-update
+// behavior of the organization PUT endpoint. An explicit empty JSON array is
+// still retained so administrators can intentionally clear a provider policy.
+func mergeOrganizationUpdate(current, input domain.Organization) domain.Organization {
+	input.ID = current.ID
+	if input.Name == "" {
+		input.Name = current.Name
+	}
+	if input.Slug == "" {
+		input.Slug = current.Slug
+	}
+	if input.Status == "" {
+		input.Status = current.Status
+	}
+	if strings.TrimSpace(input.BillingRegion) == "" {
+		input.BillingRegion = current.BillingRegion
+	}
+	if input.Metadata == nil {
+		input.Metadata = current.Metadata
+	}
+	if input.AllowedProviderIDs == nil {
+		input.AllowedProviderIDs = current.AllowedProviderIDs
+	}
+	if input.ProhibitedProviderIDs == nil {
+		input.ProhibitedProviderIDs = current.ProhibitedProviderIDs
+	}
+	if input.RequiredDataRegions == nil {
+		input.RequiredDataRegions = current.RequiredDataRegions
+	}
+	if strings.TrimSpace(input.MinimumGrossMargin) == "" {
+		input.MinimumGrossMargin = current.MinimumGrossMargin
+	}
+	return input
 }
 
 func registerProjectV2(g *gin.RouterGroup, d Dependencies, admin bool) {
@@ -477,6 +506,10 @@ func registerProjectBudgetV2(g *gin.RouterGroup, d Dependencies, admin bool) {
 		if !ok {
 			return
 		}
+		if err := d.Store.RequireBooleanEntitlement(c.Request.Context(), project.OrganizationID, "custom_budget"); err != nil {
+			respond(c, nil, err)
+			return
+		}
 		var policy domain.ProjectBudgetPolicy
 		if c.ShouldBindJSON(&policy) != nil {
 			openAIError(c, http.StatusBadRequest, "invalid_request", "A valid budget policy body is required.")
@@ -516,6 +549,10 @@ func registerProjectBudgetV2(g *gin.RouterGroup, d Dependencies, admin bool) {
 	g.DELETE("/projects/:projectID/budgets/:policyID", func(c *gin.Context) {
 		project, ok := requireProjectAccess(c, d, admin, "ADMIN")
 		if !ok {
+			return
+		}
+		if err := d.Store.RequireBooleanEntitlement(c.Request.Context(), project.OrganizationID, "custom_budget"); err != nil {
+			respond(c, nil, err)
 			return
 		}
 		err := d.Store.DeleteProjectBudgetPolicy(c.Request.Context(), project.ID, c.Param("policyID"))
@@ -812,12 +849,15 @@ func requireOrganizationAccess(c *gin.Context, d Dependencies, admin bool, minim
 			break
 		}
 	}
-	ranks := map[string]int{"VIEWER": 1, "MEMBER": 1, "ADMIN": 2, "OWNER": 3}
-	if ranks[role] < ranks[minimumRole] {
+	if organizationRoleRank(role) < organizationRoleRank(minimumRole) {
 		respond(c, nil, store.ErrNotFound)
 		return domain.Organization{}, false
 	}
 	return organization, true
+}
+
+func organizationRoleRank(role string) int {
+	return map[string]int{"VIEWER": 1, "MEMBER": 2, "ADMIN": 3, "OWNER": 4}[strings.ToUpper(strings.TrimSpace(role))]
 }
 
 func requireProjectAccess(c *gin.Context, d Dependencies, admin bool, minimumRole string) (domain.Project, bool) {
@@ -877,10 +917,27 @@ func exportProjectUsage(c *gin.Context, d Dependencies, admin bool) {
 	if !ok {
 		return
 	}
+	if !admin {
+		if err := d.Store.RequireBooleanEntitlement(c.Request.Context(), project.OrganizationID, "cost_analysis"); err != nil {
+			respond(c, nil, err)
+			return
+		}
+	}
 	from, to, err := queryTimeRange(c, 30*24*time.Hour, 366*24*time.Hour)
 	if err != nil {
 		openAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
+	}
+	if !admin {
+		entitlements, entitlementErr := d.Store.EffectiveEntitlements(c.Request.Context(), project.OrganizationID)
+		if entitlementErr != nil {
+			respond(c, nil, entitlementErr)
+			return
+		}
+		retentionStart := time.Now().UTC().AddDate(0, 0, -int(entitlements.LogRetentionDays))
+		if from.Before(retentionStart) {
+			from = retentionStart
+		}
 	}
 	filter := domain.UsageExportFilter{OrganizationID: project.OrganizationID, ProjectID: project.ID, From: from, To: to, Limit: 100000}
 	if !admin {

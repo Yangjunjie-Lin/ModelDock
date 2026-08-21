@@ -1,0 +1,40 @@
+name: Feature proposal
+description: Propose one backward-compatible production increment.
+title: "[Feature]: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and users
+      description: Describe the problem without prescribing an unsafe workaround.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and data impact
+      description: Cover `/v1`, `rdk_*`, `RELAYDOCK_*`, API/database additions, migration, rollback, and auditability.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security, provider, and compliance impact
+      description: Cover authorization, secrets/privacy, contract status, allowed regions, disable controls, funds/idempotency, and provider terms.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Testable acceptance criteria
+      description: Include unit, integration, frontend, API documentation, and operator verification where applicable.
+    validations:
+      required: true
+  - type: checkboxes
+    id: excluded
+    attributes:
+      label: Compliance boundary
+      options:
+        - label: This proposal does not enable account farming, CAPTCHA bypass, proxy/region evasion, credential trading, or provider-terms violations.
+          required: true

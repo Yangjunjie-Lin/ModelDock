@@ -132,6 +132,10 @@ func (s *Scheduler) Select(ctx context.Context, groupID string, requestedPolicy 
 }
 
 func (s *Scheduler) SelectConstrained(ctx context.Context, groupID, requestedPolicy string, constraints CredentialConstraints) (*Selection, error) {
+	return s.SelectConstrainedForOrganization(ctx, groupID, requestedPolicy, constraints, "")
+}
+
+func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupID, requestedPolicy string, constraints CredentialConstraints, organizationID string) (*Selection, error) {
 	policy := "priority_weighted"
 	if requestedPolicy != "" {
 		switch requestedPolicy {
@@ -157,6 +161,9 @@ func (s *Scheduler) SelectConstrained(ctx context.Context, groupID, requestedPol
 	}
 	list := make([]ranked, 0, len(candidates))
 	for _, c := range candidates {
+		if c.CredentialOwner == domain.CredentialOwnerCustomer && (c.OwnerOrganizationID == nil || *c.OwnerOrganizationID != organizationID) {
+			continue
+		}
 		if !matchesCredentialTags(c.Tags, constraints) {
 			continue
 		}

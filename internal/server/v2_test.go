@@ -67,6 +67,10 @@ func TestV2FrontendContractRoutesAreRegistered(t *testing.T) {
 		"POST /api/admin/api-keys/:keyID/rotate",
 		"POST /api/admin/api-keys/:keyID/finalize",
 		"POST /api/admin/alerts/:alertID/acknowledge",
+		"GET /api/admin/wallets/:id/funding-operations",
+		"GET /api/admin/wallets/:id/journals",
+		"POST /api/admin/funding-operations/:id/late-usage",
+		"POST /api/admin/funding-operations/:id/reversals",
 		"GET /api/console/organizations",
 		"GET /api/console/organizations/:organizationID/projects",
 		"GET /api/console/overview",
@@ -200,6 +204,51 @@ func TestTenantSlugValidation(t *testing.T) {
 	for _, value := range []string{"", "Upper", "-leading", "trailing-", "contains space"} {
 		if validTenantSlug(value) {
 			t.Fatalf("invalid slug %q accepted", value)
+		}
+	}
+}
+
+func TestMergeOrganizationUpdatePreservesOmittedCommercialPolicy(t *testing.T) {
+	current := domain.Organization{
+		ID: "organization-id", Name: "Current", Slug: "current", Status: "ACTIVE", BillingRegion: "US",
+		Metadata: map[string]any{"owner": "customer"}, AllowedProviderIDs: []string{"provider-allowed"},
+		ProhibitedProviderIDs: []string{"provider-blocked"}, RequiredDataRegions: []string{"US"},
+		MinimumGrossMargin: "0.125000000000",
+	}
+
+	updated := mergeOrganizationUpdate(current, domain.Organization{BillingRegion: "CN"})
+	if updated.ID != current.ID || updated.Name != current.Name || updated.Slug != current.Slug ||
+		updated.Status != current.Status || updated.BillingRegion != "CN" ||
+		updated.MinimumGrossMargin != current.MinimumGrossMargin ||
+		!reflect.DeepEqual(updated.Metadata, current.Metadata) ||
+		!reflect.DeepEqual(updated.AllowedProviderIDs, current.AllowedProviderIDs) ||
+		!reflect.DeepEqual(updated.ProhibitedProviderIDs, current.ProhibitedProviderIDs) ||
+		!reflect.DeepEqual(updated.RequiredDataRegions, current.RequiredDataRegions) {
+		t.Fatalf("omitted organization policy was not preserved: %+v", updated)
+	}
+
+	cleared := mergeOrganizationUpdate(current, domain.Organization{
+		BillingRegion: "CN", AllowedProviderIDs: []string{}, ProhibitedProviderIDs: []string{}, RequiredDataRegions: []string{},
+	})
+	if cleared.AllowedProviderIDs == nil || cleared.ProhibitedProviderIDs == nil || cleared.RequiredDataRegions == nil ||
+		len(cleared.AllowedProviderIDs) != 0 || len(cleared.ProhibitedProviderIDs) != 0 || len(cleared.RequiredDataRegions) != 0 {
+		t.Fatalf("explicit empty policy arrays were not retained: %+v", cleared)
+	}
+}
+
+func TestConsoleProjectModelExposesOnlyPublicCatalogCorrelation(t *testing.T) {
+	fallbackGroupID := "fallback-group-id"
+	projected := consoleProjectModel(domain.ProjectModelRoute{
+		Alias: "project-chat", ProviderID: "provider-id", UpstreamModel: "provider-model",
+		CredentialGroupID: "credential-group-id", FallbackGroupID: &fallbackGroupID,
+		ProviderBaseURL: "https://provider.example.invalid/v1", Enabled: true,
+	})
+	if projected["alias"] != "project-chat" || projected["provider_id"] != "provider-id" || projected["upstream_model"] != "provider-model" {
+		t.Fatalf("catalog correlation fields are incomplete: %#v", projected)
+	}
+	for _, secretRoutingField := range []string{"provider_base_url", "credential_group_id", "fallback_group_id", "routing_config", "fallback_config"} {
+		if _, exposed := projected[secretRoutingField]; exposed {
+			t.Fatalf("console model exposed administrator-only %s: %#v", secretRoutingField, projected)
 		}
 	}
 }

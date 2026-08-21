@@ -55,8 +55,13 @@ func (s *Store) ListWebhookEndpoints(ctx context.Context, projectID string) ([]d
 
 func (s *Store) CreateWebhookEndpoint(ctx context.Context, endpoint domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
 	endpoint.ID = id.UUID()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	defer tx.Rollback(ctx)
 	if endpoint.OrganizationID == "" {
-		if err := s.pool.QueryRow(ctx, `SELECT organization_id FROM projects WHERE id=$1`, endpoint.ProjectID).Scan(&endpoint.OrganizationID); errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRow(ctx, `SELECT organization_id FROM projects WHERE id=$1`, endpoint.ProjectID).Scan(&endpoint.OrganizationID); errors.Is(err, pgx.ErrNoRows) {
 			return domain.WebhookEndpoint{}, ErrNotFound
 		} else if err != nil {
 			return domain.WebhookEndpoint{}, err
@@ -65,16 +70,72 @@ func (s *Store) CreateWebhookEndpoint(ctx context.Context, endpoint domain.Webho
 	if len(endpoint.EncryptedSecret) == 0 {
 		return domain.WebhookEndpoint{}, errors.New("encrypted webhook signing secret is required")
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO webhook_endpoints(id,organization_id,project_id,name,url,encrypted_secret,secret_last4,event_types,enabled)
+	if _, err = effectivePlanVersionTx(ctx, tx, endpoint.OrganizationID); err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	var activeWebhooks int64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM webhook_endpoints WHERE organization_id=$1 AND enabled`, endpoint.OrganizationID).Scan(&activeWebhooks); err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	if err = enforceIntegerEntitlementTx(ctx, tx, endpoint.OrganizationID, "webhook_count", activeWebhooks, 1); err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO webhook_endpoints(id,organization_id,project_id,name,url,encrypted_secret,secret_last4,event_types,enabled)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, endpoint.ID, endpoint.OrganizationID, endpoint.ProjectID, endpoint.Name,
 		endpoint.URL, endpoint.EncryptedSecret, endpoint.SecretLast4, jsonBytes(endpoint.EventTypes), endpoint.Enabled)
 	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return domain.WebhookEndpoint{}, err
 	}
 	return s.WebhookEndpointByID(ctx, endpoint.ID)
 }
 
 func (s *Store) UpdateWebhookEndpoint(ctx context.Context, endpoint domain.WebhookEndpoint, replaceSecret bool) (domain.WebhookEndpoint, error) {
+	if endpoint.Enabled {
+		tx, beginErr := s.pool.Begin(ctx)
+		if beginErr != nil {
+			return domain.WebhookEndpoint{}, beginErr
+		}
+		defer tx.Rollback(ctx)
+		var currentEnabled bool
+		if beginErr = tx.QueryRow(ctx, `SELECT enabled FROM webhook_endpoints WHERE id=$1 AND project_id=$2 FOR UPDATE`, endpoint.ID, endpoint.ProjectID).Scan(&currentEnabled); errors.Is(beginErr, pgx.ErrNoRows) {
+			return domain.WebhookEndpoint{}, ErrNotFound
+		} else if beginErr != nil {
+			return domain.WebhookEndpoint{}, beginErr
+		}
+		if !currentEnabled {
+			if _, beginErr = effectivePlanVersionTx(ctx, tx, endpoint.OrganizationID); beginErr != nil {
+				return domain.WebhookEndpoint{}, beginErr
+			}
+			var activeWebhooks int64
+			if beginErr = tx.QueryRow(ctx, `SELECT count(*) FROM webhook_endpoints WHERE organization_id=$1 AND enabled`, endpoint.OrganizationID).Scan(&activeWebhooks); beginErr != nil {
+				return domain.WebhookEndpoint{}, beginErr
+			}
+			if beginErr = enforceIntegerEntitlementTx(ctx, tx, endpoint.OrganizationID, "webhook_count", activeWebhooks, 1); beginErr != nil {
+				return domain.WebhookEndpoint{}, beginErr
+			}
+		}
+		if replaceSecret {
+			if len(endpoint.EncryptedSecret) == 0 {
+				return domain.WebhookEndpoint{}, errors.New("encrypted webhook signing secret is required")
+			}
+			_, beginErr = tx.Exec(ctx, `UPDATE webhook_endpoints SET name=$3,url=$4,encrypted_secret=$5,secret_last4=$6,event_types=$7,enabled=true,updated_at=now()
+				WHERE id=$1 AND project_id=$2`, endpoint.ID, endpoint.ProjectID, endpoint.Name, endpoint.URL, endpoint.EncryptedSecret,
+				endpoint.SecretLast4, jsonBytes(endpoint.EventTypes))
+		} else {
+			_, beginErr = tx.Exec(ctx, `UPDATE webhook_endpoints SET name=$3,url=$4,event_types=$5,enabled=true,updated_at=now()
+				WHERE id=$1 AND project_id=$2`, endpoint.ID, endpoint.ProjectID, endpoint.Name, endpoint.URL, jsonBytes(endpoint.EventTypes))
+		}
+		if beginErr != nil {
+			return domain.WebhookEndpoint{}, beginErr
+		}
+		if beginErr = tx.Commit(ctx); beginErr != nil {
+			return domain.WebhookEndpoint{}, beginErr
+		}
+		return s.WebhookEndpointByID(ctx, endpoint.ID)
+	}
 	var err error
 	var affected int64
 	if replaceSecret {
@@ -123,9 +184,20 @@ func (s *Store) EnqueueWebhookEvent(ctx context.Context, projectID, eventID, eve
 		maxAttempts = 6
 	}
 	tag, err := s.pool.Exec(ctx, `INSERT INTO webhook_outbox(id,endpoint_id,organization_id,project_id,event_id,event_type,payload,max_attempts)
-		SELECT gen_random_uuid(),e.id,e.organization_id,e.project_id,$2,$3,$4,$5
-		FROM webhook_endpoints e WHERE e.project_id=$1 AND e.enabled
-		AND (e.event_types='[]'::jsonb OR e.event_types ? $3)
+		SELECT gen_random_uuid(),eligible.id,eligible.organization_id,eligible.project_id,$2,$3,$4,$5 FROM (
+		  SELECT endpoint.* FROM webhook_endpoints endpoint
+		  WHERE endpoint.project_id=$1 AND endpoint.enabled
+		  AND (endpoint.event_types='[]'::jsonb OR endpoint.event_types ? $3)
+		  ORDER BY endpoint.created_at,endpoint.id
+		  LIMIT COALESCE((SELECT entitlement.integer_value FROM projects project
+		    JOIN organization_subscription subscription ON subscription.organization_id=project.organization_id
+		    JOIN plan_entitlement entitlement ON entitlement.plan_version_id=subscription.plan_version_id
+		      AND entitlement.entitlement_key='webhook_count'
+		    WHERE project.id=$1 AND (
+		      (subscription.status IN ('TRIALING','ACTIVE') AND subscription.current_period_end>now()) OR
+		      (subscription.status IN ('PAST_DUE','GRACE_PERIOD') AND COALESCE(subscription.grace_period_end,subscription.current_period_end)>now())
+		    ) ORDER BY subscription.created_at DESC LIMIT 1),0)
+		) eligible
 		ON CONFLICT(endpoint_id,event_id) DO NOTHING`, projectID, eventID, eventType, jsonBytes(payload), maxAttempts)
 	if err != nil {
 		return 0, err

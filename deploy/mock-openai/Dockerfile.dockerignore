@@ -1,0 +1,14 @@
+.git
+.env
+data
+logs
+apps
+cmd
+internal
+migrations
+docs
+tests
+deploy/docker
+deploy/nginx
+deploy/scripts
+**/__pycache__

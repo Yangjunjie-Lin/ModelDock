@@ -1,16 +1,17 @@
 limit_req_zone $binary_remote_addr zone=relaydock_api_per_ip:10m rate=20r/s;
 limit_conn_zone $binary_remote_addr zone=relaydock_conn_per_ip:10m;
+resolver 127.0.0.11 valid=10s ipv6=off;
 
 upstream relaydock_gateway {
     zone relaydock_gateway 64k;
-    server relaydock:8080 max_fails=3 fail_timeout=10s;
+    server relaydock:8080 resolve max_fails=3 fail_timeout=10s;
     keepalive 64;
 }
 
 server {
     listen 80;
     listen [::]:80;
-    server_name __DOMAIN__;
+    server_name __API_DOMAIN__ __PUBLIC_SITE_DOMAIN__;
     client_max_body_size 10m;
 
     location = /nginx-health {

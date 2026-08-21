@@ -36,7 +36,9 @@ enabled models behind enabled physical routes already granted to that project
 are candidates. Optional rule config can constrain `model_type`, `providers`,
 `required_capabilities`, `max_input_price`, and `max_output_price`.
 
-Balanced routing normalizes catalog price within the candidate set and uses:
+Balanced routing normalizes the exact catalog price within the candidate set
+and uses platform-measured Provider quality/latency. Legacy model quality and
+Marketplace uptime fields remain compatibility declarations and are ignored:
 
 ```text
 score = quality_weight × quality
@@ -48,6 +50,11 @@ Selection is deterministic on equal scores. The selected strategy, score,
 candidate count, route, model, and provider type are stored in the redacted
 request decision metadata.
 
+New approved suppliers enter automatic routing through a basis-point traffic
+cap. Platform measurements can advance or reduce the cap; critical consecutive
+breaches open a Provider circuit for all new attempts. See
+[provider-quality.md](provider-quality.md).
+
 ## Billing semantics
 
 Every organization receives one wallet. Existing organizations migrate as
@@ -55,12 +62,13 @@ Every organization receives one wallet. Existing organizations migrate as
 Administrators may switch a wallet to `PREPAID`; prepaid admission fails with
 HTTP `402` when available balance plus credit is not positive.
 
-Successful priced requests create one `billing_usage_records` row and one
+Successful priced requests resolve an immutable commercial price version before
+dispatch, then create `usage_price_snapshot`, `billing_usage_records`, and one
 negative `CHARGE` transaction in the same PostgreSQL transaction as request,
-daily/hourly usage, budget event, and Webhook outbox persistence. `request_id`
-and the wallet transaction idempotency key prevent duplicate charges. Streaming
-can create a small overdraft because final output tokens are unknown until the
-stream ends; provider-side hard limits remain the final financial boundary.
+daily/hourly usage, budget event, and Webhook outbox persistence. The wallet
+charge uses only `final_user_amount`; the legacy `estimated_cost` field remains
+for compatibility and budget dashboards. `request_id` and the wallet transaction
+idempotency key prevent duplicate charges. See [pricing.md](pricing.md).
 
 Dashboard savings are estimates for intelligent routes only. The reference is
 the highest current price among enabled models granted to the project, not a

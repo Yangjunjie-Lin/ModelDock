@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Store) ListProjectRequestLogs(ctx context.Context, projectID string, userID *string, limit, offset int) ([]domain.RequestLog, error) {
-	query := `SELECT request_id,COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),organization_id,project_id,
+	query := `SELECT request_id,COALESCE(trace_id,''),COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),organization_id,project_id,
 		COALESCE(route_id::text,''),COALESCE(provider_id::text,''),COALESCE(credential_id::text,''),requested_model,
 		resolved_model,endpoint,status_code,streaming,input_tokens,cached_input_tokens,output_tokens,total_tokens,
 		estimated_cost::float8,latency_ms,ttft_ms,COALESCE(upstream_request_id,''),COALESCE(error_code,''),
@@ -30,7 +30,7 @@ func (s *Store) ListProjectRequestLogs(ctx context.Context, projectID string, us
 	for rows.Next() {
 		var entry domain.RequestLog
 		var schedulerReason []byte
-		if err := rows.Scan(&entry.RequestID, &entry.UserID, &entry.APIKeyID, &entry.OrganizationID, &entry.ProjectID,
+		if err := rows.Scan(&entry.RequestID, &entry.TraceID, &entry.UserID, &entry.APIKeyID, &entry.OrganizationID, &entry.ProjectID,
 			&entry.RouteID, &entry.ProviderID, &entry.CredentialID, &entry.RequestedModel, &entry.ResolvedModel,
 			&entry.Endpoint, &entry.StatusCode, &entry.Streaming, &entry.InputTokens, &entry.CachedInputTokens,
 			&entry.OutputTokens, &entry.TotalTokens, &entry.EstimatedCost, &entry.LatencyMS, &entry.TTFTMS,

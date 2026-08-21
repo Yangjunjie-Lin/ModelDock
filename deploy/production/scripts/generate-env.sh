@@ -5,14 +5,21 @@ root=${1:-/opt/relaydock}
 domain=${2:-}
 admin_email=${3:-}
 letsencrypt_email=${4:-$admin_email}
+public_site_domain=${5:-}
 
 if [[ -z $domain || -z $admin_email || -z $letsencrypt_email ]]; then
-  echo "Usage: $0 /opt/relaydock api.your-domain.com admin@your-domain.com [acme-email]" >&2
+  echo "Usage: $0 /opt/relaydock api.your-domain.com admin@your-domain.com [acme-email] [public-site.your-domain.com]" >&2
   exit 1
 fi
 if [[ ! $domain =~ ^[A-Za-z0-9.-]+$ || $domain == *.example.com || $domain == example.com ]]; then
   echo "Use a real FQDN you control; example.com cannot receive a production certificate." >&2
   exit 1
+fi
+if [[ -n $public_site_domain ]]; then
+  if [[ ! $public_site_domain =~ ^[A-Za-z0-9.-]+$ || $public_site_domain == *.example.com || $public_site_domain == example.com || $public_site_domain == "$domain" ]]; then
+    echo "The optional public-site FQDN must be real and different from the API FQDN." >&2
+    exit 1
+  fi
 fi
 if [[ -e $root/.env ]]; then
   echo "$root/.env already exists; refusing to overwrite secrets." >&2
@@ -33,8 +40,12 @@ RELAYDOCK_IMAGE_TAG=production
 RELAYDOCK_SOURCE_DIR=./src
 TZ=Asia/Tokyo
 API_DOMAIN=$domain
+RELAYDOCK_PUBLIC_SITE_DOMAIN=$public_site_domain
 LETSENCRYPT_EMAIL=$letsencrypt_email
-ALLOWED_ORIGINS=https://$domain
+RELAYDOCK_PUBLIC_CONSOLE_URL=https://${public_site_domain:-$domain}
+RELAYDOCK_PUBLIC_SUPPORT_EMAIL=${RELAYDOCK_PUBLIC_SUPPORT_EMAIL:-support@example.invalid}
+RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL=${RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL:-enterprise@example.invalid}
+ALLOWED_ORIGINS=https://${public_site_domain:-$domain}
 TRUSTED_PROXIES=172.16.0.0/12,127.0.0.1/32
 GO_MODULE_PROXY=https://proxy.golang.org,direct
 POSTGRES_DB=relaydock
@@ -57,6 +68,7 @@ RELAYDOCK_API_KEY_HMAC_SECRET=$hmac_secret
 RELAYDOCK_JWT_SECRET=$jwt_secret
 RELAYDOCK_JWT_LIFETIME=15m
 RELAYDOCK_JWT_REFRESH_LIFETIME=168h
+RELAYDOCK_PUBLIC_FUNNEL_RATE_LIMIT=120
 RELAYDOCK_ADMIN_EMAIL=$admin_email
 RELAYDOCK_ADMIN_PASSWORD=$admin_password
 RELAYDOCK_ADMIN_DISPLAY_NAME=RelayDock Administrator

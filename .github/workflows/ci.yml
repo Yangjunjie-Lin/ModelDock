@@ -1,0 +1,236 @@
+name: ModelDock CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: 1.26.6
+  NODE_VERSION: 22.22.3
+
+jobs:
+  go:
+    name: Go format, vet, and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Verify gofmt
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l cmd internal migrations tests/backend)"
+          test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
+  frontend:
+    name: Frontend (${{ matrix.app }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [admin-web, console-web]
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+      - name: Install locked dependencies
+        working-directory: apps/${{ matrix.app }}
+        run: npm ci
+      - name: Lint
+        working-directory: apps/${{ matrix.app }}
+        run: npm run lint
+      - name: Typecheck
+        working-directory: apps/${{ matrix.app }}
+        run: npm run typecheck
+      - name: Build
+        working-directory: apps/${{ matrix.app }}
+        run: npm run build
+
+  dependency-security:
+    name: Dependency vulnerability scanning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Scan reachable Go vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          govulncheck ./...
+      - name: Run Go SAST
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.10
+          gosec -exclude-generated ./...
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Audit locked frontend dependencies
+        shell: bash
+        run: |
+          npm --prefix apps/admin-web ci
+          npm --prefix apps/admin-web audit --audit-level=high
+          npm --prefix apps/console-web ci
+          npm --prefix apps/console-web audit --audit-level=high
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Reject tracked local environments
+        shell: bash
+        run: test -z "$(git ls-files '.env' '.env.*' | grep -v '^.env.example$' || true)"
+      - name: Scan commits for secrets
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+  compose:
+    name: Docker Compose validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Create ephemeral non-production configuration
+        shell: pwsh
+        run: ./scripts/new-ci-env.ps1 -OutputPath .cache/ci.env
+      - name: Validate development and mock profiles
+        run: |
+          docker compose --env-file .cache/ci.env config --quiet
+          docker compose --env-file .cache/ci.env --profile mock-openai config --quiet
+      - name: Validate production model
+        run: docker compose --env-file .cache/ci.env -f docker-compose.production.yml config --quiet
+
+  docker:
+    name: Reproducible Docker build and image scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Verify server image reproducibility and source metadata
+        shell: pwsh
+        run: ./tests/integration/verify-release-metadata.ps1 -Commit $env:GITHUB_SHA -VerifyReproducible
+      - name: Capture deterministic source metadata
+        id: source
+        shell: bash
+        run: |
+          version="$(sed -nE 's/^[[:space:]]*Current[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/version/version.go)"
+          test -n "$version"
+          {
+            echo "version=$version"
+            echo "build_date=$(git show -s --format=%cI "$GITHUB_SHA" | xargs -I{} date -u -d '{}' +%Y-%m-%dT%H:%M:%SZ)"
+            echo "source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build final CI images
+        shell: bash
+        run: |
+          common=(--build-arg VERSION="${{ steps.source.outputs.version }}" --build-arg COMMIT="$GITHUB_SHA" --build-arg BUILD_DATE="${{ steps.source.outputs.build_date }}" --build-arg SOURCE_DATE_EPOCH="${{ steps.source.outputs.source_epoch }}")
+          docker build -f deploy/docker/Dockerfile.relaydock "${common[@]}" -t "modeldock/ci-server:$GITHUB_SHA" .
+          docker build -f deploy/docker/Dockerfile.admin-web "${common[@]}" -t "modeldock/ci-admin-web:$GITHUB_SHA" .
+          docker build -f deploy/docker/Dockerfile.console-web "${common[@]}" -t "modeldock/ci-console-web:$GITHUB_SHA" .
+      - name: Scan server image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: modeldock/ci-server:${{ github.sha }}
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Scan admin image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: modeldock/ci-admin-web:${{ github.sha }}
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Scan console image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: modeldock/ci-console-web:${{ github.sha }}
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+  migrations:
+    name: Empty and populated upgrade migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Create ephemeral non-production configuration
+        shell: pwsh
+        run: ./scripts/new-ci-env.ps1 -OutputPath .cache/ci.env
+      - name: Prepare isolated bind directories
+        run: mkdir -p data/postgres data/redis data/cockpit logs
+      - name: Start isolated PostgreSQL
+        run: docker compose --env-file .cache/ci.env up -d --wait --wait-timeout 120 postgres
+      - name: Build migration test image from this commit
+        shell: bash
+        run: |
+          version="$(sed -nE 's/^[[:space:]]*Current[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/version/version.go)"
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA" | xargs -I{} date -u -d '{}' +%Y-%m-%dT%H:%M:%SZ)"
+          source_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          test -n "$version"
+          docker build -f deploy/docker/Dockerfile.relaydock \
+            --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$build_date" --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
+            -t relaydock/server:local .
+      - name: Verify empty and populated V1 upgrade paths
+        shell: pwsh
+        run: ./tests/integration/verify-migrations.ps1 -EnvFile .cache/ci.env -ConfirmIsolatedTestDatabase
+      - name: Collect safe service state on failure
+        if: failure()
+        run: docker compose --env-file .cache/ci.env ps
+      - name: Stop isolated services
+        if: always()
+        run: docker compose --env-file .cache/ci.env down --remove-orphans

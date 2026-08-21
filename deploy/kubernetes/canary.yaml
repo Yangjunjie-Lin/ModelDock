@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modeldock-canary
+  namespace: modeldock
+  labels: { app.kubernetes.io/name: modeldock, app.kubernetes.io/component: server, app.kubernetes.io/track: canary }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: modeldock, app.kubernetes.io/component: server, app.kubernetes.io/track: canary }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: modeldock, app.kubernetes.io/component: server, app.kubernetes.io/track: canary }
+    spec:
+      serviceAccountName: modeldock
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: server
+          image: modeldock/server:canary
+          ports:
+            - { name: gateway, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: modeldock-runtime }
+            - secretRef: { name: modeldock-runtime-secrets }
+          startupProbe:
+            httpGet: { path: /startupz, port: gateway }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /readyz, port: gateway }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: gateway }
+            periodSeconds: 15
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 15"] }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: modeldock-gateway-canary
+  namespace: modeldock
+spec:
+  selector: { app.kubernetes.io/name: modeldock, app.kubernetes.io/component: server, app.kubernetes.io/track: canary }
+  ports:
+    - { port: 8080, targetPort: gateway }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: modeldock-canary
+  namespace: modeldock
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "5"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.example.invalid]
+      secretName: modeldock-tls
+  rules:
+    - host: api.example.invalid
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service: { name: modeldock-gateway-canary, port: { number: 8080 } }

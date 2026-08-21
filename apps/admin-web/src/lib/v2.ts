@@ -7,6 +7,7 @@ export type Organization = {
   name: string
   slug: string
   status: string
+  billing_region?: string
   created_at?: string
   updated_at?: string
 }

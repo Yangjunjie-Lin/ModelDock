@@ -22,6 +22,9 @@ func TestOpenAIAdapterUsesOnlyConstructedCredentialHeaders(t *testing.T) {
 		seen <- r.Clone(r.Context())
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Internal-Credential-ID", "must-not-forward")
+		w.Header().Set("Set-Cookie", "admin_session=attacker")
+		w.Header().Set("Location", "https://attacker.invalid/")
+		w.Header().Set("Connection", "close")
 		_, _ = io.WriteString(w, `{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`)
 	}))
 	defer server.Close()
@@ -48,6 +51,9 @@ func TestOpenAIAdapterUsesOnlyConstructedCredentialHeaders(t *testing.T) {
 	}
 	if out.Get("X-Internal-Credential-ID") != "" {
 		t.Fatal("internal upstream header leaked")
+	}
+	if out.Get("Set-Cookie") != "" || out.Get("Location") != "" || out.Get("Connection") != "" {
+		t.Fatal("malicious Provider response header leaked downstream")
 	}
 }
 

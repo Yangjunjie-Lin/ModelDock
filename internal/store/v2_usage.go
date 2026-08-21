@@ -27,18 +27,18 @@ func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.Requ
 
 	var organizationID, projectID string
 	var routeID *string
-	err = tx.QueryRow(ctx, `INSERT INTO request_logs(id,request_id,user_id,api_key_id,organization_id,project_id,route_id,
+	err = tx.QueryRow(ctx, `INSERT INTO request_logs(id,request_id,trace_id,user_id,api_key_id,organization_id,project_id,route_id,
 		provider_id,credential_id,requested_model,resolved_model,endpoint,status_code,streaming,input_tokens,
 		cached_input_tokens,output_tokens,total_tokens,estimated_cost,reference_cost,savings_amount,latency_ms,ttft_ms,upstream_request_id,error_code,
-		scheduler_reason,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-		RETURNING organization_id,project_id,route_id`, id.UUID(), logEntry.RequestID, nullString(logEntry.UserID),
-		nullString(logEntry.APIKeyID), nullString(logEntry.OrganizationID), nullString(logEntry.ProjectID), nullString(logEntry.RouteID),
+		scheduler_reason,created_at,funding_operation_id,usage_source)
+		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+		RETURNING organization_id,project_id,route_id`, id.UUID(), logEntry.RequestID, logEntry.TraceID,
+		nullString(logEntry.UserID), nullString(logEntry.APIKeyID), nullString(logEntry.OrganizationID), nullString(logEntry.ProjectID), nullString(logEntry.RouteID),
 		nullString(logEntry.ProviderID), nullString(logEntry.CredentialID), logEntry.RequestedModel, logEntry.ResolvedModel,
 		logEntry.Endpoint, logEntry.StatusCode, logEntry.Streaming, logEntry.InputTokens, logEntry.CachedInputTokens,
 		logEntry.OutputTokens, logEntry.TotalTokens, logEntry.EstimatedCost, logEntry.ReferenceCost, logEntry.SavingsAmount,
 		logEntry.LatencyMS, logEntry.TTFTMS, nullString(logEntry.UpstreamRequestID), nullString(logEntry.ErrorCode),
-		jsonBytes(logEntry.SchedulerReason), createdAt).
+		jsonBytes(logEntry.SchedulerReason), createdAt, nullString(logEntry.FundingOperationID), nullString(logEntry.UsageSource)).
 		Scan(&organizationID, &projectID, &routeID)
 	if err != nil {
 		return err

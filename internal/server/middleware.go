@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,6 +11,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/relayedock/relayedock/internal/auth"
 	"github.com/relayedock/relayedock/internal/id"
+	"github.com/relayedock/relayedock/internal/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const claimsKey = "relayedock.claims"
@@ -38,15 +45,45 @@ func controlRealm(path string) string {
 	return "shared"
 }
 
-func requestMiddleware(logger *slog.Logger) gin.HandlerFunc {
+func requestMiddleware(logger *slog.Logger, extras ...any) gin.HandlerFunc {
+	var metrics *observability.Metrics
+	component := "http"
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *observability.Metrics:
+			metrics = value
+		case string:
+			component = value
+		}
+	}
 	return func(c *gin.Context) {
 		start := time.Now()
 		requestID := id.RequestID()
+		parentContext := otel.GetTextMapPropagator().Extract(c.Request.Context(), propagation.HeaderCarrier(c.Request.Header))
+		spanContext, span := otel.Tracer("github.com/relayedock/relayedock/internal/server").Start(parentContext, c.Request.Method+" "+c.Request.URL.Path,
+			trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attribute.String("http.request.method", c.Request.Method), attribute.String("url.path", c.Request.URL.Path)))
+		requestTrace := observability.NewTraceContext(c.GetHeader("traceparent"))
+		if current := span.SpanContext(); current.IsValid() {
+			requestTrace = observability.TraceContext{TraceID: current.TraceID().String(), SpanID: current.SpanID().String(), Flags: fmt.Sprintf("%02x", byte(current.TraceFlags()))}
+		}
 		c.Set("request_id", requestID)
+		c.Set("trace_context", requestTrace)
+		c.Request = c.Request.WithContext(observability.WithTrace(spanContext, requestTrace))
 		c.Header("X-Request-Id", requestID)
 		c.Header("X-RelayDock-Request-Id", requestID)
+		c.Header("traceparent", requestTrace.Traceparent())
 		c.Next()
-		logger.Info("http_request", "request_id", requestID, "method", c.Request.Method, "path", c.Request.URL.Path, "status", c.Writer.Status(), "latency_ms", time.Since(start).Milliseconds(), "client_ip", c.ClientIP())
+		status := c.Writer.Status()
+		latency := time.Since(start).Milliseconds()
+		if metrics != nil {
+			metrics.ObserveControl(component, status)
+		}
+		span.SetAttributes(attribute.Int("http.response.status_code", status), attribute.Int64("http.server.request.duration_ms", latency), attribute.String("modeldock.request_id", requestID))
+		if status >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(status))
+		}
+		span.End()
+		logger.Info("http_request", "request_id", requestID, "trace_id", requestTrace.TraceID, "span_id", requestTrace.SpanID, "component", component, "method", c.Request.Method, "path", c.Request.URL.Path, "status", status, "latency_ms", latency, "client_ip", c.ClientIP())
 	}
 }
 
@@ -64,6 +101,25 @@ func recovery(logger *slog.Logger) gin.HandlerFunc {
 	})
 }
 
+func requestBodyLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes <= 0 {
+			openAIError(c, http.StatusInternalServerError, "internal_error", "The request size policy is unavailable.")
+			c.Abort()
+			return
+		}
+		if c.Request.ContentLength > maxBytes {
+			openAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "The request body exceeds the configured size limit.")
+			c.Abort()
+			return
+		}
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
+
 func cors(origins []string) gin.HandlerFunc {
 	allowed := map[string]struct{}{}
 	for _, v := range origins {
@@ -75,7 +131,7 @@ func cors(origins []string) gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Credentials", "true")
-			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, X-Client-Request-Id")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, X-Client-Request-Id, Idempotency-Key")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		}
 		if c.Request.Method == http.MethodOptions {
@@ -114,7 +170,7 @@ func controlAuth(d Dependencies) gin.HandlerFunc {
 		}
 		if d.Store != nil {
 			user, err := d.Store.UserByID(c.Request.Context(), claims.Subject)
-			if err != nil || user.Status != "ACTIVE" {
+			if err != nil || user.Status != "ACTIVE" || user.SessionVersion != claims.SessionVersion {
 				openAIError(c, http.StatusUnauthorized, "invalid_session", "The session user is unavailable or disabled.")
 				c.Abort()
 				return
@@ -140,11 +196,23 @@ func csrfAllowed(c *gin.Context, cookieName string) bool {
 	return cookie != "" && header != "" && len(cookie) == len(header) && subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) == 1
 }
 
-func requireAdmin() gin.HandlerFunc {
+func requireAdmin(dependencies ...Dependencies) gin.HandlerFunc {
+	var d Dependencies
+	if len(dependencies) > 0 {
+		d = dependencies[0]
+	}
 	return func(c *gin.Context) {
 		claims := claimsFrom(c)
 		if claims == nil || (claims.Role != "ADMIN" && claims.Role != "SUPER_ADMIN") {
 			openAIError(c, http.StatusForbidden, "insufficient_permissions", "Administrator access is required.")
+			c.Abort()
+			return
+		}
+		if d.Config.AdminMFARequired && !claims.MFA &&
+			!strings.HasSuffix(c.Request.URL.Path, "/auth/mfa/status") &&
+			!strings.HasSuffix(c.Request.URL.Path, "/auth/mfa/setup") &&
+			!strings.HasSuffix(c.Request.URL.Path, "/auth/mfa/confirm") {
+			openAIError(c, http.StatusForbidden, "mfa_required", "Administrator MFA enrollment or verification is required.")
 			c.Abort()
 			return
 		}
@@ -160,6 +228,11 @@ func claimsFrom(c *gin.Context) *auth.Claims {
 	return claims
 }
 func requestID(c *gin.Context) string { v, _ := c.Get("request_id"); s, _ := v.(string); return s }
+func traceID(c *gin.Context) string {
+	v, _ := c.Get("trace_context")
+	trace, _ := v.(observability.TraceContext)
+	return trace.TraceID
+}
 func openAIError(c *gin.Context, status int, code, message string) {
 	c.JSON(status, gin.H{"error": gin.H{"message": message, "type": "relayedock_error", "param": nil, "code": code}})
 }

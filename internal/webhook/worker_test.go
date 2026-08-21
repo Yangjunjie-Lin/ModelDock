@@ -40,13 +40,13 @@ func (s *workerStoreStub) ExpireWebhookLeases(context.Context, time.Time) (int64
 }
 
 type workerVaultStub struct {
-	secret string
-	aad    string
+	value string
+	aad   string
 }
 
 func (v *workerVaultStub) Decrypt(_ []byte, aad string) (string, error) {
 	v.aad = aad
-	return v.secret, nil
+	return v.value, nil
 }
 
 func TestWorkerCompletesSignedDeliveryWithOutboxIdentity(t *testing.T) {
@@ -62,7 +62,7 @@ func TestWorkerCompletesSignedDeliveryWithOutboxIdentity(t *testing.T) {
 		EndpointURL: server.URL, EncryptedSecret: []byte("encrypted"), ClaimToken: "claim-1",
 		Payload: map[string]any{"id": "event-1", "type": "webhook.test"}, Attempts: 1,
 	}}}
-	vault := &workerVaultStub{secret: "0123456789abcdef"}
+	vault := &workerVaultStub{value: "unit-test-webhook-value"}
 	worker := NewWorker(store, vault, New(Config{AllowHTTP: true, AllowPrivateNetwork: true}), WorkerConfig{})
 
 	processed, err := worker.ProcessOnce(context.Background())
@@ -91,7 +91,7 @@ func TestWorkerRecordsBoundedExponentialRetry(t *testing.T) {
 		EndpointURL: server.URL, EncryptedSecret: []byte("encrypted"), ClaimToken: "claim-2",
 		Payload: map[string]any{"id": "event-2"}, Attempts: 3, MaxAttempts: 6,
 	}}}
-	worker := NewWorker(store, &workerVaultStub{secret: "0123456789abcdef"}, New(Config{AllowHTTP: true, AllowPrivateNetwork: true}), WorkerConfig{MaxBackoff: 3 * time.Second})
+	worker := NewWorker(store, &workerVaultStub{value: "unit-test-webhook-value"}, New(Config{AllowHTTP: true, AllowPrivateNetwork: true}), WorkerConfig{MaxBackoff: 3 * time.Second})
 	now := time.Date(2026, time.August, 10, 0, 0, 0, 0, time.UTC)
 	worker.now = func() time.Time { return now }
 

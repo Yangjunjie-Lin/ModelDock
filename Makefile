@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 PYTHON ?= python
 
-.PHONY: help env dirs config build up up-mock down restart logs ps test frontend-build test-sdk fmt
+.PHONY: help env dirs config build up up-mock down restart logs ps test vet frontend-install frontend-lint frontend-typecheck frontend-build frontend-audit frontend-ci test-sdk test-funding fmt format-check
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -39,16 +39,49 @@ logs: ## Follow service logs
 ps: ## Show service and health status
 	$(COMPOSE) --env-file .env ps
 
-test: ## Run backend tests and frontend typechecked builds
+test: ## Run backend tests and all frontend checks
 	go test ./...
-	$(MAKE) frontend-build
+	$(MAKE) frontend-ci
 
-frontend-build: ## Typecheck and build both web applications
+vet: ## Run Go static analysis
+	go vet ./...
+
+frontend-install: ## Install both locked frontend dependency graphs
+	npm --prefix apps/admin-web ci
+	npm --prefix apps/console-web ci
+
+frontend-lint: ## Lint both web applications
+	npm --prefix apps/admin-web run lint
+	npm --prefix apps/console-web run lint
+
+frontend-typecheck: ## Typecheck both web applications
+	npm --prefix apps/admin-web run typecheck
+	npm --prefix apps/console-web run typecheck
+
+frontend-build: ## Build both web applications
 	npm --prefix apps/admin-web run build
 	npm --prefix apps/console-web run build
+
+frontend-audit: ## Fail for high or critical npm advisories
+	npm --prefix apps/admin-web audit --audit-level=high
+	npm --prefix apps/console-web audit --audit-level=high
+
+frontend-ci: frontend-lint frontend-typecheck frontend-build frontend-audit ## Run frontend CI without reinstalling dependencies
 
 test-sdk: ## Run official Python SDK compatibility tests against a running gateway
 	$(PYTHON) -m pytest -q tests/sdk/python
 
+test-funding: ## Run isolated concurrent reservation and immutable-ledger integration tests
+	powershell -File tests/integration/verify-funding.ps1 -ConfirmIsolatedTestDatabase
+
+test-payments: ## Run isolated payment replay, recovery, and traceability integration tests
+	powershell -File tests/integration/verify-payments.ps1
+
+test-marketplace: ## Run isolated Marketplace launch, payout-gate, and lifecycle integration tests
+	powershell -File tests/integration/verify-marketplace-launch.ps1 -ConfirmIsolatedTestDatabase
+
 fmt: ## Format Go sources
-	gofmt -w cmd internal
+	gofmt -w cmd internal migrations tests/backend
+
+format-check: ## Fail when Go sources are not gofmt-clean
+	@test -z "$$(gofmt -l cmd internal migrations tests/backend)"

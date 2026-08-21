@@ -48,7 +48,7 @@ export function CredentialsPage() {
     queryFn: () => api<CockpitPool>('/cockpit/accounts'),
     staleTime: 30_000,
   })
-  const rows = result.data?.items || []
+  const rows = useMemo(() => result.data?.items || [], [result.data])
   const stats = useMemo(() => ({ active: rows.filter((row) => String(row.status).toUpperCase() === 'ACTIVE').length, healthy: rows.filter((row) => String(row.current_health || row.health).toLowerCase() === 'healthy').length, limited: rows.filter((row) => String(row.status).includes('LIMIT')).length, concurrency: rows.reduce((sum, row) => sum + Number(row.max_concurrency || 0), 0) }), [rows])
   const save = useMutation({
     mutationFn: async (mode: 'validate' | 'disabled') => {
@@ -97,7 +97,12 @@ export function CredentialsPage() {
     onError: (error) => toast(error instanceof Error ? error.message : 'Cockpit sidecar check failed', 'danger'),
   })
 
-  const select = (id: string, checked: boolean) => setSelected((current) => { const next = new Set(current); checked ? next.add(id) : next.delete(id); return next })
+  const select = (id: string, checked: boolean) => setSelected((current) => {
+    const next = new Set(current)
+    if (checked) next.add(id)
+    else next.delete(id)
+    return next
+  })
   const exportMetadata = () => {
     const safeRows = rows.map((row) => ({ name: row.name, provider: row.provider_name || providerName(row.provider), project: row.project_id, status: row.status, group: row.group_name, weight: row.weight }))
     const blob = new Blob([JSON.stringify(safeRows, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'relaydock-credential-metadata.json'; link.click(); URL.revokeObjectURL(link.href)

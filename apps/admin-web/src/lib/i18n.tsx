@@ -72,6 +72,18 @@ Object.assign(zh, {
   'Verify the exact request body with the timestamp and signature headers, then deduplicate by event ID. Redirects are never followed.': '使用时间戳和签名头验证原始请求体，然后按事件 ID 去重；绝不跟随重定向。', 'WARN emits a deduplicated event; BLOCK rejects before upstream dispatch.': 'WARN 发出已去重事件；BLOCK 在上游分发前拒绝请求。', 'Workspace identity and data retention.': '工作区标识与数据保留。',
 })
 
+Object.assign(zh, {
+  'Finance': '财务管理', 'Reconciliation': '财务对账', 'FINANCIAL CONTROL': '财务控制', 'DAILY FINANCIAL CLOSE': '每日财务关账',
+  'Payment orders': '支付订单', 'Anomalous orders': '异常订单', 'Ledger entries': '钱包分录', 'Refund approvals': '退款审批', 'Invoice requests': '发票申请', 'Financial reports': '财务报表',
+  'Accounting CSV': '会计 CSV', 'Accounting month': '会计月份', 'Posted journals are read-only.': '已入账凭证只读。', 'Exception queue': '差异待处理队列', 'Run history': '对账运行历史', 'Run reconciliation': '执行对账',
+  'Provider cost': 'Provider 成本', 'User revenue': '用户收入', 'Gross margin': '毛利', 'Review': '审批', 'Resolve': '处理', 'Record decision': '记录决定', 'Record resolution': '记录处理结果',
+  'Unused cash': '未使用现金', 'Used service': '已使用服务', 'Bonus': '赠送余额', 'Subscription fee': '订阅费', 'Irrecoverable provider cost': 'Provider 不可撤销成本',
+  'Payment order': '支付订单', 'Wallet trace': '钱包追踪', 'Application': '申请单', 'Validated amount': '校验金额', 'Expected / actual': '预期 / 实际', 'Automated check': '自动检查', 'Occurrences': '出现次数',
+  'Accept documented exception': '接受并记录例外', 'Post reversal journal': '生成反向分录', 'Source journal ID *': '源凭证 ID *', 'Handling reason *': '处理原因 *', 'Business date *': '业务日期 *', 'Run all six checks': '执行全部六项检查',
+  'Organization scope': '组织范围', 'All organizations or organization UUID': '全部组织或输入组织 UUID', 'Clear scope': '清除范围',
+  'Apply scope': '应用范围', 'Enter a valid organization UUID.': '请输入有效的组织 UUID。',
+})
+
 const I18nContext = createContext<{ language: Language; setLanguage: (language: Language) => void; t: (value: string) => string }>({ language: 'en', setLanguage: () => undefined, t: (value) => value })
 const textOriginals = new WeakMap<Node, string>()
 const attributeOriginals = new WeakMap<Element, Map<string, string>>()
@@ -132,7 +144,10 @@ function localizeTree(root: Node, language: Language) {
   if (root.nodeType === Node.ELEMENT_NODE) localizeElement(root as Element, language)
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT)
   let node: Node | null
-  while ((node = walker.nextNode())) node.nodeType === Node.TEXT_NODE ? localizeText(node, language) : localizeElement(node as Element, language)
+  while ((node = walker.nextNode())) {
+    if (node.nodeType === Node.TEXT_NODE) localizeText(node, language)
+    else localizeElement(node as Element, language)
+  }
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {

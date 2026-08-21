@@ -1,5 +1,29 @@
 # API guide
 
+## Financial close APIs
+
+Finance routes use the existing authenticated control plane and never alter the
+OpenAI-compatible `/v1` contract. Console organization routes expose recharge
+history, subscription invoices, balance composition (`cash_available`,
+`bonus_available`, credit limit/used/available), request-level Token charges,
+monthly statements, refund applications, invoice applications, and CSV export.
+Every amount is an exact decimal string.
+
+Admin finance routes query payment/anomaly queues and immutable wallet entries;
+approve/refuse refund and invoice applications; report Provider cost, customer
+revenue, and gross margin; atomically export approved invoice applications and
+accounting CSV; import immutable Provider
+statements; and run/list/resolve six-way reconciliation cases. Decisions and
+reversals require an idempotency key, named actor, and non-empty reason.
+
+CSV cells beginning with `=`, `+`, `-`, or `@` are neutralized before download.
+Provider statements require an enabled Provider, active contract, allowed
+Provider and linked-organization region, exact line total, and SHA-256 source digest. Invoice APIs support only
+application, status, amount/source validation, review, and export. No automatic
+tax invoice is issued because no tax authority is integrated. See the exact
+paths in [openapi.yaml](openapi.yaml) and operational semantics in
+[financial-close.md](financial-close.md).
+
 RelayDock exposes two independent HTTP surfaces:
 
 | Surface | Default base URL | Authentication |
@@ -10,6 +34,62 @@ RelayDock exposes two independent HTTP surfaces:
 The machine-readable contract is [openapi.yaml](openapi.yaml). OpenAI-compatible
 request/response bodies are intentionally extensible because the official API
 may add optional fields and streaming event types.
+
+For a copy-ready path from checking the actual regional price through curl,
+Python, JavaScript/TypeScript, SSE, Embeddings, billing, BYOK, retention, and
+fallback behavior, read the [developer quickstart](developer-quickstart.md).
+
+## Public commercial discovery
+
+The following control-plane reads are unauthenticated so a visitor can make an
+informed decision before registration or purchase:
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /api/public/config` | Product identity, registration/verification policy, public support/Enterprise mailboxes, legal-review flag, supported regions/currencies and funnel behavior |
+| `GET /api/public/catalog/models?region=CN&currency=CNY` | Region-filtered model capability, commercial availability, and current approved retail price |
+| `GET /api/public/catalog/providers?region=CN` | Public-safe Provider contract/resale/region/status disclosure |
+| `GET /api/public/pricing?region=CN&currency=CNY` | Separate subscription fees, Token prices, payment/platform fees, bonus, tax, refund, and availability terms |
+| `GET /api/public/status` | Privacy-safe service and Provider status; Provider `OPERATIONAL` requires approved commercial/resale state, pricing enabled, and a schedulable credential, but is not a continuous upstream probe |
+| `POST /api/public/funnel/events` | Idempotent, bounded `HOMEPAGE_VISITED` event only; raw anonymous IDs are not retained |
+
+Every payable amount is an exact decimal string. A null price/terms object,
+`available: false`, or `payment_region_supported: false` must be treated as
+unavailable, not estimated by the client. Payment-region support requires both
+the configured region and a runtime-admitted adapter with an approved fee
+disclosure for that channel.
+`legal_review_required` identifies draft deployment wording and must remain
+visible until counsel approves it. Public catalog output does not expose
+Provider credentials, base URLs, acquisition costs, margin, contract documents,
+or internal capacity/budget details.
+Public availability is a pre-purchase offer signal, not proof of project route
+authorization, eligible credential inventory, or real-time upstream health and
+capacity. Those gates are evaluated for the authenticated project at dispatch.
+Provider processing regions are disclosure fields; they are not folded into
+the public availability value.
+
+`POST /api/public/funnel/events` requires an idempotency key in the
+`Idempotency-Key` header or body. Only `HOMEPAGE_VISITED` is caller-writable.
+
+Public `token_prices[]` rows include nested `availability`; callers must not
+infer regional permission from the presence of a numeric price alone.
+`payment_region_supported` is the deployment payment-region allowlist result,
+separate from `payment_fees_configured`. `bonus_credit_amount` is disclosure
+metadata only and never creates PromotionCredit or ledger value by itself.
+
+`support_email` and `enterprise_email` are deliberately public deployment
+configuration. Values ending in `example.invalid` are non-delivering
+placeholders and must not be presented as working contact channels in a public
+launch. Operators should configure monitored role mailboxes rather than a
+person's private address.
+
+Authenticated onboarding evidence is read from
+`GET /api/console/onboarding?organization_id=...&project_id=...`; it validates
+both memberships, echoes the selected project, derives project-scoped steps
+from database evidence, and provides no client-write completion endpoint. First
+and second call milestones require HTTP 2xx plus terminal settlement evidence.
+Administrators can read aggregate UTC funnel counts from
+`GET /api/admin/funnel/summary?from=...&to=...`.
 
 ## Common behavior
 
@@ -37,8 +117,10 @@ Important status/code pairs:
 | --- | --- | --- |
 | `400` | `invalid_json`, `invalid_request` | Malformed or semantically invalid request |
 | `401` | `invalid_api_key`, `invalid_session` | Missing/invalid downstream credential or session |
-| `403` | `model_not_allowed`, `quota_exceeded`, `project_budget_exceeded`, `insufficient_permissions`, `csrf_failed` | Authenticated but not admitted |
+| `402` | `insufficient_balance` | Prepaid wallet cannot reserve the maximum request cost |
+| `403` | `model_not_allowed`, `quota_exceeded`, `project_budget_exceeded`, `provider_region_unavailable`, `provider_commercial_unavailable`, `provider_pricing_disabled`, `insufficient_permissions`, `csrf_failed` | Authenticated but not admitted |
 | `404` | `model_not_found`, `not_found` | Route/resource not found |
+| `409` | `idempotency_conflict`, `idempotent_replay` | Logical operation was already admitted or the key was reused with different input; no extra reservation/charge is created. An inference replay returns `X-RelayDock-Original-Request-Id`, not cached model output. |
 | `413` | `request_too_large` | Body exceeds `MAX_REQUEST_BODY_BYTES` |
 | `422` | `credential_validation_failed`, `provider_mismatch` | Provider validation failed, or a route/group attempted to cross provider ownership boundaries |
 | `429` | `rate_limit_exceeded` | RelayDock client-key limit reached; inspect `Retry-After` |
@@ -219,6 +301,41 @@ POST /api/admin/auth/logout     clear the administrator-realm cookies
 POST /api/console/auth/logout   clear the console-realm cookies
 ```
 
+### SaaS account lifecycle
+
+Public account endpoints are available under `/api/console/auth`, with
+compatibility aliases under `/api/auth` and `/api/admin/auth`:
+
+| Method and suffix | Purpose |
+| --- | --- |
+| `GET /config` | Return `CLOSED`, `INVITE_ONLY`, or `PUBLIC` registration mode |
+| `POST /register` | Register with email/password and optional registration code or organization invitation |
+| `POST /verify-email` | Consume an expiring one-time verification token |
+| `POST /resend-verification` | Queue a replacement verification email; response is enumeration-safe |
+| `POST /forgot-password` | Queue a reset link; response is enumeration-safe |
+| `POST /reset-password` | Consume the reset token and revoke all prior sessions |
+| `GET /invitations/{token}` | Preview an organization invitation with masked email |
+| `POST /invitations/{token}/accept` | Accept once; cannot create a new user in `CLOSED` mode |
+| `POST /invitations/{token}/reject` | Reject once |
+
+Authenticated realm endpoints add `change-password`,
+`logout-other-sessions`, `mfa/status`, `mfa/setup`, `mfa/confirm`,
+`mfa/disable`, and the signed-in user's `/auth/organization-invitations`
+list/respond operations. Access and refresh JWTs carry a database
+`session_version`; every
+password or security-state transition invalidates older values.
+
+Administrator organization invitation APIs are
+`GET/POST /api/admin/organizations/{organizationID}/invitations` and
+`DELETE .../invitations/{invitationID}`. Registration-code management is under
+`/api/admin/registration-invites`; dead-letter inspection/requeue is under
+`/api/admin/email-outbox`. Secrets and codes are returned only at creation.
+
+Administrator login accepts optional `mfa_code`. When deployment policy
+requires MFA but the administrator is not enrolled, the login response sets
+`mfa_enrollment_required: true` and the session is restricted to MFA
+enrollment endpoints. See [account-lifecycle.md](account-lifecycle.md).
+
 ## Administrator endpoints
 
 All paths require an authenticated `SUPER_ADMIN` or `ADMIN` principal.
@@ -325,6 +442,22 @@ Route creation body:
 }
 ```
 
+`fallback_group_id` is a bounded alternate credential group on the same
+physical route. Any primary scheduler error may select it before dispatch. If
+the first primary upstream call instead fails with a non-cancellation,
+non-deadline connection error before an HTTP response is received, the gateway
+may issue at most one additional call through that fallback group. It does not
+fallback after any HTTP response (`4xx`/`5xx` included), on cancellation or
+deadline, or after SSE response bytes begin.
+
+No-response connection errors are ambiguous: the first upstream may already
+have processed the request. Both attempts can therefore generate output or
+incur Provider cost. RelayDock request idempotency prevents a second client
+admission/funding operation, but does not guarantee upstream deduplication
+between internal attempts. Integrations must tolerate duplicate upstream
+processing and place non-idempotent external side effects behind their own
+durable idempotency boundary.
+
 ## User console endpoints
 
 These paths are automatically scoped to the authenticated user:
@@ -335,7 +468,7 @@ These paths are automatically scoped to the authenticated user:
 | `GET /api/console/dashboard` | User-only usage summary |
 | `GET/POST /api/console/api-keys` | List/issue the user's RelayDock keys |
 | `DELETE /api/console/api-keys/{id}` | Revoke one of the user's keys |
-| `GET /api/console/models` | List configured route aliases |
+| `GET /api/console/models?project_id=...` | List authorized aliases plus non-secret `provider_id`/`upstream_model` keys used to join the current-region public price catalog; credential groups and endpoints remain hidden |
 | `GET /api/console/usage?period=30d` | User-only totals, daily series, and per-model breakdown |
 | `GET /api/console/request-logs` | User-only logs with credential, scheduler, and upstream IDs removed |
 | `GET /api/console/logs` | UI-compatible alias for the same redacted request logs |
@@ -492,11 +625,31 @@ session plus the existing CSRF protection for mutations.
 
 | Method and path | Purpose |
 | --- | --- |
-| `POST /models`, `PUT /models/{id}`, `DELETE /models/{id}` | Create, update, or disable registry models and quality/latency scores |
+| `POST /models`, `PUT /models/{id}`, `DELETE /models/{id}` | Create, update, or disable registry models and legacy declared quality/latency fields (not platform ranking inputs) |
+| `GET /provider-quality` | List platform-measured policies, grades, routing multipliers, ramp caps, and circuit states |
+| `PUT /providers/{id}/quality-policy` | Replace the administrator-owned quality/probe policy |
+| `POST /providers/{id}/quality/evaluate` | Evaluate the current immutable evidence window immediately |
+| `POST /providers/{id}/quality/circuit-reset` | Audited move to half-open recovery; does not force-close |
+| `POST /providers/{id}/supplier-link` | Link an approved supplier and atomically start controlled ramp-up |
+| `GET /provider-quality/sla-events` | List opened/resolved Provider SLA events |
+| `GET/POST /provider-quality/price-verifications` | List or append independent exact-decimal official price evidence |
+
+The paths above are under `/api/admin`. Supplier declarations, Marketplace
+uptime, and legacy model quality scores are not platform quality evidence and
+are not routing/ranking inputs. Price-verification POST requires an
+`Idempotency-Key`; see [provider-quality.md](provider-quality.md).
 | `GET/POST /routing-rules` | List or create project intelligent-routing aliases |
 | `PUT/DELETE /routing-rules/{id}` | Update or remove a routing rule |
 | `GET/POST /marketplace/providers` | List or create Marketplace provider listings |
 | `PUT/DELETE /marketplace/providers/{id}` | Review, verify, suspend, or remove a listing |
+| `GET /marketplace/launch-reviews` | List versioned Marketplace acceptance reviews and all current gates |
+| `POST /marketplace/providers/{id}/launch-reviews` | Idempotently open a review for a supplier-linked listing |
+| `POST /marketplace/launch-reviews/{id}/evaluate` | Re-evaluate platform database evidence and append gate events |
+| `PUT /marketplace/launch-reviews/{id}/gates/{gateCode}` | Attest one operational drill gate with a reviewed evidence reference |
+| `POST /marketplace/launch-reviews/{id}/approve` | Second-administrator release approval; all 23 gates must pass |
+| `POST /marketplace/providers/{id}/lifecycle` | Start canary, suspend, resume, emergency-cutover, or exit |
+| `GET /marketplace/providers/{id}/lifecycle-events` | List immutable Marketplace lifecycle events |
+| `GET/PUT /marketplace/payout-readiness/{supplierID}` | Read or review contract, tax, payment, and security payout gates |
 | `GET/POST /teams` | List or create organization teams with token/cost limits |
 | `PUT/DELETE /teams/{id}` | Update or archive a team |
 | `GET /teams/{id}/members` | List team membership |
@@ -504,8 +657,82 @@ session plus the existing CSRF protection for mutations.
 | `GET /wallets` | List organization wallets |
 | `PUT /wallets/{id}` | Set `PREPAID`/`POSTPAID`, status, and credit limit |
 | `GET /wallets/{id}/transactions` | List the immutable wallet ledger |
-| `POST /wallets/{id}/topups` | Add funds; requires an idempotency key |
+| `GET /wallets/{id}/funding-operations` | List reservation/settlement state and usage provenance |
+| `GET /wallets/{id}/journals` | List balanced immutable debit/credit journals |
+| `POST /wallets/{id}/topups` | Legacy internal, non-refundable balance adjustment; requires an idempotency key and is not customer-payment evidence |
 | `POST /wallets/{id}/adjustments` | Apply an audited signed balance adjustment |
+
+Supplier-backed Provider routes fail closed unless the listing is either a
+foundation-gated `CANARY` with an active review or `ACTIVE` with an approved
+review and all gates passed. The route-selection check is repeated in the
+dispatch transaction. Existing first-party Providers with no supplier link keep
+their prior `/v1` behavior. Listing uptime, `verified`, price JSON, and supplier
+usage are declarations and cannot satisfy an automated gate. See
+[Marketplace launch acceptance](marketplace/launch-acceptance.md).
+
+### Verified recharge and payment operations
+
+Console endpoints use the existing authenticated `/api/console` session and
+organization membership checks. `POST /organizations/{organizationID}/recharge-orders`
+requires an exact decimal amount, currency, region, adapter name, and
+idempotency key. The returned payment instructions never mean the wallet has
+been credited. `GET .../recharge-orders/{orderID}` is safe for a success page to
+poll; `POST .../{orderID}/query` performs a server-side adapter query.
+
+The public `POST /api/payments/webhooks/{provider}` endpoint accepts only a
+provider-specific signed event within the configured timestamp window. Admin
+endpoints list orders, approve manual-transfer evidence, issue full refunds,
+and persist immutable reconciliation records. See [payments.md](payments.md)
+and [openapi.yaml](openapi.yaml) for the request schemas and signature contract.
+| `POST /funding-operations/{id}/late-usage` | Idempotently post authoritative late usage as a difference journal |
+| `POST /funding-operations/{id}/reversals` | Reverse a settlement with a new audited journal |
+
+### Commercial pricing
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/pricing/quote` | Authenticated quote for organization, model, and estimated token counts |
+| `POST /api/admin/pricing/quotes` | Administrator quote endpoint |
+| `POST /api/admin/pricing/quote` | Deprecated compatibility alias for the administrator quote endpoint |
+| `GET/POST /api/admin/pricing/provider-cost-price-books` | List/publish provider cost versions |
+| `POST /api/admin/pricing/provider-cost-changes/manual` | Submit one exact-decimal manual Provider cost change |
+| `POST /api/admin/pricing/provider-cost-changes/fetch` | Fetch an allowlisted official HTTPS JSON price feed |
+| `POST /api/admin/pricing/provider-cost-changes/import-csv` | Atomically import a bounded `text/csv` price batch |
+| `GET/POST /api/admin/pricing/byok-service-fee-policies` | List/publish append-only BYOK service-fee policies |
+| `DELETE /api/admin/pricing/byok-service-fee-policies/{id}` | Disable a BYOK service-fee policy |
+| `GET/POST /api/admin/pricing/customer-retail-price-books` | List/publish customer or system retail versions |
+| `GET/POST /api/admin/pricing/organization-price-plans` | List/publish subscription and organization overrides |
+| `GET/POST /api/admin/pricing/margin-policies` | Model/provider/organization minimum-margin policies |
+| `GET/POST /api/admin/pricing/promotion-credits` | Non-refundable promotion grants separate from wallet cash |
+
+Money values in this domain are exact decimal strings. Pricing priority is
+organization override, subscription plan, customer price book, then system
+default. A forced below-margin publication requires `force_override=true` plus
+`confirmation=CONFIRM_NEGATIVE_MARGIN_OVERRIDE` and is audited. See
+[pricing.md](pricing.md). Retail publication currently requires the same
+currency as the matching provider cost; promotion grants and wallet mutations
+require idempotency keys, and reusing a key with different data returns `409`.
+
+### Subscriptions
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/admin/subscription-plans` | List enabled/disabled templates and current frozen versions |
+| `POST /api/admin/subscription-plans` | Create a standard or enterprise-contract template |
+| `GET/POST /api/admin/subscription-plans/{planID}/versions` | List or create immutable-version candidates |
+| `POST /api/admin/plan-versions/{versionID}/freeze` | Freeze and publish a complete version |
+| `GET/POST /api/admin/coupons` | List/create subscription-only coupons |
+| `GET /api/{admin|console}/organizations/{organizationID}/subscription` | Current version and effective server-side entitlements |
+| `POST /api/{admin|console}/organizations/{organizationID}/subscription/change` | Immediate or period-end upgrade/downgrade; requires idempotency key |
+| `POST /api/{admin|console}/organizations/{organizationID}/subscription/cancel` | Immediate or period-end cancellation; requires idempotency key |
+| `GET /api/{admin|console}/organizations/{organizationID}/subscription-invoices` | Independent subscription reconciliation stream |
+| `GET /api/{admin|console}/organizations/{organizationID}/subscription-events` | Immutable lifecycle audit events |
+| `POST /api/admin/subscription-invoices/{invoiceID}/pay` | Record verified subscription payment and post separate journal |
+| `POST /api/admin/subscription-invoices/{invoiceID}/fail` | Record renewal failure and begin past-due/grace lifecycle |
+
+All subscription amounts are exact decimal strings. Every version has
+`token_billing_mode=METERED_SEPARATE`; Token request charges still use the
+pricing snapshot/funding/wallet APIs. See [subscriptions.md](subscriptions.md).
 
 The built-in model aliases `auto`, `auto:cost`, `auto:quality`, and
 `auto:balanced` invoke intelligent routing. Exact physical aliases continue to
@@ -518,9 +745,51 @@ Both listeners expose:
 
 ```text
 GET /healthz   process liveness
-GET /readyz    PostgreSQL and Redis readiness
+GET /startupz  startup completion probe
+GET /readyz    PostgreSQL/Redis readiness; returns 503 while draining
 GET /metrics   Prometheus text exposition
+GET /api/version product, RelayDock compatibility identity, semantic version,
+                 full release commit SHA, and source-commit build timestamp
 ```
+
+`/api/version` keeps `name: RelayDock` for existing clients and adds
+`product: ModelDock`, `compatibility_name`, `commit`, and `build_time` fields.
+Development builds report `unknown` provenance; release images inject immutable
+values and mirror them in OCI labels.
 
 Restrict `/metrics` at the reverse proxy in production because operational
 labels/counters should not be internet-visible.
+Inference POSTs also accept an optional `Idempotency-Key` (maximum 200
+characters). Replaying the same logical request never creates another
+reservation or charge. See [funding-ledger.md](funding-ledger.md).
+
+Provider governance adds the Provider kill-switch, Provider cost-change review,
+and organization-scoped BYOK credential endpoints. Manual/API/CSV cost inputs
+always enter pending approval; approval publishes an append-only,
+effective-dated price. Gateway policy failures use stable redacted error codes
+without exposing contracts, region lists, budgets, or credential identifiers.
+See [provider-governance.md](provider-governance.md).
+
+## Observability, status, and support
+
+Public `GET /status` and `GET /api/status` expose only customer-safe component
+and incident state. Authenticated console users use `/api/console/status` and
+`/api/console/support/tickets`; administrators use
+`/api/admin/status/summary`, `/api/admin/status/events`,
+`/api/admin/observability`, and `/api/admin/support/tickets`.
+
+`GET /api/admin/observability/requests/{requestID}` is the investigation join:
+it returns route, Provider attempts, token usage, exact-decimal pricing/funding
+evidence, wallet transactions, and ledger journal IDs. It never returns API
+keys, Provider secrets, prompts, responses, or payment credentials. See
+[observability-operations.md](observability-operations.md).
+## Supplier applications
+
+Authenticated console users can submit supplier evidence under `/api/console/suppliers`. Administrators review it under `/api/admin/suppliers`. Supplier credentials and payout account values are write-only inputs and are never returned. `APPROVED` is accepted only by the administrator review endpoint after the server verifies KYB, contract, endpoint-isolation, and security-questionnaire prerequisites; a supplier cannot self-approve. See [supplier-onboarding.md](supplier-onboarding.md) and [openapi.yaml](openapi.yaml) for the complete request/response contract.
+
+Supplier finance endpoints are under `/api/console/suppliers/{supplierID}/payables|settlements|bills|appeals` and `/api/admin/supplier-payables|supplier-settlements|supplier-bills|supplier-appeals`. Exact amounts are decimal strings. Supplier bills are immutable declarations only; payout approval requires administrator-imported Provider statement lines matched to platform-settled usage, verified tax/invoice status, no open appeal, and a second administrator when the batch was manually created. Payout retries keep the original idempotency key. See [supplier-settlement.md](supplier-settlement.md).
+
+Every payout adapter other than the built-in `sandbox` is considered
+production. Approval, queue claim, completion, and a PostgreSQL trigger require
+all four supplier payout-readiness reviews to be `APPROVED`. A supplier cannot
+write those review statuses.

@@ -1,8 +1,9 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { BellRing, Database, GitBranch, LockKeyhole, Save, Shield, SlidersHorizontal } from 'lucide-react'
-import { api } from '../lib/api'
-import { Button, ErrorState, Panel, Skeleton, useToast } from '../components/ui'
+import { BellRing, Database, GitBranch, LockKeyhole, MailWarning, RefreshCw, Save, Shield, SlidersHorizontal, Smartphone } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { api, asPage, formatDate } from '../lib/api'
+import { Button, EmptyState, ErrorState, Panel, Skeleton, StatusBadge, useToast } from '../components/ui'
 
 type Settings = {
   gateway_name?: string
@@ -19,6 +20,7 @@ type Settings = {
 }
 
 export function SettingsPage() {
+	const navigate = useNavigate()
   const [tab, setTab] = useState<'general' | 'security' | 'routing' | 'alerts'>('general')
   const [form, setForm] = useState<Settings>({})
   const toast = useToast()
@@ -33,12 +35,22 @@ export function SettingsPage() {
     {result.isError && <ErrorState error={result.error} onRetry={() => result.refetch()} />}
     {result.isSuccess && <div className="settings-layout"><nav className="settings-nav"><button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}><SlidersHorizontal size={16} /><span><strong>General</strong><small>Workspace and retention</small></span></button><button className={tab === 'security' ? 'active' : ''} onClick={() => setTab('security')}><LockKeyhole size={16} /><span><strong>Security</strong><small>Logging and secret policy</small></span></button><button className={tab === 'routing' ? 'active' : ''} onClick={() => setTab('routing')}><GitBranch size={16} /><span><strong>Routing</strong><small>Scheduler defaults</small></span></button><button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}><BellRing size={16} /><span><strong>Alerts</strong><small>Operational thresholds</small></span></button></nav><div className="settings-content">
       {tab === 'general' && <Panel title="General settings" description="Workspace identity and data retention."><div className="settings-form"><Setting label="Gateway name" hint="Displayed in operator-facing interfaces."><input value={form.gateway_name || ''} onChange={(event) => update('gateway_name', event.target.value)} /></Setting><Setting label="Request log retention" hint="Sanitized request metadata, in days."><input type="number" min="1" value={form.log_retention_days || ''} onChange={(event) => update('log_retention_days', Number(event.target.value))} /></Setting><Setting label="Audit log retention" hint="Administrative audit history, in days."><input type="number" min="30" value={form.audit_retention_days || ''} onChange={(event) => update('audit_retention_days', Number(event.target.value))} /></Setting></div></Panel>}
-      {tab === 'security' && <Panel title="Security controls" description="RelayDock never exposes upstream credential plaintext."><div className="security-card"><Shield size={20} /><div><strong>Provider secrets encrypted at rest</strong><p>Credential APIs return only whether a secret exists and its final four characters.</p></div><span>Required</span></div><div className="security-card"><Database size={20} /><div><strong>Prompt content logging</strong><p>Keep disabled unless an approved policy and retention process is in place.</p></div><label className="switch"><input type="checkbox" checked={Boolean(form.log_prompt_content)} onChange={(event) => update('log_prompt_content', event.target.checked)} /><i /></label></div>{form.log_prompt_content && <div className="inline-warning">Prompt content may contain sensitive user data. Review your privacy and retention policy before saving.</div>}</Panel>}
+      {tab === 'security' && <><Panel title="Security controls" description="ModelDock never exposes upstream credential plaintext."><div className="security-card"><Smartphone size={20} /><div><strong>Administrator TOTP MFA</strong><p>Enroll or replace the authenticator protecting this administrator account.</p></div><Button size="sm" onClick={() => navigate('/mfa-setup')}>Configure</Button></div><div className="security-card"><Shield size={20} /><div><strong>Provider secrets encrypted at rest</strong><p>Credential APIs return only whether a secret exists and its final four characters.</p></div><span>Required</span></div><div className="security-card"><Database size={20} /><div><strong>Prompt content logging</strong><p>Keep disabled unless an approved policy and retention process is in place.</p></div><label className="switch"><input type="checkbox" checked={Boolean(form.log_prompt_content)} onChange={(event) => update('log_prompt_content', event.target.checked)} /><i /></label></div>{form.log_prompt_content && <div className="inline-warning">Prompt content may contain sensitive user data. Review your privacy and retention policy before saving.</div>}</Panel><EmailOutboxPanel /></>}
       {tab === 'routing' && <Panel title="Scheduler defaults" description="Used when a route or key does not provide a more specific limit."><div className="settings-form"><Setting label="Default RPM" hint="Requests allowed per minute."><input type="number" value={form.default_rate_limit_rpm || ''} onChange={(event) => update('default_rate_limit_rpm', Number(event.target.value))} /></Setting><Setting label="Default TPM" hint="Tokens allowed per minute."><input type="number" value={form.default_rate_limit_tpm || ''} onChange={(event) => update('default_rate_limit_tpm', Number(event.target.value))} /></Setting><Setting label="Credential cooldown" hint="Seconds excluded after a retryable upstream response."><input type="number" min="1" value={form.credential_cooldown_seconds || ''} onChange={(event) => update('credential_cooldown_seconds', Number(event.target.value))} /></Setting><Setting label="Max scheduler attempts" hint="Bounded attempts across eligible credentials."><input type="number" min="1" max="5" value={form.max_scheduler_attempts || ''} onChange={(event) => update('max_scheduler_attempts', Number(event.target.value))} /></Setting></div></Panel>}
       {tab === 'alerts' && <Panel title="Alert thresholds" description="Conditions appear in the Admin dashboard and Alerts page."><div className="settings-form"><Setting label="High error rate" hint="Percent over the evaluation window."><input type="number" min="0" max="100" value={form.alert_high_error_rate || ''} onChange={(event) => update('alert_high_error_rate', Number(event.target.value))} /></Setting><Setting label="High 429 rate" hint="Percent of requests rate limited."><input type="number" min="0" max="100" value={form.alert_high_429_rate || ''} onChange={(event) => update('alert_high_429_rate', Number(event.target.value))} /></Setting><Setting label="Minimum healthy pool size" hint="Alert below this eligible credential count."><input type="number" min="1" value={form.alert_pool_healthy_min || ''} onChange={(event) => update('alert_pool_healthy_min', Number(event.target.value))} /></Setting></div></Panel>}
       {save.isError && <div className="form-error">{save.error instanceof Error ? save.error.message : 'Unable to save settings.'}</div>}
     </div></div>}
   </div>
+}
+
+type EmailOutboxItem = { id: string; recipient: string; template: string; status: string; attempts: number; max_attempts: number; last_error?: string; created_at: string }
+
+function EmailOutboxPanel() {
+  const toast = useToast()
+  const result = useQuery({ queryKey: ['email-outbox', 'DEAD'], queryFn: () => api<unknown>('/email-outbox', { query: { status: 'DEAD', limit: 20 } }).then(asPage<EmailOutboxItem>) })
+  const requeue = useMutation({ mutationFn: (id: string) => api(`/email-outbox/${id}/requeue`, { method: 'POST' }), onSuccess: () => { void result.refetch(); toast('Dead letter requeued') } })
+  const rows = result.data?.items || []
+  return <Panel title="Email dead letters" description="Encrypted message bodies and one-time links are never exposed here." action={<Button size="sm" onClick={() => result.refetch()}><RefreshCw size={13} />Refresh</Button>}>{result.isLoading && <Skeleton rows={3} />}{result.isError && <ErrorState error={result.error} onRetry={() => result.refetch()} />}{result.isSuccess && rows.length === 0 && <EmptyState title="No email dead letters" />}{rows.map((item) => <div className="member-row" key={item.id}><MailWarning size={16} /><div><strong>{item.template} to {item.recipient}</strong><small>{item.attempts}/{item.max_attempts} attempts · {formatDate(item.created_at)}{item.last_error ? ` · ${item.last_error}` : ''}</small></div><StatusBadge value={item.status} /><Button size="sm" disabled={requeue.isPending} onClick={() => requeue.mutate(item.id)}>Requeue</Button></div>)}</Panel>
 }
 
 function Setting({ label, hint, children }: { label: string; hint: string; children: ReactNode }) {

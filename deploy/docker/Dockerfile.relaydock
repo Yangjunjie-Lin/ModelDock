@@ -1,25 +1,40 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS build
 WORKDIR /src
-RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum ./
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG VERSION=2.0.0
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG SOURCE_DATE_EPOCH=0
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 RUN GOPROXY=${GOPROXY} go mod download
 COPY internal/ ./internal/
 COPY migrations/ ./migrations/
 COPY cmd/relayedock/main.go ./appcmd/relayedock/main.go
 COPY tests/backend/ ./tests/backend/
+COPY docs/openapi.yaml ./docs/openapi.yaml
 RUN mkdir -p /src/build \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /src/build/relaydock ./appcmd/relayedock
+    && CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -trimpath \
+      -ldflags="-s -w -buildid= -X github.com/relayedock/relayedock/internal/version.Current=${VERSION} -X github.com/relayedock/relayedock/internal/version.Commit=${COMMIT} -X github.com/relayedock/relayedock/internal/version.BuildTime=${BUILD_DATE}" \
+      -o /src/build/relaydock ./appcmd/relayedock \
+    && cp /etc/ssl/certs/ca-certificates.crt /src/build/ca-certificates.crt \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /src/build/relaydock /src/build/ca-certificates.crt
 
 FROM build AS test
 RUN go test -timeout 60s ./...
 
-FROM alpine:3.22
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S -g 10001 relaydock \
-    && adduser -S -D -H -u 10001 -G relaydock relaydock \
-    && mkdir -p /app/logs \
-    && chown -R 10001:10001 /app
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+ARG VERSION=2.0.0
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG REPOSITORY_URL=https://github.com/Yangjunjie-Lin/RelayDock
+LABEL org.opencontainers.image.title="ModelDock Server" \
+      org.opencontainers.image.description="ModelDock server with RelayDock compatibility" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="${REPOSITORY_URL}"
+COPY --from=build /src/build/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
 COPY --from=build --chown=10001:10001 /src/build/relaydock /app/relayedock
 USER 10001:10001

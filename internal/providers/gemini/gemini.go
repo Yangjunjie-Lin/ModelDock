@@ -10,3 +10,7 @@ import (
 type Provider struct{ *openai.Adapter }
 
 func New(client *http.Client) *Provider { return &Provider{Adapter: openai.New(client)} }
+
+func NewWithPolicy(client *http.Client, policy openai.EndpointPolicy) *Provider {
+	return &Provider{Adapter: openai.NewWithPolicy(client, policy)}
+}

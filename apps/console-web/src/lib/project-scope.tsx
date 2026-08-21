@@ -2,7 +2,18 @@ import { createContext, type ReactNode, useContext, useEffect, useMemo, useState
 import { useQuery } from '@tanstack/react-query'
 import { api, asPage } from './api'
 
-export type ConsoleOrganization = { id: string; name: string; slug: string; status: string }
+export type ConsoleOrganization = {
+  id: string
+  name: string
+  slug: string
+  status: string
+  billing_region: string
+  metadata: Record<string, unknown>
+  allowed_provider_ids: string[]
+  prohibited_provider_ids: string[]
+  required_data_regions: string[]
+  minimum_gross_margin: string
+}
 export type ConsoleProject = { id: string; organization_id: string; organization_name?: string; organization_slug?: string; name: string; slug: string; description?: string; status: string }
 
 type ProjectScope = {

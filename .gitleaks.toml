@@ -1,0 +1,27 @@
+title = "ModelDock secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated, ignored, or vendored local artifacts"
+paths = [
+  '''(^|/)(\.git|\.cache|\.pytest_cache|\.venv|node_modules|dist|data|logs|backups)(/|$)''',
+  '''(^|/)\.env$''',
+  '''(^|/)\.env\.(local|development|production|test|ci)$''',
+]
+
+[[allowlists]]
+description = "Explicit documentation and test placeholders"
+regexTarget = "match"
+regexes = [
+  '''CHANGE_ME_[A-Z0-9_]+''',
+  '''rdk_(live|test)_replace_me''',
+  '''mock-(upstream-key|webhook-secret-2026)''',
+  '''relaydock-test-control''',
+  # Public RFC 6238 vector and deterministic, non-production integration-only values.
+  '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''',
+  '''0123456789abcdef0123456789abcdef''',
+  '''abcdef0123456789abcdef0123456789''',
+  '''89abcdef0123456789abcdef01234567''',
+]

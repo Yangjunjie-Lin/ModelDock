@@ -16,7 +16,7 @@ services:
         source: ./data/postgres
         target: /var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -72,6 +72,40 @@ services:
       RELAYDOCK_JWT_SECRET: ${RELAYDOCK_JWT_SECRET:?set RELAYDOCK_JWT_SECRET}
       RELAYDOCK_JWT_LIFETIME: ${RELAYDOCK_JWT_LIFETIME:-15m}
       RELAYDOCK_JWT_REFRESH_LIFETIME: ${RELAYDOCK_JWT_REFRESH_LIFETIME:-168h}
+      RELAYDOCK_JWT_PREVIOUS_SECRET: ${RELAYDOCK_JWT_PREVIOUS_SECRET:-}
+      RELAYDOCK_MIGRATION_MODE: ${RELAYDOCK_MIGRATION_MODE:-startup}
+      RELAYDOCK_PROVIDER_ALLOWED_HOSTS: ${RELAYDOCK_PROVIDER_ALLOWED_HOSTS:-api.openai.com,api.deepseek.com,openrouter.ai,api.anthropic.com,generativelanguage.googleapis.com,open.bigmodel.cn,api.moonshot.cn,dashscope.aliyuncs.com,mock-openai}
+      RELAYDOCK_PROVIDER_ALLOW_PRIVATE_NETWORK: ${RELAYDOCK_PROVIDER_ALLOW_PRIVATE_NETWORK:-true}
+      RELAYDOCK_PROVIDER_ALLOW_HTTP: ${RELAYDOCK_PROVIDER_ALLOW_HTTP:-true}
+      RELAYDOCK_STREAM_MAX_BYTES: ${RELAYDOCK_STREAM_MAX_BYTES:-67108864}
+      RELAYDOCK_DRAIN_DELAY: ${RELAYDOCK_DRAIN_DELAY:-5s}
+      RELAYDOCK_REGISTRATION_MODE: ${RELAYDOCK_REGISTRATION_MODE:-CLOSED}
+      RELAYDOCK_PUBLIC_CONSOLE_URL: ${RELAYDOCK_PUBLIC_CONSOLE_URL:-http://localhost:3001}
+      RELAYDOCK_PUBLIC_SUPPORT_EMAIL: ${RELAYDOCK_PUBLIC_SUPPORT_EMAIL:-support@example.invalid}
+      RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL: ${RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL:-enterprise@example.invalid}
+      RELAYDOCK_EMAIL_VERIFICATION_TTL: ${RELAYDOCK_EMAIL_VERIFICATION_TTL:-24h}
+      RELAYDOCK_PASSWORD_RESET_TTL: ${RELAYDOCK_PASSWORD_RESET_TTL:-1h}
+      RELAYDOCK_INVITATION_TTL: ${RELAYDOCK_INVITATION_TTL:-168h}
+      RELAYDOCK_ADMIN_MFA_REQUIRED: ${RELAYDOCK_ADMIN_MFA_REQUIRED:-false}
+      RELAYDOCK_LOGIN_RATE_LIMIT: ${RELAYDOCK_LOGIN_RATE_LIMIT:-10}
+      RELAYDOCK_REGISTRATION_RATE_LIMIT: ${RELAYDOCK_REGISTRATION_RATE_LIMIT:-5}
+      RELAYDOCK_VERIFICATION_RATE_LIMIT: ${RELAYDOCK_VERIFICATION_RATE_LIMIT:-10}
+      RELAYDOCK_PASSWORD_RESET_RATE_LIMIT: ${RELAYDOCK_PASSWORD_RESET_RATE_LIMIT:-5}
+      RELAYDOCK_PUBLIC_FUNNEL_RATE_LIMIT: ${RELAYDOCK_PUBLIC_FUNNEL_RATE_LIMIT:-120}
+      RELAYDOCK_IDENTITY_RATE_WINDOW: ${RELAYDOCK_IDENTITY_RATE_WINDOW:-15m}
+      RELAYDOCK_CONTENT_POLICY_FAILURE_MODE: ${RELAYDOCK_CONTENT_POLICY_FAILURE_MODE:-FAIL_CLOSED}
+      RELAYDOCK_GOVERNANCE_CLEANUP_INTERVAL: ${RELAYDOCK_GOVERNANCE_CLEANUP_INTERVAL:-1h}
+      RELAYDOCK_REPORT_SLA_HOURS: ${RELAYDOCK_REPORT_SLA_HOURS:-72}
+      RELAYDOCK_MAIL_PROVIDER: ${RELAYDOCK_MAIL_PROVIDER:-local}
+      RELAYDOCK_MAIL_FROM: ${RELAYDOCK_MAIL_FROM:-ModelDock <no-reply@modeldock.local>}
+      RELAYDOCK_MAIL_CAPTURE_DIR: ${RELAYDOCK_MAIL_CAPTURE_DIR:-/app/logs/mail}
+      RELAYDOCK_MAIL_POLL_INTERVAL: ${RELAYDOCK_MAIL_POLL_INTERVAL:-2s}
+      RELAYDOCK_MAIL_MAX_ATTEMPTS: ${RELAYDOCK_MAIL_MAX_ATTEMPTS:-6}
+      RELAYDOCK_SMTP_HOST: ${RELAYDOCK_SMTP_HOST:-}
+      RELAYDOCK_SMTP_PORT: ${RELAYDOCK_SMTP_PORT:-587}
+      RELAYDOCK_SMTP_USERNAME: ${RELAYDOCK_SMTP_USERNAME:-}
+      RELAYDOCK_SMTP_PASSWORD: ${RELAYDOCK_SMTP_PASSWORD:-}
+      RELAYDOCK_SMTP_TLS_MODE: ${RELAYDOCK_SMTP_TLS_MODE:-starttls}
       RELAYDOCK_ADMIN_EMAIL: ${RELAYDOCK_ADMIN_EMAIL:-admin@relayedock.local}
       RELAYDOCK_ADMIN_PASSWORD: ${RELAYDOCK_ADMIN_PASSWORD:-}
       RELAYDOCK_ADMIN_DISPLAY_NAME: ${RELAYDOCK_ADMIN_DISPLAY_NAME:-RelayDock Administrator}
@@ -79,9 +113,33 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_DIR: ${LOG_DIR:-/app/logs}
+      RELAYDOCK_OTEL_EXPORTER_OTLP_ENDPOINT: ${RELAYDOCK_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      RELAYDOCK_OTEL_EXPORTER_OTLP_INSECURE: ${RELAYDOCK_OTEL_EXPORTER_OTLP_INSECURE:-false}
       LOG_PROMPT_CONTENT: "false"
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-10485760}
       CREDENTIAL_COOLDOWN: ${CREDENTIAL_COOLDOWN:-30s}
+      RELAYDOCK_PROVIDER_TIMEOUT: ${RELAYDOCK_PROVIDER_TIMEOUT:-10m}
+      RELAYDOCK_PROVIDER_QUALITY_PROBE_REGION: ${RELAYDOCK_PROVIDER_QUALITY_PROBE_REGION:-}
+      RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL: ${RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL:-30s}
+      RELAYDOCK_PROVIDER_QUALITY_LEASE: ${RELAYDOCK_PROVIDER_QUALITY_LEASE:-2m}
+      RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE: ${RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE:-20}
+      RELAYDOCK_SUPPLIER_SETTLEMENT_POLL_INTERVAL: ${RELAYDOCK_SUPPLIER_SETTLEMENT_POLL_INTERVAL:-1m}
+      RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE: ${RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE:-100}
+      RELAYDOCK_PAYOUT_ALLOWED_REGIONS: ${RELAYDOCK_PAYOUT_ALLOWED_REGIONS:-US,CN}
+      RELAYDOCK_PAYOUT_SANDBOX_ENABLED: ${RELAYDOCK_PAYOUT_SANDBOX_ENABLED:-false}
+      RELAYDOCK_PAYOUT_SANDBOX_SECRET: ${RELAYDOCK_PAYOUT_SANDBOX_SECRET:-}
+      RELAYDOCK_FUNDING_RECOVERY_INTERVAL: ${RELAYDOCK_FUNDING_RECOVERY_INTERVAL:-30s}
+      RELAYDOCK_FUNDING_STALE_AFTER: ${RELAYDOCK_FUNDING_STALE_AFTER:-15m}
+      RELAYDOCK_PAYMENT_ORDER_TTL: ${RELAYDOCK_PAYMENT_ORDER_TTL:-30m}
+      RELAYDOCK_PAYMENT_POLL_INTERVAL: ${RELAYDOCK_PAYMENT_POLL_INTERVAL:-10s}
+      RELAYDOCK_SUBSCRIPTION_POLL_INTERVAL: ${RELAYDOCK_SUBSCRIPTION_POLL_INTERVAL:-1m}
+      RELAYDOCK_RECONCILIATION_INTERVAL: ${RELAYDOCK_RECONCILIATION_INTERVAL:-15m}
+      RELAYDOCK_RECONCILIATION_RUN_AT: ${RELAYDOCK_RECONCILIATION_RUN_AT:-02:00}
+      RELAYDOCK_PAYMENT_WEBHOOK_TIMESTAMP_SKEW: ${RELAYDOCK_PAYMENT_WEBHOOK_TIMESTAMP_SKEW:-5m}
+      RELAYDOCK_PAYMENT_ALLOWED_REGIONS: ${RELAYDOCK_PAYMENT_ALLOWED_REGIONS:-CN}
+      RELAYDOCK_PAYMENT_SANDBOX_ENABLED: ${RELAYDOCK_PAYMENT_SANDBOX_ENABLED:-false}
+      RELAYDOCK_PAYMENT_SANDBOX_SECRET: ${RELAYDOCK_PAYMENT_SANDBOX_SECRET:-}
+      RELAYDOCK_PAYMENT_MANUAL_ENABLED: ${RELAYDOCK_PAYMENT_MANUAL_ENABLED:-false}
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-30s}
       WEBHOOK_ALLOW_HTTP: ${WEBHOOK_ALLOW_HTTP:-false}
       WEBHOOK_ALLOW_PRIVATE_NETWORK: ${WEBHOOK_ALLOW_PRIVATE_NETWORK:-false}
@@ -109,7 +167,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null && wget -qO- http://127.0.0.1:8081/readyz >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/startupz >/dev/null && wget -qO- http://127.0.0.1:8081/readyz >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -171,6 +229,81 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     networks: [relaydock-edge]
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.12.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/modeldock-alerts.yml:/etc/prometheus/modeldock-alerts.yml:ro
+      - ./data/prometheus:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      relaydock:
+        condition: service_healthy
+      alertmanager:
+        condition: service_started
+    security_opt: ["no-new-privileges:true"]
+    networks: [relaydock-internal]
+
+  alertmanager:
+    profiles: [observability]
+    image: prom/alertmanager:v0.33.1
+    restart: unless-stopped
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./data/alertmanager:/alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    security_opt: ["no-new-privileges:true"]
+    networks: [relaydock-internal]
+
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yml:/etc/otelcol/config.yml:ro
+    depends_on:
+      relaydock:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [relaydock-internal]
+
+  mock-openai:
+    profiles: [mock-openai]
+    image: relaydock/mock-openai:local
+    build:
+      context: .
+      dockerfile: deploy/mock-openai/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    environment:
+      MOCK_OPENAI_API_KEY: ${MOCK_OPENAI_API_KEY:-mock-upstream-key}
+      MOCK_WEBHOOK_SECRET: ${MOCK_WEBHOOK_SECRET:-mock-webhook-secret-2026}
+      MOCK_TEST_TOKEN: ${MOCK_TEST_TOKEN:-relaydock-test-control}
+      PORT: 8090
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    ports:
+      - "127.0.0.1:${MOCK_OPENAI_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [relaydock-internal, relaydock-diagnostics]
 
 networks:
   relaydock-edge:

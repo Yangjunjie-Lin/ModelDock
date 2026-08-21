@@ -1,18 +1,28 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BarChart3, BookOpen, Braces, ChevronDown, Command, FileSearch, KeyRound, Layers3, LayoutDashboard, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, Search, Sun, X } from 'lucide-react'
+import { BarChart3, BookOpen, Braces, ChevronDown, Command, CreditCard, FileSearch, Handshake, HeartPulse, KeyRound, Layers3, LayoutDashboard, LifeBuoy, Menu, Moon, Network, PanelLeftClose, PanelLeftOpen, ReceiptText, Search, Settings, ShieldCheck, Sparkles, Sun, WalletCards, X } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useProjectScope } from '../lib/project-scope'
 import { LanguageToggle } from '../lib/i18n'
 import { Modal, SearchInput } from './ui'
 
 const nav = [
-  { to: '/', label: 'Overview', icon: LayoutDashboard },
-  { to: '/api-keys', label: 'API Keys', icon: KeyRound },
-  { to: '/models', label: 'Models', icon: Layers3 },
-  { to: '/usage', label: 'Usage', icon: BarChart3 },
-  { to: '/logs', label: 'Logs', icon: FileSearch },
-  { to: '/playground', label: 'Playground', icon: Braces },
-  { to: '/docs', label: 'Documentation', icon: BookOpen },
+  { to: '/console', label: 'Overview', icon: LayoutDashboard },
+  { to: '/console/onboarding', label: 'First request', icon: Sparkles },
+  { to: '/console/supplier', label: 'Supplier application', icon: Handshake },
+  { to: '/console/supplier-settlements', label: 'Supplier settlements', icon: WalletCards },
+  { to: '/console/api-keys', label: 'API Keys', icon: KeyRound },
+  { to: '/console/byok', label: 'BYOK', icon: ShieldCheck },
+  { to: '/console/models', label: 'Models', icon: Layers3 },
+  { to: '/console/usage', label: 'Usage', icon: BarChart3 },
+  { to: '/console/logs', label: 'Logs', icon: FileSearch },
+  { to: '/console/recharge', label: 'Recharge', icon: CreditCard },
+  { to: '/console/subscription', label: 'Subscription', icon: WalletCards },
+  { to: '/console/billing', label: 'Billing', icon: ReceiptText },
+  { to: '/console/playground', label: 'Playground', icon: Braces },
+  { to: '/console/docs', label: 'Documentation', icon: BookOpen },
+  { to: '/console/status', label: 'System Status', icon: HeartPulse },
+  { to: '/console/support', label: 'Support', icon: LifeBuoy },
+  { to: '/console/account', label: 'Account', icon: Settings },
 ]
 
 export function ConsoleShell() {
@@ -36,7 +46,7 @@ export function ConsoleShell() {
     <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
       <div className="sidebar-top"><div className="brand"><span className="brand-mark"><Network size={18} /></span><span><strong>ModelDock</strong><small>Developer console</small></span></div><button className="mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close"><X size={18} /></button></div>
       <div className="workspace-switcher project-switcher" title={scope.error instanceof Error ? scope.error.message : undefined}><span className="avatar">{scope.project?.name.slice(0, 2).toUpperCase() || 'WS'}</span><span><label><small>Organization</small><select aria-label="Organization" value={scope.organizationID} onChange={(event) => scope.setOrganizationID(event.target.value)} disabled={scope.loading}><option value="">Select organization</option>{scope.organizations.map((organization) => <option value={organization.id} key={organization.id}>{organization.name}</option>)}</select></label><label><small>Project</small><select aria-label="Project" value={scope.projectID} onChange={(event) => scope.setProjectID(event.target.value)} disabled={!scope.organizationID || scope.loading}><option value="">Select project</option>{scope.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label></span><ChevronDown size={14} /></div>
-      <nav className="nav-scroll"><div className="nav-group"><span className="nav-label">Build</span>{nav.slice(0, 5).map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? label : undefined}><Icon size={17} /><span>{label}</span></NavLink>)}</div><div className="nav-group"><span className="nav-label">Developer</span>{nav.slice(5).map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? label : undefined}><Icon size={17} /><span>{label}</span></NavLink>)}</div></nav>
+      <nav className="nav-scroll"><div className="nav-group"><span className="nav-label">Build</span>{nav.slice(0, 6).map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === '/console'} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? label : undefined}><Icon size={17} /><span>{label}</span></NavLink>)}</div><div className="nav-group"><span className="nav-label">Developer</span>{nav.slice(6).map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? label : undefined}><Icon size={17} /><span>{label}</span></NavLink>)}</div></nav>
       <div className="sidebar-bottom"><div className="console-user"><span className="avatar">U</span><span className="profile-copy"><strong>ModelDock user</strong><small>Console access</small></span><ChevronDown size={14} /></div></div>
     </aside>
     <main className="main-shell">

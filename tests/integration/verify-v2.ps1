@@ -26,7 +26,7 @@ foreach ($candidate in @($ControlUrl, $GatewayUrl, $MockUrl)) {
 if ([string]::IsNullOrWhiteSpace($AdminEmail)) { $AdminEmail = "admin@relayedock.local" }
 if ([string]::IsNullOrWhiteSpace($AdminPassword)) { throw "Set RELAYDOCK_ADMIN_PASSWORD or pass -AdminPassword." }
 if ([string]::IsNullOrWhiteSpace($MockWebhookSecret)) { $MockWebhookSecret = "mock-webhook-secret-2026" }
-if ([string]::IsNullOrWhiteSpace($MockTestToken)) { $MockTestToken = "relayedock-test-control" }
+if ([string]::IsNullOrWhiteSpace($MockTestToken)) { $MockTestToken = "relaydock-test-control" }
 
 function Assert-Equal {
     param([object]$Actual, [object]$Expected, [string]$Message)

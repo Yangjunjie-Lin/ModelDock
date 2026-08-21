@@ -1,16 +1,24 @@
 # RelayDock 单机生产部署（Ubuntu 24.04）
 
-该部署包面向日本东京或新加坡的低成本 VPS，默认只启动五个生产服务：
+> Provider commercial governance and pricing hardening are mandatory after migrations 14 and 15. Review legal
+> entity, resale permission, dates, regions, processing residency, organization
+> policy, limits/budget, currency, terms and current margin. Technical health
+> never substitutes for `COMMERCIAL_APPROVED`. Rehearse the audited emergency
+> kill switch; see `docs/provider-governance.md` in the source release.
+
+该部署包面向日本东京或新加坡的低成本 VPS，默认启动六个持续运行的生产服务：
 
 1. RelayDock 网关
 2. PostgreSQL 17
 3. Redis 7.4
 4. Nginx
 5. Certbot
+6. ModelDock 公开网站与用户 Console
 
 推荐最低规格为 2 vCPU、2 GB RAM、40 GB SSD、Ubuntu 24.04，不需要 GPU。100–500 个用户是容量目标而不是无条件保证；实际并发取决于请求体、流式连接时长、用户限额和上游延迟。上线前应按真实流量做压测。
 
-`api.example.com` 是保留示例域名，无法为普通用户签发生产证书。命令中必须换成自己控制的真实域名，例如 `api.example.net`。
+`api.example.com` 和 `console.example.com` 是保留示例域名，无法为普通用户
+签发生产证书。命令中必须换成两个由自己控制、DNS 均指向该边缘入口的真实域名。
 
 ## 架构与安全边界
 
@@ -18,7 +26,9 @@
 Internet
   -> VPS/云防火墙 (22, 80, 443)
   -> Nginx TLS + per-IP limit_req/limit_conn
-  -> RelayDock :8080
+     -> API 域名: RelayDock :8080 (/v1, health, payment webhook)
+     -> 公开站域名: Console 静态站 + :8081 (/api/public, /api/console)
+                    + RelayDock :8080 (/v1)
   -> OpenAI / DeepSeek / OpenRouter 官方 OpenAI-compatible API
 
 RelayDock
@@ -26,7 +36,20 @@ RelayDock
   -> Redis（API Key RPM/TPM、并发计数和调度状态）
 ```
 
-PostgreSQL 和 Redis 不发布宿主机端口。网关与控制平面只额外绑定到 `127.0.0.1`，供 SSH 后的诊断使用。公网 Nginx 仅转发 `/v1/*` 和 `/healthz`，不会公开管理 API、数据库、Redis 或 Docker socket。
+PostgreSQL、Redis 和 RelayDock 副本不发布宿主机端口。公网 Nginx 通过内部网络
+负载均衡到无状态副本；诊断探针通过 `docker compose exec` 执行。既有 API 域名
+继续只转发 `/v1/*`、`/healthz` 和经过签名校验的
+`/api/payments/webhooks/*`。独立公开站域名只转发 Console 静态站、
+`/api/public/*`、用户域 `/api/console/*` 及 `/v1/*`。它没有
+`/api/admin/*` 代理；管理面、数据库、Redis 和 Docker socket 均不公开。
+Console 登录使用 host-only HttpOnly Cookie 和 `X-CSRF-Token` double-submit，
+`ALLOWED_ORIGINS` 必须精确包含公开站 HTTPS Origin。
+
+充值订单能力默认关闭。`sandbox` 仅用于隔离测试，`manual_transfer` 仅用于管理员核验凭证后的人工转账；二者都不是已签约生产支付通道。API 域名只把 `/api/payments/webhooks/*` 转发到控制平面，并保持请求体字节不变；其他控制接口仍返回 404。公开站只暴露用户域，不能调用管理员人工审批。支付签名密钥必须由 secret manager 或进程环境注入，不得写入 Compose 文件、数据库或日志。完整开关、时钟、防重放、恢复、迁移和回滚说明见 [`docs/payments.md`](../../docs/payments.md)。
+
+订阅生命周期由每个应用副本上的幂等 Worker 处理，默认轮询间隔为
+`RELAYDOCK_SUBSCRIPTION_POLL_INTERVAL=1m`。订阅费使用独立系统科目，不进入充值钱包；Token 仍始终按量结算。部署、对账、迁移 0011 和回滚边界见
+[`docs/subscriptions.md`](../../docs/subscriptions.md)。
 
 RelayDock 下游 API Key 按用户、组织和项目隔离；上游密钥使用 AES-256-GCM 加密且不会返回给客户端。请求日志默认只保存模型、Token、状态码、延迟和请求 ID，不保存提示词、响应正文、Authorization 或 Cookie。Redis 不可用时限流与调度故障关闭。
 
@@ -118,8 +141,14 @@ bash deploy/production/scripts/generate-env.sh \
   /opt/relaydock \
   api.your-domain.com \
   admin@your-domain.com \
-  ops@your-domain.com
+  ops@your-domain.com \
+  console.your-domain.com
 ```
+
+最后一个参数是独立公开站/Console 域名。为兼容已有 API-only 部署它是可选的；
+省略时不会创建公开站 TLS 入口。要启用本步骤的完整商业体验，必须提供它，并确保
+它与 `API_DOMAIN` 不同。`RELAYDOCK_PUBLIC_CONSOLE_URL`、
+`RELAYDOCK_PUBLIC_SITE_DOMAIN` 和 `ALLOWED_ORIGINS` 必须指向同一个 HTTPS 站点。
 
 该命令只打印一次初始管理员密码。立即存入密码管理器。随后准备持久化目录、Nginx HTTP 引导配置和 systemd 兜底：
 
@@ -128,15 +157,15 @@ sudo bash /opt/relaydock/src/deploy/production/scripts/prepare-host.sh /opt/rela
 sudo bash /opt/relaydock/src/deploy/production/scripts/deploy.sh /opt/relaydock
 ```
 
-RelayDock 启动时自动使用 PostgreSQL advisory lock 顺序应用嵌入式迁移。多实例同时启动时只有一个实例执行迁移；不要手工修改已经发布的迁移文件。
+独立 `migration` job 使用 PostgreSQL advisory lock 顺序应用嵌入式迁移；应用副本通过 `RELAYDOCK_MIGRATION_MODE=external` 等待 job 成功。不要手工修改已经发布的迁移文件。
 
 查看状态：
 
 ```bash
 cd /opt/relaydock
 sudo docker compose ps
-curl -fsS http://127.0.0.1:8080/healthz
-curl -fsS http://127.0.0.1:8080/readyz
+sudo docker compose exec -T relaydock wget -qO- http://127.0.0.1:8080/healthz
+sudo docker compose exec -T relaydock wget -qO- http://127.0.0.1:8080/readyz
 ```
 
 所有主服务都配置 `restart: always`。`relaydock-compose.service` 是 Docker 自动恢复之外的 systemd 兜底：
@@ -151,6 +180,10 @@ sudo systemctl status relaydock-compose
 | 变量 | 说明 |
 | --- | --- |
 | `API_DOMAIN` | 实际 API 域名，必须与 DNS 和证书一致 |
+| `RELAYDOCK_PUBLIC_SITE_DOMAIN` | 独立公开网站/Console 域名；为空时保留旧的 API-only 入口 |
+| `RELAYDOCK_PUBLIC_CONSOLE_URL` | 验证邮件和跳转使用的完整公开站 HTTPS URL，必须与公开站域名一致 |
+| `RELAYDOCK_PUBLIC_SUPPORT_EMAIL` | 公开支持、投诉邮箱；`example.invalid` 只是不可投递占位，上线前必须替换为受监控的角色邮箱 |
+| `RELAYDOCK_PUBLIC_ENTERPRISE_EMAIL` | 公开企业服务邮箱；`example.invalid` 只是不可投递占位，上线前必须替换 |
 | `LETSENCRYPT_EMAIL` | Let's Encrypt 到期与安全通知邮箱 |
 | `POSTGRES_*` / `DATABASE_URL` | PostgreSQL 名称、用户、密码与容器内连接串 |
 | `POSTGRES_MAX_CONNS` | RelayDock 数据库池上限，2 GB 单机建议 20 |
@@ -163,7 +196,14 @@ sudo systemctl status relaydock-compose
 | `TRUSTED_PROXIES` | 可提供 `X-Forwarded-For` 的代理 CIDR；默认仅 Docker 172.16/12 与 loopback |
 | `MAX_REQUEST_BODY_BYTES` | RelayDock 请求体上限；Nginx 同时限制为 10 MB |
 | `CREDENTIAL_COOLDOWN` | 上游 429/可重试失败后的默认冷却时间 |
+| `RELAYDOCK_PROVIDER_QUALITY_PROBE_REGION` | 本副本真实出口地区；为空时安全禁用定时 Provider 探测 |
+| `RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL` | 质量探测与评估 worker 轮询间隔 |
+| `RELAYDOCK_PROVIDER_QUALITY_LEASE` | 多副本 PostgreSQL 探测租约时长 |
+| `RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE` | 单轮最大探测任务数（上限 100） |
 | `LOG_LEVEL` | 生产建议 `info`；不要启用提示词正文日志 |
+
+公开联系邮箱会由 `/api/public/config` 返回，不应填写个人隐私邮箱。发布前必须验证两
+个角色邮箱均能收件并有明确响应负责人。
 
 不要把 OpenAI、DeepSeek 或 OpenRouter Key 写进 `.env`。它们应通过 RelayDock 管理面添加，然后以密文进入 PostgreSQL。`.env`、数据库备份和 `RELAYDOCK_MASTER_KEY` 需要分开加密保管。
 
@@ -174,13 +214,17 @@ sudo systemctl status relaydock-compose
 | 类型 | 名称 | 值 | TTL |
 | --- | --- | --- | --- |
 | `A` | `api` | VPS 公网 IPv4 | 300 |
+| `A` | `console` | VPS 公网 IPv4 | 300 |
 | `AAAA` | `api` | VPS IPv6（仅确认 IPv6 防火墙和监听正常后） | 300 |
+| `AAAA` | `console` | VPS IPv6（仅确认 IPv6 防火墙和监听正常后） | 300 |
 
 验证：
 
 ```bash
 dig +short A api.your-domain.com
+dig +short A console.your-domain.com
 dig +short AAAA api.your-domain.com
+dig +short AAAA console.your-domain.com
 ```
 
 结果必须指向该 VPS。使用 Cloudflare 等代理时，首次 HTTP-01 签发建议先设为 DNS only；确认 HTTPS 后再决定是否开启代理。不要在 DNS 尚未生效时反复请求证书，以免触发 Let's Encrypt 限制。
@@ -200,6 +244,8 @@ Certbot 每 12 小时检查续期，Nginx 每 6 小时 reload 一次以载入新
 
 ```bash
 curl -I https://api.your-domain.com/healthz
+curl -I https://console.your-domain.com/
+curl -fsS 'https://console.your-domain.com/api/public/pricing?region=CN&currency=CNY'
 openssl s_client -connect api.your-domain.com:443 -servername api.your-domain.com </dev/null 2>/dev/null \
   | openssl x509 -noout -subject -issuer -dates
 ```
@@ -214,15 +260,20 @@ openssl s_client -connect api.your-domain.com:443 -servername api.your-domain.co
 
 为每个提供商添加官方 API Key、创建独立凭据组和模型路由，再把路由授权给项目。建议别名分别使用 `openai-gpt`、`deepseek-chat`、`openrouter-auto`，避免同一别名在不同上游之间发生不可见语义变化。
 
-管理界面可以作为可选 profile 只绑定到 loopback：
+管理员界面仍作为可选 profile 只绑定到 loopback。用户 Console 是默认启动的公开站，
+但其容器端口仍只绑定 loopback；公网流量必须经过 Nginx：
 
 ```bash
 cd /opt/relaydock
-sudo docker compose --profile control-ui up -d admin-web console-web
-ssh -L 3000:127.0.0.1:3000 -L 3001:127.0.0.1:3001 user@your-vps
+sudo docker compose --profile control-ui up -d admin-web
+ssh -L 3000:127.0.0.1:3000 user@your-vps
 ```
 
-然后只在 SSH 隧道存续期间访问 `http://127.0.0.1:3000`。不要把 3000、3001 或 8081 加入云防火墙公网规则。
+然后只在 SSH 隧道存续期间访问 `http://127.0.0.1:3000`。不要把 3000、
+3001 或 8081 加入云防火墙公网规则。公开用户从
+`https://console.your-domain.com` 访问，其他 `/api/*`（包括管理路由）在该域名上
+由外层 Nginx 返回 404，且不会被
+转发到控制平面。
 
 DeepSeek/OpenRouter 通过同一个经过测试的 OpenAI-compatible HTTP 适配器处理 `/v1/chat/completions`。RelayDock 不会把一种上游 API 形状自动翻译成另一种；`/v1/responses` 或 `/v1/embeddings` 只能路由到实际支持相应端点的提供商。
 
@@ -315,9 +366,9 @@ sudo docker compose config --quiet
 sudo docker compose ps
 sudo docker compose logs --tail 200 relaydock
 sudo docker compose logs --tail 200 nginx certbot postgres redis
-curl -v http://127.0.0.1:8080/healthz
-curl -v http://127.0.0.1:8080/readyz
-sudo ss -lntp | grep -E ':(80|443|8080|8081)\b'
+sudo docker compose exec -T relaydock wget -qO- http://127.0.0.1:8080/healthz
+sudo docker compose exec -T relaydock wget -qO- http://127.0.0.1:8080/readyz
+sudo ss -lntp | grep -E ':(80|443)\b'
 df -h /opt/relaydock
 free -h
 ```

@@ -1,0 +1,12 @@
+# Repository-wide default and higher-risk ownership.
+*                                      @Yangjunjie-Lin
+/.github/                              @Yangjunjie-Lin
+/migrations/                           @Yangjunjie-Lin
+/internal/auth/                        @Yangjunjie-Lin
+/internal/apikey/                      @Yangjunjie-Lin
+/internal/crypto/                      @Yangjunjie-Lin
+/internal/store/                       @Yangjunjie-Lin
+/deploy/                               @Yangjunjie-Lin
+/SECURITY.md                           @Yangjunjie-Lin
+/RELEASE.md                            @Yangjunjie-Lin
+/docs/licensing-decision.md            @Yangjunjie-Lin

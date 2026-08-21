@@ -24,6 +24,18 @@ Object.assign(zh, {
 })
 
 Object.assign(zh, {
+  'Billing': '账务中心', 'Recharge': '充值', 'Subscription': '订阅', 'Account': '账户',
+  'Trace every payment and Token charge, review monthly statements, and submit refund or invoice applications.': '追踪每笔付款与 Token 扣费，查看月度账单，并提交退款或发票申请。',
+  'Month': '月份', 'Recharge history': '充值历史', 'Token usage': 'Token 消耗', 'Subscription orders': '订阅订单', 'Monthly statements': '月度账单', 'Monthly statement': '月度账单', 'Refunds': '退款', 'Invoices': '发票', 'Downloading…': '下载中…',
+  'Total available': '可用总额', 'Cash balance': '现金余额', 'Bonus balance': '赠送余额', 'Credit available': '可用信用额度', 'Reserved': '预留金额', 'Pending request reservations': '待结算请求预留', 'Promotional; not cash-refundable': '赠送额度，不可作为现金退款',
+  'A credited order is linked to its immutable wallet transaction and ledger journal.': '已入账订单关联不可变的钱包交易与账本日记账。', 'No recharge history': '暂无充值历史', 'Completed recharge orders will appear here.': '已完成的充值订单会显示在这里。', 'Wallet trace': '钱包追踪', 'Paid / created': '支付 / 创建时间',
+  'Token consumption details': 'Token 消耗明细', 'Every charge shows the customer debit, wallet evidence, and the Provider request selected for that API call.': '每笔扣费均展示用户扣款、钱包凭证及该 API 调用对应的 Provider 请求。', 'No Token usage': '暂无 Token 消耗', 'No billable API usage was recorded for the selected month.': '所选月份暂无可计费用量。', 'User charge': '用户扣费', 'Provider request': 'Provider 请求',
+  'Subscription fees are separate from metered Token charges and retain their own payment and ledger references.': '订阅费与按量 Token 扣费分开，并保留独立支付和账本引用。', 'No subscription orders': '暂无订阅订单', 'Free and trial periods may not create a paid order.': '免费版和试用期可能不会生成付费订单。', 'Subscription fee': '订阅费', 'Service period': '服务周期', 'Payment trace': '支付追踪', 'Ledger journal': '账本日记账',
+  'Statements summarize settled recharge, usage, subscription, refund, Provider cost, and balance activity by currency.': '月账单按币种汇总已结算充值、用量、订阅、退款、Provider 成本与余额变动。', 'No monthly statement': '暂无月度账单', 'No settled financial activity exists for the selected month.': '所选月份暂无已结算财务活动。', 'Opening': '期初余额', 'Recharge / subscription': '充值 / 订阅', 'Usage / bonus': '用量 / 赠送', 'Closing': '期末余额',
+  'Refund applications': '退款申请', 'Request refund': '申请退款', 'Eligibility is assessed server-side across unused cash, consumed service, bonus, subscription fees, and irreversible Provider costs.': '服务端将按未使用现金、已使用服务、赠送额度、订阅费及不可撤销 Provider 成本评估资格。', 'No refund applications': '暂无退款申请', 'Refund requests and their review status will appear here.': '退款申请及审核状态会显示在这里。', 'Application': '申请单', 'Requested': '申请金额', 'Eligibility assessment': '资格评估', 'Submitted': '提交时间',
+  'Invoice applications': '发票申请', 'Request invoice': '申请发票', 'ModelDock validates and exports applications for finance processing. No tax-system integration or automatic issuance is implied.': 'ModelDock 仅校验并导出申请供财务处理，不代表已接入税务系统或可自动开票。', 'Invoice status represents the application workflow only. Approved or exported does not mean a tax invoice was automatically issued.': '发票状态仅表示申请流程；已批准或已导出不代表税票已自动开具。', 'No invoice applications': '暂无发票申请', 'Submitted invoice requests and their processing status will appear here.': '已提交的发票申请及处理状态会显示在这里。', 'Amount': '金额', 'Eligible period': '可开票期间',
+  'Request a refund': '提交退款申请', 'Finance reviews the request against immutable payment, wallet, usage, subscription, and Provider-cost evidence.': '财务将依据不可变的支付、钱包、用量、订阅及 Provider 成本凭证审核。', 'Submit application': '提交申请', 'Refund category': '退款类别', 'Unused cash from recharge': '充值未使用现金', 'Source order': '来源订单', 'Select an eligible order': '选择符合条件的订单', 'Requested amount': '申请退款金额', 'Reason': '原因', 'Explain why this payment or subscription fee should be reviewed.': '说明为何需要审核这笔付款或订阅费。',
+  'Request an invoice': '提交发票申请', 'The server validates the amount against settled recharge and paid subscription evidence in the selected period.': '服务端将按所选期间已结算充值与已支付订阅凭证校验金额。', 'Invoice title': '发票抬头', 'Tax identifier (optional)': '纳税人识别号（可选）', 'Currency': '币种', 'Period start': '期间开始', 'Period end': '期间结束', 'This submits an application for manual finance processing and export. ModelDock does not claim to issue a tax invoice automatically.': '此操作仅提交申请供财务人工处理和导出；ModelDock 不声称能够自动开具税票。',
   'Requests today': '今日请求',
   'Current UTC day': '当前 UTC 日期',
   'Total requests': '请求总数',
@@ -96,7 +108,10 @@ function element(node: Element, language: Language) {
 function tree(root: Node, language: Language) {
   if (root.nodeType === Node.TEXT_NODE) text(root, language); if (root.nodeType === Node.ELEMENT_NODE) element(root as Element, language)
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT); let node: Node | null
-  while ((node = walker.nextNode())) node.nodeType === Node.TEXT_NODE ? text(node, language) : element(node as Element, language)
+  while ((node = walker.nextNode())) {
+    if (node.nodeType === Node.TEXT_NODE) text(node, language)
+    else element(node as Element, language)
+  }
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {

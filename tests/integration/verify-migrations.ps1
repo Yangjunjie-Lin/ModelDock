@@ -35,7 +35,24 @@ $expectedLedger = @(
     "3:v2_statuses",
     "4:project_route_soft_delete",
     "5:openai_compatible_providers",
-    "6:modeldock"
+    "6:modeldock",
+    "7:accounts",
+    "8:pricing",
+    "9:funding_ledger",
+    "10:payment_orders",
+    "11:subscriptions",
+    "12:financial_close",
+    "13:financial_close_hardening",
+    "14:provider_commercial_governance",
+    "15:provider_pricing_hardening",
+	"16:public_operations_governance",
+	"17:observability_support",
+	"18:beta_runtime_hardening",
+	"19:public_commercial_onboarding",
+	"20:supplier_onboarding",
+	"21:provider_quality",
+	"22:supplier_settlement",
+	"23:marketplace_launch_acceptance"
 )
 $expectedProviderSeeds = @(
     "anthropic|anthropic|https://api.anthropic.com/v1",
@@ -285,6 +302,213 @@ function Invoke-PsqlChecked {
     return $result
 }
 
+function Recreate-TestDatabase {
+    $dropResult = Invoke-DockerRaw -Arguments @(
+        "container", "exec", $script:postgresContainer,
+        "dropdb", "--no-password", "--if-exists", "--force",
+        "--username", $script:postgresUser,
+        "--maintenance-db", $script:postgresDatabase,
+        $script:testDatabase
+    )
+    if ($dropResult.ExitCode -ne 0) {
+        throw "Recreating the disposable migration database failed during drop; diagnostic output was suppressed."
+    }
+    $createResult = Invoke-DockerRaw -Arguments @(
+        "container", "exec", $script:postgresContainer,
+        "createdb", "--no-password", "--username", $script:postgresUser,
+        "--maintenance-db", $script:postgresDatabase,
+        $script:testDatabase
+    )
+    if ($createResult.ExitCode -ne 0) {
+        throw "Recreating the disposable migration database failed during create; diagnostic output was suppressed."
+    }
+}
+
+function Get-SHA256Hex {
+    param([byte[]]$Bytes)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return -join ($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString("x2") })
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Initialize-PopulatedV1Database {
+    $migrationPath = Join-Path $script:repoRoot "migrations\0001_core.sql"
+    $migrationBytes = [System.IO.File]::ReadAllBytes($migrationPath)
+    $migrationSQL = [System.Text.Encoding]::UTF8.GetString($migrationBytes)
+    $checksum = Get-SHA256Hex -Bytes $migrationBytes
+    Invoke-PsqlChecked -Database $script:testDatabase -Sql $migrationSQL -Operation "Applying the V1 schema fixture" | Out-Null
+    $ledgerSQL = @"
+CREATE TABLE schema_migrations (
+  version bigint PRIMARY KEY,
+  name text NOT NULL,
+  checksum text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations(version,name,checksum) VALUES (1,'core','$checksum');
+"@
+    Invoke-PsqlChecked -Database $script:testDatabase -Operation "Recording the V1 migration fixture" -Sql $ledgerSQL | Out-Null
+    $fixtureSQL = @"
+INSERT INTO users(id,email,password_hash,display_name,role,status)
+VALUES ('11111111-1111-4111-8111-111111111111','migration-v1@example.invalid','synthetic-v1-hash','Synthetic V1 User','USER','ACTIVE');
+INSERT INTO api_keys(id,user_id,name,environment,key_prefix,key_hash,status,allowed_models)
+VALUES (
+  '22222222-2222-4222-8222-222222222222',
+  '11111111-1111-4111-8111-111111111111',
+  'Synthetic V1 key','test','rdk_test_v1_fixture',
+  decode('00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff','hex'),
+  'ACTIVE','[]'::jsonb
+);
+INSERT INTO usage_daily(date,user_id,api_key_id,model,requests,input_tokens,output_tokens,cost)
+VALUES (
+  DATE '2026-01-02',
+  '11111111-1111-4111-8111-111111111111',
+  '22222222-2222-4222-8222-222222222222',
+  'synthetic-v1-model',1,10,5,0.00012345
+);
+"@
+    Invoke-PsqlChecked -Database $script:testDatabase -Operation "Seeding populated V1 data" -Sql $fixtureSQL | Out-Null
+}
+
+function Initialize-PopulatedV12FinancialDatabase {
+    $ledgerValues = New-Object 'System.Collections.Generic.List[string]'
+    $migrationNames = @(
+        "core", "v2", "v2_statuses", "project_route_soft_delete", "openai_compatible_providers", "modeldock",
+        "accounts", "pricing", "funding_ledger", "payment_orders", "subscriptions", "financial_close"
+    )
+    for ($index = 1; $index -le 12; $index++) {
+        $path = Join-Path $script:repoRoot ("migrations\{0:D4}_{1}.sql" -f $index, $migrationNames[$index - 1])
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        $migrationSqlText = [System.Text.Encoding]::UTF8.GetString($bytes)
+        $savedErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $migrationSqlText | & $script:dockerExecutable container exec -i $script:postgresContainer `
+                psql --no-psqlrc --quiet --no-password --set=ON_ERROR_STOP=1 --username $script:postgresUser --dbname $script:testDatabase 2>&1 | Out-Null
+            $applyExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+        }
+        if ($applyExitCode -ne 0) {
+            throw ("Applying the V12 fixture migration {0} failed; database diagnostic output was suppressed." -f $index)
+        }
+        $ledgerValues.Add(("({0},'{1}','{2}')" -f $index, $migrationNames[$index - 1], (Get-SHA256Hex -Bytes $bytes)))
+    }
+    $ledgerSQL = @"
+CREATE TABLE schema_migrations (
+  version bigint PRIMARY KEY,
+  name text NOT NULL,
+  checksum text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations(version,name,checksum) VALUES $([string]::Join(',', $ledgerValues));
+"@
+    Invoke-PsqlChecked -Database $script:testDatabase -Sql $ledgerSQL -Operation "Recording the V12 migration fixture" | Out-Null
+    Invoke-PsqlChecked -Database $script:testDatabase -Operation "Seeding active V12 financial evidence" -Sql @"
+UPDATE wallets SET billing_mode='PREPAID',available_balance=4,reserved_balance=9,credit_limit=0,status='ACTIVE'
+WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO wallet_cash_lot(id,wallet_id,source_kind,source_reference,original_amount,remaining_amount,currency,refundable,created_at)
+SELECT '13100000-0000-4000-8000-000000000001',id,'OPENING','v12:available-cash',1,1,currency,false,
+ (SELECT applied_at+interval '3 seconds' FROM schema_migrations WHERE version=12)
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO funding_operation(id,wallet_id,organization_id,project_id,request_id,idempotency_key,request_fingerprint,status,
+ currency,maximum_amount,estimated_input_tokens,max_output_tokens,reserved_at)
+SELECT '13100000-0000-4000-8000-000000000002',id,organization_id,'00000000-0000-4000-8000-000000000002',
+ 'v12-active-reservation','v12-active-reservation','v12-active-reservation','RESERVED',currency,8,0,0,
+ (SELECT applied_at-interval '1 second' FROM schema_migrations WHERE version=12)
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO wallet_cash_lot(id,wallet_id,source_kind,source_reference,original_amount,remaining_amount,currency,refundable,created_at)
+SELECT '13100000-0000-4000-8000-000000000006',id,'ADJUSTMENT','v12:post-migration-cash-a',0.4,0.4,currency,false,
+ (SELECT applied_at+interval '1 second' FROM schema_migrations WHERE version=12)
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO wallet_cash_lot(id,wallet_id,source_kind,source_reference,original_amount,remaining_amount,currency,refundable,created_at)
+SELECT '13100000-0000-4000-8000-000000000009',id,'ADJUSTMENT','v12:post-migration-cash-b',0.6,0.6,currency,false,
+ (SELECT applied_at+interval '2 seconds' FROM schema_migrations WHERE version=12)
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO funding_operation(id,wallet_id,organization_id,project_id,request_id,idempotency_key,request_fingerprint,status,
+ currency,maximum_amount,estimated_input_tokens,max_output_tokens,reserved_at)
+SELECT '13100000-0000-4000-8000-000000000007',id,organization_id,'00000000-0000-4000-8000-000000000002',
+ 'v12-post-migration-reservation-a','v12-post-migration-reservation-a','v12-post-migration-reservation-a','RESERVED',currency,0.75,0,0,
+ (SELECT applied_at+interval '4 seconds' FROM schema_migrations WHERE version=12)
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO funding_operation(id,wallet_id,organization_id,project_id,request_id,idempotency_key,request_fingerprint,status,
+ currency,maximum_amount,estimated_input_tokens,max_output_tokens,reserved_at)
+SELECT '13100000-0000-4000-8000-000000000008',id,organization_id,'00000000-0000-4000-8000-000000000002',
+ 'v12-post-migration-reservation-b','v12-post-migration-reservation-b','v12-post-migration-reservation-b','RESERVED',currency,0.25,0,0,
+ (SELECT applied_at+interval '5 seconds' FROM schema_migrations WHERE version=12)
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+
+INSERT INTO recharge_order(id,platform_order_no,organization_id,wallet_id,payment_provider,provider_order_no,status,amount,currency,
+ region,idempotency_key,request_fingerprint,wallet_transaction_id,ledger_journal_id,expires_at,paid_at,credited_at)
+SELECT '13100000-0000-4000-8000-000000000003','V12-REFUND-SOURCE',organization_id,id,'sandbox','v12-provider-order',
+ 'PENDING',3,currency,'CN','v12-refund-source','v12-refund-source',NULL,NULL,now()+interval '1 day',NULL,NULL
+FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001';
+INSERT INTO wallet_cash_lot(id,wallet_id,recharge_order_id,source_kind,source_reference,original_amount,remaining_amount,currency,refundable,created_at)
+SELECT '13100000-0000-4000-8000-000000000004',wallet_id,id,'RECHARGE',platform_order_no,3,3,currency,true,
+ (SELECT applied_at+interval '6 seconds' FROM schema_migrations WHERE version=12)
+FROM recharge_order WHERE id='13100000-0000-4000-8000-000000000003';
+INSERT INTO refund_order(id,platform_refund_no,recharge_order_id,payment_provider,provider_refund_no,status,amount,currency,reason,idempotency_key)
+VALUES('13100000-0000-4000-8000-000000000005','V12-PENDING-REFUND','13100000-0000-4000-8000-000000000003',
+ 'sandbox','v12-provider-refund','PENDING',2,'USD','synthetic migration refund','v12-pending-refund');
+"@ | Out-Null
+}
+
+function Assert-PopulatedV12FinancialUpgrade {
+    $result = Invoke-PsqlChecked -Database $script:testDatabase -Operation "Validating active V12 financial evidence after upgrade" -Sql @"
+SELECT concat_ws('|',
+ (SELECT reserved_amount::text FROM funding_cash_allocation WHERE operation_id='13100000-0000-4000-8000-000000000002'),
+ (SELECT remaining_amount::text FROM wallet_cash_lot WHERE source_reference='migration:0013:reserved:'||wallet_id::text),
+ (SELECT sum(reserved_amount)::text FROM funding_cash_allocation WHERE operation_id='13100000-0000-4000-8000-000000000007'),
+ (SELECT sum(reserved_amount)::text FROM funding_cash_allocation WHERE operation_id='13100000-0000-4000-8000-000000000008'),
+ (SELECT sum(remaining_amount)::text FROM wallet_cash_lot
+   WHERE id IN ('13100000-0000-4000-8000-000000000006','13100000-0000-4000-8000-000000000009')),
+ (SELECT sum(allocation.reserved_amount)::text FROM funding_cash_allocation allocation
+   JOIN funding_operation operation ON operation.id=allocation.operation_id
+   WHERE operation.wallet_id=(SELECT id FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001')),
+ (SELECT reserved_amount::text FROM refund_cash_allocation WHERE refund_order_id='13100000-0000-4000-8000-000000000005'),
+ (SELECT remaining_amount::text FROM wallet_cash_lot WHERE id='13100000-0000-4000-8000-000000000004'),
+ (SELECT COALESCE(sum(remaining_amount),0)::text FROM wallet_cash_lot lot JOIN wallets wallet ON wallet.id=lot.wallet_id
+   WHERE wallet.organization_id='00000000-0000-4000-8000-000000000001' AND lot.refundable));
+"@
+    if ($result.Output.Trim() -ne "8.000000000000|0.000000000000|0.750000000000|0.250000000000|0.000000000000|9.000000000000|2.000000000000|1.000000000000|1.000000000000") {
+        throw "Schema 13 did not preserve active funding/refund holds from the V12 fixture."
+    }
+}
+
+function Assert-PopulatedV1Upgrade {
+    $result = Invoke-PsqlChecked -Database $script:testDatabase -Operation "Validating populated V1 data after upgrade" -Sql @"
+SELECT concat_ws('|',
+  (SELECT count(*) FROM users WHERE id='11111111-1111-4111-8111-111111111111'),
+  (SELECT count(*) FROM api_keys WHERE id='22222222-2222-4222-8222-222222222222'
+    AND organization_id='00000000-0000-4000-8000-000000000001'
+    AND project_id='00000000-0000-4000-8000-000000000002'),
+  (SELECT count(*) FROM api_key_versions WHERE api_key_id='22222222-2222-4222-8222-222222222222'
+    AND version=1 AND status='ACTIVE'),
+  (SELECT count(*) FROM organization_memberships WHERE organization_id='00000000-0000-4000-8000-000000000001'
+    AND user_id='11111111-1111-4111-8111-111111111111' AND status='ACTIVE'),
+  (SELECT count(*) FROM project_memberships WHERE project_id='00000000-0000-4000-8000-000000000002'
+    AND user_id='11111111-1111-4111-8111-111111111111' AND status='ACTIVE'),
+  (SELECT count(*) FROM usage_daily WHERE api_key_id='22222222-2222-4222-8222-222222222222'
+    AND organization_id='00000000-0000-4000-8000-000000000001'
+    AND project_id='00000000-0000-4000-8000-000000000002' AND cost=0.00012345),
+  (SELECT count(*) FROM wallets WHERE organization_id='00000000-0000-4000-8000-000000000001')
+);
+"@
+    if ($result.Output.Trim() -ne "1|1|1|1|1|1|1") {
+        throw "The populated V1 fixture was not preserved and scoped exactly once during upgrade."
+    }
+
+    $compatibilityResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT count(*) FROM organization_subscription subscription JOIN plan_version version ON version.id=subscription.plan_version_id JOIN subscription_plan plan ON plan.id=version.subscription_plan_id WHERE subscription.organization_id='00000000-0000-4000-8000-000000000001' AND subscription.status='ACTIVE' AND plan.slug='legacy-compat' AND version.token_billing_mode='METERED_SEPARATE'" `
+        -Operation "Validating legacy organization subscription compatibility"
+    if ($compatibilityResult.Output.Trim() -ne "1") {
+        throw "The populated V1 organization did not receive the finite metered compatibility subscription."
+    }
+}
+
 function Get-NonEmptyLines {
     param([string]$Text)
 
@@ -317,6 +541,125 @@ function Assert-ExpectedLedger {
     if ($actualProviders -ne $expectedProviders) {
         throw "The OpenAI-compatible provider seed set does not match the production manifest."
     }
+
+    $pricingResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('provider_cost_price_book','customer_retail_price_book','organization_price_plan','model_price_version','pricing_quote','usage_price_snapshot','promotion_credit')" `
+        -Operation "Validating commercial pricing tables"
+    if ($pricingResult.Output.Trim() -ne "7") {
+        throw "The commercial pricing migration did not create every required pricing table."
+    }
+
+    $fundingResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('ledger_account','ledger_journal','ledger_journal_entry','funding_operation','funding_operation_event','funding_provider_attempt','funding_usage_adjustment')" `
+        -Operation "Validating funding ledger tables"
+    if ($fundingResult.Output.Trim() -ne "7") {
+        throw "The funding ledger migration did not create every required table."
+    }
+
+    $paymentResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('recharge_order','payment_attempt','payment_webhook_event','refund_order','payment_reconciliation_record')" `
+        -Operation "Validating payment order tables"
+    if ($paymentResult.Output.Trim() -ne "5") {
+        throw "The payment order migration did not create every required table."
+    }
+
+    $subscriptionResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('subscription_plan','plan_version','plan_entitlement','organization_subscription','subscription_invoice','subscription_event','trial','coupon')" `
+        -Operation "Validating subscription tables"
+    if ($subscriptionResult.Output.Trim() -ne "8") {
+        throw "The subscription migration did not create every required table."
+    }
+
+    $subscriptionSeedResult = Invoke-PsqlChecked -Database $script:testDatabase `
+        -Sql "SELECT string_agg(slug,',' ORDER BY slug) FROM subscription_plan WHERE slug IN ('free','developer','team','enterprise')" `
+        -Operation "Validating subscription templates"
+    if ($subscriptionSeedResult.Output.Trim() -ne "developer,enterprise,free,team") {
+        throw "The default subscription template set is incomplete."
+    }
+
+	$hardeningResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('funding_cash_allocation','refund_cash_allocation','invoice_export_batch')" `
+		-Operation "Validating financial close hardening tables"
+	if ($hardeningResult.Output.Trim() -ne "3") {
+		throw "The financial close hardening migration did not create every required table."
+	}
+	$hardeningLinkResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND (table_name,column_name) IN (('invoice_application','invoice_export_batch_id'),('provider_statement','import_fingerprint_sha256'),('ledger_journal','provider_statement_id'))" `
+		-Operation "Validating financial close hardening evidence links"
+	if ($hardeningLinkResult.Output.Trim() -ne "3") {
+		throw "The financial close hardening migration did not create every required evidence link."
+	}
+
+	$observabilityResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('status_events','observability_slos','support_tickets','support_ticket_messages')" `
+		-Operation "Validating observability and support tables"
+	if ($observabilityResult.Output.Trim() -ne "4") {
+		throw "The observability migration did not create every required table."
+	}
+	$observabilityColumnResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND (table_name,column_name) IN (('request_logs','trace_id'),('alerts','dedupe_key'),('alerts','details'),('alerts','resolved_at'),('alerts','last_seen_at'))" `
+		-Operation "Validating observability evidence columns"
+	if ($observabilityColumnResult.Output.Trim() -ne "5") {
+		throw "The observability migration did not create every required evidence column."
+	}
+	$sloResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM observability_slos WHERE name IN ('gateway_availability','control_plane_availability','payment_webhook_processing','ledger_settlement_latency','provider_routing_success')" `
+		-Operation "Validating required SLO definitions"
+	if ($sloResult.Output.Trim() -ne "5") {
+		throw "The observability migration did not seed every required SLO."
+	}
+
+	$commercialOnboardingResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('public_commercial_terms','public_payment_fee_schedule','commercial_funnel_events','commercial_funnel_api_call_counter')" `
+		-Operation "Validating public commercial onboarding tables"
+	if ($commercialOnboardingResult.Output.Trim() -ne "4") {
+		throw "The public commercial onboarding migration did not create every required table."
+	}
+	$commercialOnboardingTriggerResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('public_commercial_terms_immutable_trigger','public_payment_fee_schedule_immutable_trigger','commercial_funnel_events_immutable_trigger','commercial_funnel_user_verification','commercial_funnel_api_key_insert','commercial_funnel_recharge','commercial_funnel_request_log_insert','commercial_funnel_subscription_event_insert')" `
+		-Operation "Validating public commercial onboarding triggers"
+	if ($commercialOnboardingTriggerResult.Output.Trim() -ne "8") {
+		throw "The public commercial onboarding migration did not create every required evidence trigger."
+	}
+
+	$supplierResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('supplier_organizations','supplier_contacts','supplier_endpoints','supplier_credentials','supplier_data_residency_declarations','supplier_security_questionnaires','supplier_model_applications','supplier_price_applications','supplier_reviews','supplier_status_events')" `
+		-Operation "Validating supplier onboarding tables"
+	if ($supplierResult.Output.Trim() -ne "10") {
+		throw "The supplier onboarding migration did not create every required table."
+	}
+	$supplierTriggerResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('supplier_status_protection_trigger','supplier_review_append_only_trigger')" `
+		-Operation "Validating supplier onboarding triggers"
+	if ($supplierTriggerResult.Output.Trim() -ne "2") {
+		throw "The supplier onboarding migration did not create the status and evidence guards."
+	}
+
+	$qualityResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('provider_quality_policies','provider_quality_states','supplier_provider_links','provider_quality_probe_schedules','provider_quality_observations','provider_price_verifications','provider_quality_rollups','provider_sla_events')" `
+		-Operation "Validating Provider quality tables"
+	if ($qualityResult.Output.Trim() -ne "8") {
+		throw "The Provider quality migration did not create every required table."
+	}
+	$qualityTriggerResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('provider_quality_observations_immutable_trigger','provider_price_verifications_immutable_trigger','provider_quality_rollups_immutable_trigger','providers_seed_quality_state_trigger')" `
+		-Operation "Validating Provider quality evidence and seed triggers"
+	if ($qualityTriggerResult.Output.Trim() -ne "4") {
+		throw "The Provider quality migration did not create every evidence guard."
+	}
+
+	$settlementResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('supplier_settlement_policy','supplier_payable_accrual','supplier_payable_entry','supplier_bill','supplier_bill_line','supplier_settlement_batch','supplier_settlement_item','supplier_usage_statement_match','supplier_appeal','supplier_payout_attempt','supplier_settlement_event')" `
+		-Operation "Validating supplier settlement tables"
+	if ($settlementResult.Output.Trim() -ne "11") {
+		throw "The supplier settlement migration did not create every required table."
+	}
+	$settlementTriggerResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('supplier_payable_accrual_immutable_trigger','supplier_payable_entry_immutable_trigger','supplier_settlement_item_immutable_trigger','supplier_usage_statement_match_immutable_trigger','supplier_bill_line_immutable_trigger','supplier_settlement_event_immutable_trigger','supplier_bill_protect_trigger','supplier_settlement_item_scope_trigger','supplier_appeal_scope_trigger','supplier_statement_match_scope_trigger','supplier_seed_settlement_policy_trigger')" `
+		-Operation "Validating supplier settlement evidence guards"
+	if ($settlementTriggerResult.Output.Trim() -ne "11") {
+		throw "The supplier settlement migration did not create every evidence guard."
+	}
 }
 
 function Get-LedgerSnapshot {
@@ -501,7 +844,7 @@ try {
     Wait-ForSuccessfulStartup -Name $firstContainer
     $firstSnapshot = Get-LedgerSnapshot
     Remove-TestContainer -Name $firstContainer
-    Write-Host "PASS empty database applied migrations 1:core through 6:modeldock"
+    Write-Host "PASS empty database applied migrations 1:core through 23:marketplace_launch_acceptance"
 
     $secondContainer = "relaydock-migration-$runID-second"
     Start-TestServer -Name $secondContainer
@@ -542,7 +885,25 @@ try {
     Remove-TestContainer -Name $checksumContainer
     Write-Host "PASS migration 4 checksum tampering was rejected"
 
-    Write-Host "Migration contract verification passed. Cleanup will now remove only this run's containers and random database."
+    Recreate-TestDatabase
+    Initialize-PopulatedV1Database
+    $upgradeContainer = "relaydock-migration-$runID-upgrade"
+    Start-TestServer -Name $upgradeContainer
+    Wait-ForSuccessfulStartup -Name $upgradeContainer
+    Assert-PopulatedV1Upgrade
+    Remove-TestContainer -Name $upgradeContainer
+    Write-Host "PASS populated V1 database upgraded through 23:marketplace_launch_acceptance without losing legacy data"
+
+    Recreate-TestDatabase
+    Initialize-PopulatedV12FinancialDatabase
+    $v12UpgradeContainer = "relaydock-migration-$runID-v12-upgrade"
+    Start-TestServer -Name $v12UpgradeContainer
+    Wait-ForSuccessfulStartup -Name $v12UpgradeContainer
+    Assert-PopulatedV12FinancialUpgrade
+    Remove-TestContainer -Name $v12UpgradeContainer
+    Write-Host "PASS populated V12 funding and refund holds upgraded through 23 without becoming refundable"
+
+    Write-Host "Migration contract verification passed for empty and populated-upgrade databases. Cleanup will now remove only this run's containers and random database."
 } finally {
     foreach ($containerName in $createdContainers) {
         try {

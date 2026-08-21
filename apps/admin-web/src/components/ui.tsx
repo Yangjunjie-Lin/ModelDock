@@ -17,8 +17,8 @@ export function Button({ className = '', variant = 'default', size = 'md', child
   return <button className={`button button-${variant} button-${size} ${className}`} {...props}>{children}</button>
 }
 
-export function Badge({ children, tone = 'neutral', dot = false }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'violet'; dot?: boolean }) {
-  return <span className={`badge badge-${tone}`}>{dot && <span className="badge-dot" />}{children}</span>
+export function Badge({ children, value, tone = 'neutral', dot = false }: { children?: ReactNode; value?: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'violet'; dot?: boolean }) {
+  return <span className={`badge badge-${tone}`}>{dot && <span className="badge-dot" />}{children ?? value}</span>
 }
 
 export function StatusBadge({ value }: { value?: unknown }) {
@@ -27,7 +27,7 @@ export function StatusBadge({ value }: { value?: unknown }) {
     ? 'success'
     : status.includes('cooldown') || status.includes('rate') || status.includes('pending') || status.includes('warning') || status.includes('retry') || status.includes('grace')
       ? 'warning'
-      : status.includes('fail') || status.includes('error') || status.includes('revoked') || status.includes('unhealthy') || status.includes('disabled') || status.includes('archived') || status === 'dead' || status.includes('exceeded') || status.includes('blocked')
+      : status.includes('fail') || status.includes('error') || status.includes('revoked') || status.includes('unhealthy') || status.includes('disabled') || status.includes('archived') || status.includes('suspended') || status.includes('expired') || status.includes('terminated') || status.includes('stopped') || status === 'dead' || status.includes('exceeded') || status.includes('blocked')
         ? 'danger'
         : 'neutral'
   return <Badge tone={tone} dot>{status}</Badge>

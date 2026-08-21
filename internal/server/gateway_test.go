@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/relayedock/relayedock/internal/apikey"
 )
 
 func TestExtractUsageFromResponsesSSE(t *testing.T) {
@@ -28,6 +30,20 @@ func TestTailCaptureIsBounded(t *testing.T) {
 	_, _ = capture.Write([]byte("defgh"))
 	if string(capture.Bytes()) != "defgh" {
 		t.Fatalf("tail=%q", capture.Bytes())
+	}
+}
+
+func TestEmbeddedAPIKeyPatternOnlyCapturesCompleteKeys(t *testing.T) {
+	fixture := "rdk_test_" + strings.Repeat("A", 43)
+	matches := embeddedAPIKeyPattern.FindAllSubmatch([]byte(`{"input":"prefix `+fixture+` suffix"}`), -1)
+	if len(matches) != 1 || len(matches[0]) != 2 || string(matches[0][1]) != fixture || !apikey.LooksValid(string(matches[0][1])) {
+		t.Fatalf("unexpected embedded key matches: %d", len(matches))
+	}
+	if embeddedAPIKeyPattern.MatchString("rdk_test_" + strings.Repeat("A", 42)) {
+		t.Fatal("truncated key matched leak detector")
+	}
+	if embeddedAPIKeyPattern.MatchString("x" + fixture + "y") {
+		t.Fatal("key embedded in a longer token matched leak detector")
 	}
 }
 func TestOpenAICompatibleErrorShape(t *testing.T) {
@@ -70,5 +86,41 @@ func TestProviderClientRequestID(t *testing.T) {
 	c.Request.Header.Set("X-Client-Request-Id", strings.Repeat("x", 513))
 	if _, ok := providerClientRequestID(c); ok {
 		t.Fatal("oversized client request ID was accepted")
+	}
+}
+
+func TestGatewayIdempotencyKey(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set("request_id", "req_generated")
+	if key, ok := gatewayIdempotencyKey(c); !ok || key != "req_generated" {
+		t.Fatalf("default key=%q ok=%v", key, ok)
+	}
+	c.Request.Header.Set("Idempotency-Key", "logical-request")
+	if key, ok := gatewayIdempotencyKey(c); !ok || key != "logical-request" {
+		t.Fatalf("header key=%q ok=%v", key, ok)
+	}
+	c.Request.Header.Set("Idempotency-Key", strings.Repeat("x", 201))
+	if _, ok := gatewayIdempotencyKey(c); ok {
+		t.Fatal("oversized key accepted")
+	}
+}
+
+func TestMaximumOutputTokens(t *testing.T) {
+	if got := maximumOutputTokens(map[string]any{}, "/responses"); got != 4096 {
+		t.Fatalf("default=%d", got)
+	}
+	if got := maximumOutputTokens(map[string]any{"max_tokens": float64(123)}, "/chat/completions"); got != 123 {
+		t.Fatalf("explicit=%d", got)
+	}
+	if got := maximumOutputTokens(map[string]any{"max_output_tokens": float64(999)}, "/embeddings"); got != 0 {
+		t.Fatalf("embeddings=%d", got)
+	}
+}
+
+func TestEstimatedUsage(t *testing.T) {
+	usage := estimatedUsage("/responses", 100, 404)
+	if usage.Input != 100 || usage.Output != 101 || usage.Total != 201 {
+		t.Fatalf("usage=%+v", usage)
 	}
 }

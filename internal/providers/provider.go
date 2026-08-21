@@ -21,6 +21,7 @@ type ForwardRequest struct {
 	ContentType     string
 	Accept          string
 	ClientRequestID string
+	Traceparent     string
 	Credential      Credential
 }
 type Provider interface {

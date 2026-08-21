@@ -1,16 +1,29 @@
 limit_req_zone $binary_remote_addr zone=relaydock_api_per_ip:10m rate=20r/s;
 limit_conn_zone $binary_remote_addr zone=relaydock_conn_per_ip:10m;
+resolver 127.0.0.11 valid=10s ipv6=off;
 
 upstream relaydock_gateway {
     zone relaydock_gateway 64k;
-    server relaydock:8080 max_fails=3 fail_timeout=10s;
+    server relaydock:8080 resolve max_fails=3 fail_timeout=10s;
     keepalive 64;
+}
+
+upstream relaydock_control {
+    zone relaydock_control 64k;
+    server relaydock:8081 resolve max_fails=3 fail_timeout=10s;
+    keepalive 16;
+}
+
+upstream modeldock_public_site {
+    zone modeldock_public_site 64k;
+    server console-web:8080 resolve max_fails=3 fail_timeout=10s;
+    keepalive 16;
 }
 
 server {
     listen 80;
     listen [::]:80;
-    server_name __DOMAIN__;
+    server_name __API_DOMAIN__ __PUBLIC_SITE_DOMAIN__;
 
     location = /nginx-health {
         access_log off;
@@ -33,10 +46,10 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-    server_name __DOMAIN__;
+    server_name __API_DOMAIN__;
 
-    ssl_certificate /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/__API_DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__API_DOMAIN__/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:TLS:10m;
     ssl_session_timeout 1d;
@@ -89,8 +102,154 @@ server {
         add_header X-Accel-Buffering no always;
     }
 
+    # The only public control-plane route. Adapters verify the timestamp and
+    # HMAC over the exact body bytes before any event is persisted.
+    location ^~ /api/payments/webhooks/ {
+        limit_req zone=relaydock_api_per_ip burst=20 nodelay;
+        limit_req_status 429;
+        client_max_body_size 1m;
+
+        proxy_pass http://relaydock_control;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-Id $request_id;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 15s;
+        proxy_read_timeout 15s;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+
     location / {
         return 404;
+    }
+}
+
+# Public website, self-service console, published catalog/pricing, and the
+# existing OpenAI-compatible gateway. There is deliberately no /api/admin/
+# proxy on this hostname.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name __PUBLIC_SITE_DOMAIN__;
+
+    ssl_certificate /etc/letsencrypt/live/__API_DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__API_DOMAIN__/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+    ssl_prefer_server_ciphers off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    client_max_body_size 10m;
+    limit_conn relaydock_conn_per_ip 20;
+
+    location = /nginx-health {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    location ^~ /api/public/ {
+        limit_req zone=relaydock_api_per_ip burst=60 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://relaydock_control;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-Id $request_id;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+
+    # This exposes only the user realm. HttpOnly session cookies and the
+    # X-CSRF-Token double-submit check remain enforced by the application.
+    location ^~ /api/console/ {
+        limit_req zone=relaydock_api_per_ip burst=30 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://relaydock_control;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-Id $request_id;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+
+    # Prevent unmatched control-plane paths from falling through to the
+    # console-web container, whose local-development Nginx can proxy /api/*.
+    # The two explicit user/public prefixes above are the complete allowlist.
+    location = /api {
+        return 404;
+    }
+
+    location ^~ /api/ {
+        return 404;
+    }
+
+    location /v1/ {
+        limit_req zone=relaydock_api_per_ip burst=60 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://relaydock_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-Id $request_id;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_cache off;
+        gzip on;
+        add_header X-Accel-Buffering no always;
+    }
+
+    location / {
+        proxy_pass http://modeldock_public_site;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-Id $request_id;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_buffering on;
+        proxy_cache off;
     }
 }
 
@@ -99,7 +258,7 @@ server {
     listen [::]:443 ssl default_server;
     http2 on;
     server_name _;
-    ssl_certificate /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/__API_DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__API_DOMAIN__/privkey.pem;
     return 444;
 }

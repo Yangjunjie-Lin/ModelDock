@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
@@ -22,14 +25,17 @@ const (
 )
 
 type Claims struct {
-	Role      string `json:"role"`
-	Email     string `json:"email"`
-	TokenType string `json:"token_type"`
+	Role           string `json:"role"`
+	Email          string `json:"email"`
+	TokenType      string `json:"token_type"`
+	SessionVersion int64  `json:"session_version"`
+	MFA            bool   `json:"mfa"`
 	jwt.RegisteredClaims
 }
 
 type Manager struct {
 	secret          []byte
+	previousSecrets [][]byte
 	accessLifetime  time.Duration
 	refreshLifetime time.Duration
 }
@@ -39,17 +45,28 @@ func NewManager(secret []byte, accessLifetime time.Duration) (*Manager, error) {
 }
 
 func NewManagerWithRefresh(secret []byte, accessLifetime, refreshLifetime time.Duration) (*Manager, error) {
+	return NewManagerWithRefreshAndPrevious(secret, nil, accessLifetime, refreshLifetime)
+}
+
+// NewManagerWithRefreshAndPrevious issues tokens with secret and accepts the
+// optional previous secret during a bounded rotation window. Existing callers
+// of NewManagerWithRefresh retain the single-secret behavior.
+func NewManagerWithRefreshAndPrevious(secret, previous []byte, accessLifetime, refreshLifetime time.Duration) (*Manager, error) {
 	if len(secret) < 32 {
 		return nil, errors.New("JWT secret must be at least 32 bytes")
 	}
 	if accessLifetime <= 0 || refreshLifetime <= accessLifetime {
 		return nil, errors.New("JWT lifetimes are invalid")
 	}
-	return &Manager{
+	manager := &Manager{
 		secret:          append([]byte(nil), secret...),
 		accessLifetime:  accessLifetime,
 		refreshLifetime: refreshLifetime,
-	}, nil
+	}
+	if len(previous) >= 32 && !bytes.Equal(secret, previous) {
+		manager.previousSecrets = [][]byte{append([]byte(nil), previous...)}
+	}
+	return manager, nil
 }
 
 // HashPassword produces an Argon2id PHC-style value. Parameters are stored
@@ -101,28 +118,55 @@ func VerifyPassword(encoded, password string) bool {
 	if err != nil || len(expected) < 16 || len(expected) > 64 {
 		return false
 	}
+	// #nosec G115 -- decoded hash length is bounded to 16..64 bytes above.
 	actual := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
 func (m *Manager) Issue(userID, email, role string) (string, time.Time, error) {
-	return m.issue(userID, email, role, "access", m.accessLifetime)
+	return m.IssueVersioned(userID, email, role, 0, false)
 }
 
 func (m *Manager) IssueRefresh(userID, email, role string) (string, time.Time, error) {
-	return m.issue(userID, email, role, "refresh", m.refreshLifetime)
+	return m.IssueRefreshVersioned(userID, email, role, 0, false)
 }
 
-func (m *Manager) issue(userID, email, role, tokenType string, lifetime time.Duration) (string, time.Time, error) {
+func (m *Manager) IssueVersioned(userID, email, role string, sessionVersion int64, mfa bool) (string, time.Time, error) {
+	return m.issue(userID, email, role, "access", m.accessLifetime, sessionVersion, mfa)
+}
+
+func (m *Manager) IssueRefreshVersioned(userID, email, role string, sessionVersion int64, mfa bool) (string, time.Time, error) {
+	return m.issue(userID, email, role, "refresh", m.refreshLifetime, sessionVersion, mfa)
+}
+
+func (m *Manager) issue(userID, email, role, tokenType string, lifetime time.Duration, sessionVersion int64, mfa bool) (string, time.Time, error) {
 	now := time.Now().UTC()
 	exp := now.Add(lifetime)
-	claims := Claims{Role: role, Email: email, TokenType: tokenType, RegisteredClaims: jwt.RegisteredClaims{
+	jti, err := CSRFToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	claims := Claims{Role: role, Email: email, TokenType: tokenType, SessionVersion: sessionVersion, MFA: mfa, RegisteredClaims: jwt.RegisteredClaims{
 		Subject: userID, Issuer: "relayedock", Audience: jwt.ClaimStrings{"relayedock-control"},
-		IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)), ExpiresAt: jwt.NewNumericDate(exp),
+		ID: jti, IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)), ExpiresAt: jwt.NewNumericDate(exp),
 	}}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(m.secret)
 	return signed, exp, err
+}
+
+func (m *Manager) DigestToken(raw string) []byte {
+	digest := hmac.New(sha256.New, m.secret)
+	_, _ = digest.Write([]byte(raw))
+	return digest.Sum(nil)
+}
+
+func NewOpaqueToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func (m *Manager) Parse(raw string) (*Claims, error) {
@@ -134,12 +178,24 @@ func (m *Manager) ParseRefresh(raw string) (*Claims, error) {
 }
 
 func (m *Manager) parse(raw, expectedType string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(raw, &Claims{}, func(token *jwt.Token) (any, error) {
-		if token.Method != jwt.SigningMethodHS256 {
-			return nil, errors.New("unexpected signing method")
+	parseWith := func(secret []byte) (*jwt.Token, error) {
+		return jwt.ParseWithClaims(raw, &Claims{}, func(token *jwt.Token) (any, error) {
+			if token.Method != jwt.SigningMethodHS256 {
+				return nil, errors.New("unexpected signing method")
+			}
+			return secret, nil
+		}, jwt.WithAudience("relayedock-control"), jwt.WithIssuer("relayedock"), jwt.WithExpirationRequired())
+	}
+	token, err := parseWith(m.secret)
+	if (err != nil || token == nil || !token.Valid) && len(m.previousSecrets) > 0 {
+		for _, previous := range m.previousSecrets {
+			candidate, candidateErr := parseWith(previous)
+			if candidateErr == nil && candidate != nil && candidate.Valid {
+				token, err = candidate, nil
+				break
+			}
 		}
-		return m.secret, nil
-	}, jwt.WithAudience("relayedock-control"), jwt.WithIssuer("relayedock"), jwt.WithExpirationRequired())
+	}
 	if err != nil || !token.Valid {
 		return nil, errors.New("invalid or expired session")
 	}

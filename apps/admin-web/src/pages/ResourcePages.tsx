@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, Copy, Download, KeyRound, RefreshCw, RotateCcw, Route as RouteIcon } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Ban, CheckCircle2, Copy, Download, KeyRound, RefreshCw, RotateCcw, Route as RouteIcon, Ticket, Trash2, UserCheck } from 'lucide-react'
 import { ResourcePage, cell, type ResourceConfig } from '../components/ResourcePage'
 import { Badge, Button, Form, Modal, StatusBadge, SubmitButton, useToast } from '../components/ui'
-import { api, apiDownload, formatMoney, formatNumber } from '../lib/api'
+import { api, apiDownload, asPage, formatDate, formatMoney, formatNumber } from '../lib/api'
 import { useAdminTenantScope, v2Paths } from '../lib/v2'
 import { TenantSelector } from '../components/TenantSelector'
 
@@ -28,6 +28,10 @@ export function ProvidersPage() {
       { key: 'name', label: 'Provider', render: cell.primary('name', 'provider_type') },
       { key: 'base_url', label: 'Base URL', className: 'wide-cell', render: (row) => <code className="inline-code">{String(row.base_url || '—')}</code> },
       { key: 'status', label: 'Status', render: (row) => <StatusBadge value={row.enabled === false ? 'disabled' : row.status || 'enabled'} /> },
+      { key: 'commercial_status', label: 'Commercial', render: (row) => <StatusBadge value={row.commercial_status} /> },
+      { key: 'commercial_resale_status', label: 'Resale', render: (row) => <StatusBadge value={row.commercial_resale_status} /> },
+      { key: 'allowed_customer_regions', label: 'Customer regions', render: cell.tags('allowed_customer_regions') },
+      { key: 'kill_switch', label: 'Kill switch', render: (row) => <StatusBadge value={row.emergency_kill_switch ? 'STOPPED' : 'READY'} /> },
       { key: 'credentials_count', label: 'Credentials', render: (row) => formatNumber(row.credentials_count ?? row.member_count, false) },
       { key: 'last_health_check_at', label: 'Last check', render: cell.date('last_health_check_at') },
     ],
@@ -40,6 +44,22 @@ export function ProvidersPage() {
         { value: 'glm', label: 'GLM' }, { value: 'openrouter', label: 'OpenRouter' },
       ] },
       { name: 'base_url', label: 'Base URL', type: 'url', required: true, placeholder: 'https://api.openai.com/v1', hint: 'Use the official provider API endpoint.' },
+      { name: 'commercial_status', label: 'Commercial status', type: 'select', required: true, options: [{ value: 'CONTRACT_PENDING', label: 'Contract pending' }, { value: 'TECHNICALLY_AVAILABLE', label: 'Technically available only' }, { value: 'COMMERCIAL_APPROVED', label: 'Commercial approved' }, { value: 'SUSPENDED', label: 'Suspended' }, { value: 'EXPIRED', label: 'Expired' }, { value: 'TERMINATED', label: 'Terminated' }] },
+      { name: 'legal_entity', label: 'Legal entity', required: true },
+      { name: 'contract_type', label: 'Contract type', required: true, placeholder: 'DIRECT_API_RESALE' },
+      { name: 'commercial_resale_status', label: 'Resale status', type: 'select', required: true, options: [{value:'NOT_APPROVED',label:'Not approved'},{value:'PENDING',label:'Pending'},{value:'APPROVED',label:'Approved'},{value:'PROHIBITED',label:'Prohibited'}] },
+      { name: 'contract_start_at', label: 'Contract start', placeholder: '2026-08-13T00:00:00Z' },
+      { name: 'contract_end_at', label: 'Contract end', placeholder: '2027-08-13T00:00:00Z' },
+      { name: 'allowed_customer_regions', label: 'Allowed customer regions', required: true, placeholder: 'CN, SG, US or *' },
+      { name: 'prohibited_regions', label: 'Prohibited regions', placeholder: 'Comma-separated regions' },
+      { name: 'data_processing_regions', label: 'Data processing regions', required: true, placeholder: 'CN, SG' },
+      { name: 'data_retention_policy', label: 'Data retention policy', required: true },
+      { name: 'terms_version', label: 'Provider terms version', required: true },
+      { name: 'cost_limit', label: 'Monthly cost limit (exact decimal)', placeholder: '1000.000000000000' },
+      { name: 'rate_limit', label: 'Aggregate RPM', type: 'number' },
+      { name: 'settlement_currency', label: 'Settlement currency', required: true, placeholder: 'USD' },
+      { name: 'emergency_kill_switch', label: 'Emergency kill switch', type: 'select', required: true, options: [{value:'false',label:'Ready'},{value:'true',label:'Stop new traffic'}] },
+      { name: 'pricing_disabled', label: 'Pricing switch', type: 'select', required: true, options: [{ value: 'false', label: 'Enabled' }, { value: 'true', label: 'Disabled' }] },
     ],
     emptyTitle: 'No providers configured', emptyDescription: 'Add an official provider connection to begin configuring authorized credentials.',
   }
@@ -75,6 +95,8 @@ export function ModelsPage() {
       { key: 'latency_score', label: 'Latency penalty', render: (row) => formatNumber(row.latency_score, false) },
       { key: 'input_price', label: 'Input / 1M', render: (row) => formatMoney(row.input_price) },
       { key: 'output_price', label: 'Output / 1M', render: (row) => formatMoney(row.output_price) },
+	  { key: 'service_subject', label: 'Service subject' },
+	  { key: 'generated_content_label_capability', label: 'Content label', render: (row) => <StatusBadge value={String(row.generated_content_label_capability || 'UNKNOWN')} /> },
     ],
     createFields: [
       { name: 'provider_id', label: 'Provider ID', required: true },
@@ -86,6 +108,10 @@ export function ModelsPage() {
       { name: 'latency_score', label: 'Latency penalty (0–100)', type: 'number', placeholder: '50' },
       { name: 'input_price', label: 'Input price / 1M', type: 'number', placeholder: '0' },
       { name: 'output_price', label: 'Output price / 1M', type: 'number', placeholder: '0' },
+	  { name: 'service_subject', label: 'Model service subject (legal review required)' },
+	  { name: 'filing_info', label: 'Filing / registration reference (legal review required)' },
+	  { name: 'generated_content_label_capability', label: 'Generated content labeling', type: 'select', options: [{ value: 'UNKNOWN', label: 'Unknown' }, { value: 'SUPPORTED', label: 'Supported' }, { value: 'UNSUPPORTED', label: 'Unsupported' }] },
+	  { name: 'user_disclosure', label: 'User-visible disclosure (legal review required)', type: 'textarea' },
     ],
     emptyTitle: 'Model registry is empty', emptyDescription: 'Connect a provider, then sync its official model catalog.',
   }} />
@@ -231,8 +257,35 @@ export function UsersPage() {
       { key: 'usage_tokens', label: 'Usage', render: (row) => formatNumber(row.usage_tokens) },
       { key: 'last_login_at', label: 'Last login', render: cell.date('last_login_at') },
     ],
+    headerExtra: <RegistrationInvitesButton />,
+    rowActions: (row) => <UserStatusAction row={row} />,
     createFields: [{ name: 'email', label: 'Email address', type: 'text', required: true }, { name: 'display_name', label: 'Display name', required: true }, { name: 'password', label: 'Temporary password', type: 'password', required: true, hint: 'Share through an approved secure channel.' }, { name: 'role', label: 'Role', type: 'select', required: true, options: [{ value: 'USER', label: 'User' }, { value: 'ADMIN', label: 'Administrator' }] }],
   }} />
+}
+
+function UserStatusAction({ row }: { row: Record<string, unknown> }) {
+  const client = useQueryClient()
+  const toast = useToast()
+  const active = String(row.status).toUpperCase() === 'ACTIVE'
+  const update = useMutation({
+    mutationFn: () => api(`/users/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: active ? 'SUSPENDED' : 'ACTIVE' }) }),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: ['resource', '/users'] }); toast(active ? 'Account suspended' : 'Account restored') },
+  })
+  return <Button size="sm" variant="ghost" disabled={update.isPending} onClick={() => update.mutate()} title={active ? 'Suspend account' : 'Restore account'}>{active ? <Ban size={14} /> : <UserCheck size={14} />}</Button>
+}
+
+type RegistrationInvite = { id: string; status: string; max_uses: number; used_count: number; expires_at: string }
+
+function RegistrationInvitesButton() {
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ max_uses: '1', expires_in_hours: '168' })
+  const [code, setCode] = useState('')
+  const client = useQueryClient()
+  const toast = useToast()
+  const invites = useQuery({ queryKey: ['registration-invites'], queryFn: () => api<unknown>('/registration-invites').then(asPage<RegistrationInvite>), enabled: open })
+  const create = useMutation({ mutationFn: () => api<{ code: string }>('/registration-invites', { method: 'POST', body: JSON.stringify({ max_uses: Number(form.max_uses), expires_in_hours: Number(form.expires_in_hours) }) }), onSuccess: (result) => { setCode(result.code); void client.invalidateQueries({ queryKey: ['registration-invites'] }) } })
+  const revoke = useMutation({ mutationFn: (id: string) => api(`/registration-invites/${id}`, { method: 'DELETE' }), onSuccess: () => { void client.invalidateQueries({ queryKey: ['registration-invites'] }); toast('Registration invite revoked') } })
+  return <><Button onClick={() => setOpen(true)}><Ticket size={15} />Registration invites</Button><Modal open={open} onClose={() => { setOpen(false); setCode('') }} title="Registration invites" description="Issue bounded one-time or multi-use codes for INVITE_ONLY registration." footer={<Button onClick={() => setOpen(false)}>Close</Button>} wide><Form className="form-grid" onSubmit={() => create.mutateAsync()}><label><span>Maximum uses</span><input required type="number" min="1" max="10000" value={form.max_uses} onChange={(event) => setForm({ ...form, max_uses: event.target.value })} /></label><label><span>Expires in hours</span><input required type="number" min="1" max="8760" value={form.expires_in_hours} onChange={(event) => setForm({ ...form, expires_in_hours: event.target.value })} /></label><SubmitButton pending={create.isPending}>Create code</SubmitButton>{create.isError && <div className="form-error full-span">{create.error instanceof Error ? create.error.message : 'Could not create invite.'}</div>}</Form>{code && <div className="secret-box"><code>{code}</code><Button onClick={() => { void navigator.clipboard.writeText(code); toast('Registration code copied') }}><Copy size={13} />Copy</Button></div>}<div className="drawer-section">{invites.data?.items.map((invite) => <div className="member-row" key={invite.id}><Ticket size={15} /><div><strong>{invite.used_count} / {invite.max_uses} used</strong><small>Expires {formatDate(invite.expires_at)}</small></div><StatusBadge value={invite.status} />{invite.status === 'ACTIVE' && <Button size="sm" variant="ghost" onClick={() => revoke.mutate(invite.id)} aria-label="Revoke registration invite"><Trash2 size={13} /></Button>}</div>)}</div></Modal></>
 }
 
 export function UsagePage() {

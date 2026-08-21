@@ -1,6 +1,7 @@
 package providers_test
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/relayedock/relayedock/internal/providers"
@@ -20,5 +21,28 @@ func TestRegistryResolvesProviderTypeCaseInsensitively(t *testing.T) {
 	}
 	if _, err := registry.Resolve("missing"); err != providers.ErrProviderNotRegistered {
 		t.Fatalf("expected ErrProviderNotRegistered, got %v", err)
+	}
+}
+
+func TestProviderEndpointPolicyRequiresHTTPSAndAllowlist(t *testing.T) {
+	policy := openai.EndpointPolicy{AllowedHosts: []string{"api.example.invalid", "*.provider.invalid"}}
+	allowed, _ := url.Parse("https://api.example.invalid/v1")
+	if err := policy.ValidateURL(allowed); err != nil {
+		t.Fatalf("allowlisted HTTPS endpoint rejected: %v", err)
+	}
+	for _, raw := range []string{
+		"http://api.example.invalid/v1",
+		"https://metadata.google.internal/latest",
+		"https://provider.invalid/v1",
+		"https://user:pass@api.example.invalid/v1",
+	} {
+		target, _ := url.Parse(raw)
+		if err := policy.ValidateURL(target); err == nil {
+			t.Fatalf("unsafe endpoint accepted: %s", raw)
+		}
+	}
+	subdomain, _ := url.Parse("https://edge.provider.invalid/v1")
+	if err := policy.ValidateURL(subdomain); err != nil {
+		t.Fatalf("explicit wildcard subdomain rejected: %v", err)
 	}
 }

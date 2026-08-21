@@ -1,0 +1,5 @@
+# Historical deterministic webhook test fixtures from the pre-Beta commit.
+# These are not credentials; keep the fingerprints scoped to the exact commit
+# and line so future secrets in the file are still scanned.
+fea6251b41d6c8b7ebb49bd5b02fdf12dabad378:internal/webhook/worker_test.go:generic-api-key:65
+fea6251b41d6c8b7ebb49bd5b02fdf12dabad378:internal/webhook/worker_test.go:generic-api-key:94

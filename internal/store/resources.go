@@ -83,7 +83,7 @@ func ensureRouteProviderMatch(ctx context.Context, q providerRowQuerier, provide
 }
 
 func (s *Store) ListProviders(ctx context.Context) ([]domain.Provider, error) {
-	rows, err := s.pool.Query(ctx, `SELECT p.id,p.name,p.slug,p.provider_type,p.base_url,p.enabled,p.config,p.created_at,p.updated_at,(SELECT count(*) FROM provider_credentials c WHERE c.provider_id=p.id) FROM providers p ORDER BY p.name`)
+	rows, err := s.pool.Query(ctx, `SELECT p.id,p.name,p.slug,p.provider_type,p.base_url,p.enabled,p.config,p.created_at,p.updated_at,(SELECT count(*) FROM provider_credentials c WHERE c.provider_id=p.id),p.contract_status,p.commercial_status,p.allowed_regions,p.pricing_disabled,p.contract_reviewed_at,p.legal_entity,p.contract_type,p.contract_start_at,p.contract_end_at,p.commercial_resale_status,p.credential_owner,p.allowed_customer_regions,p.prohibited_regions,p.data_processing_regions,p.data_retention_policy,p.terms_version,COALESCE(p.cost_limit,0)::text,p.rate_limit,p.settlement_currency,p.emergency_kill_switch FROM providers p ORDER BY p.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,11 +91,16 @@ func (s *Store) ListProviders(ctx context.Context) ([]domain.Provider, error) {
 	var out []domain.Provider
 	for rows.Next() {
 		var p domain.Provider
-		var raw []byte
-		if err := rows.Scan(&p.ID, &p.Name, &p.Slug, &p.ProviderType, &p.BaseURL, &p.Enabled, &raw, &p.CreatedAt, &p.UpdatedAt, &p.CredentialsCount); err != nil {
+		var raw, regions, customerRegions, prohibitedRegions, processingRegions []byte
+		if err := rows.Scan(&p.ID, &p.Name, &p.Slug, &p.ProviderType, &p.BaseURL, &p.Enabled, &raw, &p.CreatedAt, &p.UpdatedAt, &p.CredentialsCount, &p.ContractStatus, &p.CommercialStatus, &regions, &p.PricingDisabled, &p.ContractReviewedAt, &p.LegalEntity, &p.ContractType, &p.ContractStartAt, &p.ContractEndAt, &p.CommercialResaleStatus, &p.CredentialOwner, &customerRegions, &prohibitedRegions, &processingRegions, &p.DataRetentionPolicy, &p.TermsVersion, &p.CostLimit, &p.RateLimit, &p.SettlementCurrency, &p.EmergencyKillSwitch); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(raw, &p.Config)
+		_ = json.Unmarshal(regions, &p.AllowedRegions)
+		_ = json.Unmarshal(customerRegions, &p.AllowedCustomerRegions)
+		_ = json.Unmarshal(prohibitedRegions, &p.ProhibitedRegions)
+		_ = json.Unmarshal(processingRegions, &p.DataProcessingRegions)
+		p.CommercialStatus = domain.ProviderCommercialStatus(p.CommercialStatus, p.ContractReviewedAt != nil)
 		if p.Config == nil {
 			p.Config = map[string]any{}
 		}
@@ -106,9 +111,9 @@ func (s *Store) ListProviders(ctx context.Context) ([]domain.Provider, error) {
 
 func (s *Store) ProviderByID(ctx context.Context, providerID string) (domain.Provider, error) {
 	var p domain.Provider
-	var raw []byte
-	err := s.pool.QueryRow(ctx, `SELECT id,name,slug,provider_type,base_url,enabled,config,created_at,updated_at FROM providers WHERE id=$1`, providerID).
-		Scan(&p.ID, &p.Name, &p.Slug, &p.ProviderType, &p.BaseURL, &p.Enabled, &raw, &p.CreatedAt, &p.UpdatedAt)
+	var raw, regions, customerRegions, prohibitedRegions, processingRegions []byte
+	err := s.pool.QueryRow(ctx, `SELECT id,name,slug,provider_type,base_url,enabled,config,created_at,updated_at,contract_status,commercial_status,allowed_regions,pricing_disabled,contract_reviewed_at,legal_entity,contract_type,contract_start_at,contract_end_at,commercial_resale_status,credential_owner,allowed_customer_regions,prohibited_regions,data_processing_regions,data_retention_policy,terms_version,COALESCE(cost_limit,0)::text,rate_limit,settlement_currency,emergency_kill_switch FROM providers WHERE id=$1`, providerID).
+		Scan(&p.ID, &p.Name, &p.Slug, &p.ProviderType, &p.BaseURL, &p.Enabled, &raw, &p.CreatedAt, &p.UpdatedAt, &p.ContractStatus, &p.CommercialStatus, &regions, &p.PricingDisabled, &p.ContractReviewedAt, &p.LegalEntity, &p.ContractType, &p.ContractStartAt, &p.ContractEndAt, &p.CommercialResaleStatus, &p.CredentialOwner, &customerRegions, &prohibitedRegions, &processingRegions, &p.DataRetentionPolicy, &p.TermsVersion, &p.CostLimit, &p.RateLimit, &p.SettlementCurrency, &p.EmergencyKillSwitch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -116,8 +121,19 @@ func (s *Store) ProviderByID(ctx context.Context, providerID string) (domain.Pro
 		return p, err
 	}
 	_ = json.Unmarshal(raw, &p.Config)
+	_ = json.Unmarshal(regions, &p.AllowedRegions)
+	_ = json.Unmarshal(customerRegions, &p.AllowedCustomerRegions)
+	_ = json.Unmarshal(prohibitedRegions, &p.ProhibitedRegions)
+	_ = json.Unmarshal(processingRegions, &p.DataProcessingRegions)
 	if p.Config == nil {
 		p.Config = map[string]any{}
+	}
+	if p.ContractStatus == "" {
+		p.ContractStatus = "ACTIVE"
+	}
+	p.CommercialStatus = domain.ProviderCommercialStatus(p.CommercialStatus, p.ContractReviewedAt != nil)
+	if len(p.AllowedRegions) == 0 {
+		p.AllowedRegions = []string{"*"}
 	}
 	return p, nil
 }
@@ -140,7 +156,37 @@ func (s *Store) CreateProvider(ctx context.Context, p domain.Provider) (domain.P
 	if p.Config == nil {
 		p.Config = map[string]any{}
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO providers(id,name,slug,provider_type,base_url,enabled,config) VALUES($1,$2,$3,$4,$5,$6,$7)`, p.ID, p.Name, strings.ToLower(p.Slug), p.ProviderType, strings.TrimRight(p.BaseURL, "/"), p.Enabled, jsonBytes(p.Config))
+	if p.ContractStatus == "" {
+		p.ContractStatus = "PENDING_REVIEW"
+	}
+	if p.CommercialStatus == "" {
+		p.CommercialStatus = domain.ProviderCommercialStatus(p.ContractStatus, p.ContractReviewedAt != nil)
+	}
+	if len(p.AllowedRegions) == 0 {
+		p.AllowedRegions = []string{"*"}
+	}
+	if len(p.AllowedCustomerRegions) == 0 {
+		p.AllowedCustomerRegions = append([]string(nil), p.AllowedRegions...)
+	}
+	if p.ProhibitedRegions == nil {
+		p.ProhibitedRegions = []string{}
+	}
+	if p.DataProcessingRegions == nil {
+		p.DataProcessingRegions = []string{}
+	}
+	if p.CredentialOwner == "" {
+		p.CredentialOwner = domain.CredentialOwnerPlatform
+	}
+	if p.CommercialResaleStatus == "" {
+		p.CommercialResaleStatus = "NOT_APPROVED"
+	}
+	if p.ContractType == "" {
+		p.ContractType = "UNSPECIFIED"
+	}
+	if p.SettlementCurrency == "" {
+		p.SettlementCurrency = "USD"
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO providers(id,name,slug,provider_type,base_url,enabled,config,contract_status,commercial_status,allowed_regions,pricing_disabled,contract_reviewed_at,legal_entity,contract_type,contract_start_at,contract_end_at,commercial_resale_status,credential_owner,allowed_customer_regions,prohibited_regions,data_processing_regions,data_retention_policy,terms_version,cost_limit,rate_limit,settlement_currency,emergency_kill_switch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`, p.ID, p.Name, strings.ToLower(p.Slug), p.ProviderType, strings.TrimRight(p.BaseURL, "/"), p.Enabled, jsonBytes(p.Config), p.ContractStatus, p.CommercialStatus, jsonBytes(p.AllowedRegions), p.PricingDisabled, p.ContractReviewedAt, p.LegalEntity, p.ContractType, p.ContractStartAt, p.ContractEndAt, p.CommercialResaleStatus, p.CredentialOwner, jsonBytes(p.AllowedCustomerRegions), jsonBytes(p.ProhibitedRegions), jsonBytes(p.DataProcessingRegions), p.DataRetentionPolicy, p.TermsVersion, nullString(p.CostLimit), p.RateLimit, p.SettlementCurrency, p.EmergencyKillSwitch)
 	if err != nil {
 		return domain.Provider{}, err
 	}
@@ -148,7 +194,37 @@ func (s *Store) CreateProvider(ctx context.Context, p domain.Provider) (domain.P
 }
 
 func (s *Store) UpdateProvider(ctx context.Context, p domain.Provider) (domain.Provider, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE providers SET name=$2,base_url=$3,enabled=$4,config=$5,updated_at=now() WHERE id=$1`, p.ID, p.Name, strings.TrimRight(p.BaseURL, "/"), p.Enabled, jsonBytes(p.Config))
+	if p.ContractStatus == "" {
+		p.ContractStatus = "PENDING_REVIEW"
+	}
+	if p.CommercialStatus == "" {
+		p.CommercialStatus = domain.ProviderCommercialStatus(p.ContractStatus, p.ContractReviewedAt != nil)
+	}
+	if len(p.AllowedRegions) == 0 {
+		p.AllowedRegions = []string{"*"}
+	}
+	if len(p.AllowedCustomerRegions) == 0 {
+		p.AllowedCustomerRegions = append([]string(nil), p.AllowedRegions...)
+	}
+	if p.ProhibitedRegions == nil {
+		p.ProhibitedRegions = []string{}
+	}
+	if p.DataProcessingRegions == nil {
+		p.DataProcessingRegions = []string{}
+	}
+	if p.CredentialOwner == "" {
+		p.CredentialOwner = domain.CredentialOwnerPlatform
+	}
+	if p.CommercialResaleStatus == "" {
+		p.CommercialResaleStatus = "NOT_APPROVED"
+	}
+	if p.ContractType == "" {
+		p.ContractType = "UNSPECIFIED"
+	}
+	if p.SettlementCurrency == "" {
+		p.SettlementCurrency = "USD"
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE providers SET name=$2,base_url=$3,enabled=$4,config=$5,contract_status=$6,commercial_status=$7,allowed_regions=$8,pricing_disabled=$9,contract_reviewed_at=$10,legal_entity=$11,contract_type=$12,contract_start_at=$13,contract_end_at=$14,commercial_resale_status=$15,credential_owner=$16,allowed_customer_regions=$17,prohibited_regions=$18,data_processing_regions=$19,data_retention_policy=$20,terms_version=$21,cost_limit=$22,rate_limit=$23,settlement_currency=$24,emergency_kill_switch=$25,updated_at=now() WHERE id=$1`, p.ID, p.Name, strings.TrimRight(p.BaseURL, "/"), p.Enabled, jsonBytes(p.Config), p.ContractStatus, p.CommercialStatus, jsonBytes(p.AllowedRegions), p.PricingDisabled, p.ContractReviewedAt, p.LegalEntity, p.ContractType, p.ContractStartAt, p.ContractEndAt, p.CommercialResaleStatus, p.CredentialOwner, jsonBytes(p.AllowedCustomerRegions), jsonBytes(p.ProhibitedRegions), jsonBytes(p.DataProcessingRegions), p.DataRetentionPolicy, p.TermsVersion, nullString(p.CostLimit), p.RateLimit, p.SettlementCurrency, p.EmergencyKillSwitch)
 	if err != nil {
 		return domain.Provider{}, err
 	}
@@ -156,6 +232,33 @@ func (s *Store) UpdateProvider(ctx context.Context, p domain.Provider) (domain.P
 		return domain.Provider{}, ErrNotFound
 	}
 	return s.ProviderByID(ctx, p.ID)
+}
+
+func (s *Store) SetProviderKillSwitch(ctx context.Context, providerID string, enabled bool, actor *string) (domain.Provider, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Provider{}, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE providers SET emergency_kill_switch=$2,updated_at=now() WHERE id=$1`, providerID, enabled)
+	if err != nil {
+		return domain.Provider{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.Provider{}, ErrNotFound
+	}
+	if err = writeAuditTx(ctx, tx, actor, "provider.emergency_kill_switch", "provider", providerID, map[string]any{"enabled": enabled}); err != nil {
+		return domain.Provider{}, err
+	}
+	if enabled {
+		if _, err = tx.Exec(ctx, `INSERT INTO alerts(id,kind,severity,message,resource_type,resource_id) VALUES($1,'provider_kill_switch','critical','Provider emergency kill switch stopped new traffic.','provider',$2)`, id.UUID(), providerID); err != nil {
+			return domain.Provider{}, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Provider{}, err
+	}
+	return s.ProviderByID(ctx, providerID)
 }
 
 func (s *Store) DeleteProvider(ctx context.Context, providerID string) error {
@@ -169,7 +272,7 @@ func (s *Store) DeleteProvider(ctx context.Context, providerID string) error {
 func scanCredential(row pgx.Row) (domain.Credential, error) {
 	var c domain.Credential
 	var tags []byte
-	err := row.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags)
+	err := row.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -181,7 +284,8 @@ func scanCredential(row pgx.Row) (domain.Credential, error) {
 	return c, err
 }
 
-const credentialColumns = `c.id,c.provider_id,p.name,COALESCE((SELECT string_agg(g.name,', ' ORDER BY g.name) FROM credential_group_members gm JOIN credential_groups g ON g.id=gm.group_id WHERE gm.credential_id=c.id),''),c.name,c.credential_type,c.encrypted_secret,c.secret_last4,c.organization_id,c.project_id,c.status,c.priority,c.weight,c.max_concurrency,c.current_health,c.last_success_at,c.last_failure_at,c.cooldown_until,c.created_at,c.updated_at,COALESCE((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM credential_tags t WHERE t.credential_id=c.id),'[]'::jsonb)`
+// #nosec G101 -- SQL projection names encrypted credential columns but contains no credential value.
+const credentialColumns = `c.id,c.provider_id,p.name,COALESCE((SELECT string_agg(g.name,', ' ORDER BY g.name) FROM credential_group_members gm JOIN credential_groups g ON g.id=gm.group_id WHERE gm.credential_id=c.id),''),c.name,c.credential_type,c.encrypted_secret,c.secret_last4,c.organization_id,c.project_id,c.status,c.priority,c.weight,c.max_concurrency,c.current_health,c.last_success_at,c.last_failure_at,c.cooldown_until,c.created_at,c.updated_at,COALESCE((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM credential_tags t WHERE t.credential_id=c.id),'[]'::jsonb),c.credential_owner,c.owner_organization_id,c.ownership_confirmed_at,c.ownership_confirmed_by,c.ownership_terms_version`
 
 func (s *Store) ListCredentials(ctx context.Context, limit, offset int) ([]domain.Credential, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`, clamp(limit), max(offset, 0))
@@ -209,7 +313,10 @@ func (s *Store) CreateCredential(ctx context.Context, c domain.Credential, group
 		return c, err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `INSERT INTO provider_credentials(id,provider_id,name,credential_type,encrypted_secret,secret_last4,organization_id,project_id,status,priority,weight,max_concurrency,current_health) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'UNKNOWN')`, c.ID, c.ProviderID, c.Name, c.CredentialType, c.EncryptedSecret, c.SecretLast4, c.OrganizationID, c.ProjectID, c.Status, c.Priority, c.Weight, c.MaxConcurrency)
+	if c.CredentialOwner == "" {
+		c.CredentialOwner = domain.CredentialOwnerPlatform
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO provider_credentials(id,provider_id,name,credential_type,encrypted_secret,secret_last4,organization_id,project_id,status,priority,weight,max_concurrency,current_health,credential_owner,owner_organization_id,ownership_confirmed_at,ownership_confirmed_by,ownership_terms_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'UNKNOWN',$13,$14,$15,$16,$17)`, c.ID, c.ProviderID, c.Name, c.CredentialType, c.EncryptedSecret, c.SecretLast4, c.OrganizationID, c.ProjectID, c.Status, c.Priority, c.Weight, c.MaxConcurrency, c.CredentialOwner, c.OwnerOrganizationID, c.OwnershipConfirmedAt, c.OwnershipConfirmedBy, c.OwnershipTermsVersion)
 	if err != nil {
 		return c, mapProviderIntegrityError(err)
 	}
@@ -340,7 +447,7 @@ func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 	rows, err := s.pool.Query(ctx, `SELECT m.id,m.provider_id,p.name,m.provider_model_id,m.display_name,m.model_type,m.enabled,
 		m.capabilities,m.capability_source,m.context_window,m.latency_score::float8,m.quality_score::float8,
 		COALESCE(mp.input_price,0)::float8,COALESCE(mp.output_price,0)::float8,COALESCE(mp.currency,''),
-		m.metadata,m.created_at,m.updated_at FROM models m JOIN providers p ON p.id=m.provider_id
+		m.metadata,m.created_at,m.updated_at,COALESCE(m.service_subject,''),COALESCE(m.filing_info,''),COALESCE(m.generated_content_label_capability,'UNKNOWN'),COALESCE(m.user_disclosure,'') FROM models m JOIN providers p ON p.id=m.provider_id
 		LEFT JOIN LATERAL (SELECT input_price,output_price,currency FROM model_prices
 			WHERE model_id=m.id AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
 		ORDER BY p.name,m.provider_model_id`)
@@ -354,7 +461,7 @@ func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 		var caps, meta []byte
 		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderModelID, &m.DisplayName, &m.ModelType,
 			&m.Enabled, &caps, &m.CapabilitySource, &m.ContextWindow, &m.LatencyScore, &m.QualityScore,
-			&m.InputPrice, &m.OutputPrice, &m.PriceCurrency, &meta, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			&m.InputPrice, &m.OutputPrice, &m.PriceCurrency, &meta, &m.CreatedAt, &m.UpdatedAt, &m.ServiceSubject, &m.FilingInfo, &m.GeneratedContentLabelCapability, &m.UserDisclosure); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(caps, &m.Capabilities)
@@ -388,11 +495,11 @@ func (s *Store) UpsertModels(ctx context.Context, providerID string, models []do
 		if m.CapabilitySource == "" {
 			m.CapabilitySource = "provider"
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO models(id,provider_id,provider_model_id,display_name,model_type,enabled,capabilities,capability_source,context_window,latency_score,quality_score,metadata)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(provider_id,provider_model_id) DO UPDATE
-			SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled,metadata=EXCLUDED.metadata,updated_at=now()`,
+		_, err = tx.Exec(ctx, `INSERT INTO models(id,provider_id,provider_model_id,display_name,model_type,enabled,capabilities,capability_source,context_window,latency_score,quality_score,metadata,service_subject,filing_info,generated_content_label_capability,user_disclosure)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,''),$15,NULLIF($16,'')) ON CONFLICT(provider_id,provider_model_id) DO UPDATE
+			SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled,metadata=EXCLUDED.metadata,service_subject=EXCLUDED.service_subject,filing_info=EXCLUDED.filing_info,generated_content_label_capability=EXCLUDED.generated_content_label_capability,user_disclosure=EXCLUDED.user_disclosure,updated_at=now()`,
 			m.ID, providerID, m.ProviderModelID, m.DisplayName, m.ModelType, true, jsonBytes(m.Capabilities),
-			m.CapabilitySource, m.ContextWindow, defaultScore(m.LatencyScore), defaultScore(m.QualityScore), jsonBytes(m.Metadata))
+			m.CapabilitySource, m.ContextWindow, defaultScore(m.LatencyScore), defaultScore(m.QualityScore), jsonBytes(m.Metadata), m.ServiceSubject, m.FilingInfo, firstNonEmptyStore(m.GeneratedContentLabelCapability, "UNKNOWN"), m.UserDisclosure)
 		if err != nil {
 			return err
 		}
@@ -427,10 +534,11 @@ func (s *Store) CreateModel(ctx context.Context, m domain.Model) (domain.Model, 
 		m.Capabilities = []string{}
 	}
 	if _, err := s.pool.Exec(ctx, `INSERT INTO models(id,provider_id,provider_model_id,display_name,model_type,enabled,
-		capabilities,capability_source,context_window,latency_score,quality_score,metadata)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, m.ID, m.ProviderID, m.ProviderModelID,
+		capabilities,capability_source,context_window,latency_score,quality_score,metadata,service_subject,filing_info,generated_content_label_capability,user_disclosure)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,''),$15,NULLIF($16,''))`, m.ID, m.ProviderID, m.ProviderModelID,
 		m.DisplayName, m.ModelType, m.Enabled, jsonBytes(m.Capabilities), m.CapabilitySource, m.ContextWindow,
-		defaultScore(m.LatencyScore), defaultScore(m.QualityScore), jsonBytes(m.Metadata)); err != nil {
+		defaultScore(m.LatencyScore), defaultScore(m.QualityScore), jsonBytes(m.Metadata), m.ServiceSubject, m.FilingInfo,
+		firstNonEmptyStore(m.GeneratedContentLabelCapability, "UNKNOWN"), m.UserDisclosure); err != nil {
 		return domain.Model{}, err
 	}
 	return s.ModelByID(ctx, m.ID)
@@ -458,9 +566,10 @@ func (s *Store) UpdateModel(ctx context.Context, m domain.Model) (domain.Model, 
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE models SET provider_id=$2,provider_model_id=$3,display_name=$4,model_type=$5,
 		enabled=$6,capabilities=$7,capability_source=$8,context_window=$9,latency_score=$10,quality_score=$11,
-		metadata=$12,updated_at=now() WHERE id=$1`, m.ID, m.ProviderID, m.ProviderModelID, m.DisplayName, m.ModelType,
+		metadata=$12,service_subject=NULLIF($13,''),filing_info=NULLIF($14,''),generated_content_label_capability=$15,
+		user_disclosure=NULLIF($16,''),updated_at=now() WHERE id=$1`, m.ID, m.ProviderID, m.ProviderModelID, m.DisplayName, m.ModelType,
 		m.Enabled, jsonBytes(m.Capabilities), m.CapabilitySource, m.ContextWindow, m.LatencyScore, m.QualityScore,
-		jsonBytes(m.Metadata))
+		jsonBytes(m.Metadata), m.ServiceSubject, m.FilingInfo, firstNonEmptyStore(m.GeneratedContentLabelCapability, "UNKNOWN"), m.UserDisclosure)
 	if err == nil && tag.RowsAffected() == 0 {
 		return domain.Model{}, ErrNotFound
 	}
@@ -700,7 +809,7 @@ func (s *Store) Candidates(ctx context.Context, groupID string) ([]domain.Creden
 	for rows.Next() {
 		var c domain.Credential
 		var tags []byte
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.EffectiveWeight, &c.EffectivePriority); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.EffectiveWeight, &c.EffectivePriority); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &c.Tags)

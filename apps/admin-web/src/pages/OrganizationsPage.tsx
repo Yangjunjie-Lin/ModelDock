@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Building2, MoreHorizontal, Plus, Trash2, UserPlus } from 'lucide-react'
+import { Building2, Mail, MoreHorizontal, Plus, Send, Trash2, UserPlus } from 'lucide-react'
 import { api, asPage, formatDate } from '../lib/api'
 import { type Organization, type OrganizationMember, useAdminTenantScope, v2Paths } from '../lib/v2'
 import { Badge, Button, DataTable, type Column, Drawer, EmptyState, ErrorState, Form, Modal, Skeleton, StatusBadge, SubmitButton, useToast } from '../components/ui'
@@ -9,19 +9,19 @@ export function OrganizationsPage() {
   const scope = useAdminTenantScope()
   const [createOpen, setCreateOpen] = useState(false)
   const [detail, setDetail] = useState<Organization | null>(null)
-  const [form, setForm] = useState({ name: '', slug: '' })
+  const [form, setForm] = useState({ name: '', slug: '', billing_region: '*' })
   const client = useQueryClient()
   const toast = useToast()
 
   useEffect(() => {
-    if (detail) setDetail(scope.organizationRows.find((row) => row.id === detail.id) || null)
-  }, [detail?.id, scope.organizationRows])
+    setDetail((current) => current ? scope.organizationRows.find((row) => row.id === current.id) || null : null)
+  }, [scope.organizationRows])
 
   const create = useMutation({
     mutationFn: () => api<Organization>(v2Paths.organizations, { method: 'POST', body: JSON.stringify({ ...form, status: 'ACTIVE' }) }),
     onSuccess: (organization) => {
       setCreateOpen(false)
-      setForm({ name: '', slug: '' })
+      setForm({ name: '', slug: '', billing_region: '*' })
       scope.setOrganizationID(organization.id)
       void client.invalidateQueries({ queryKey: ['v2-organizations'] })
       toast('Organization created')
@@ -46,6 +46,7 @@ export function OrganizationsPage() {
 
   const columns: Column<Organization>[] = [
     { key: 'name', label: 'Organization', render: (row) => <div className="primary-cell"><strong>{row.name}</strong><code>{row.slug}</code></div> },
+    { key: 'billing_region', label: 'Billing region', render: (row) => <code>{row.billing_region || '*'}</code> },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge value={row.status} /> },
     { key: 'id', label: 'ID', render: (row) => <code className="inline-code">{row.id}</code> },
     { key: 'created', label: 'Created', render: (row) => <span className="muted-cell">{formatDate(row.created_at)}</span> },
@@ -63,13 +64,27 @@ export function OrganizationsPage() {
     </section>
 
     <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create organization" description="The signed-in administrator becomes the initial owner." footer={<><Button onClick={() => setCreateOpen(false)}>Cancel</Button><SubmitButton form="create-organization" pending={create.isPending}>Create organization</SubmitButton></>}>
-      <Form id="create-organization" className="form-grid" onSubmit={() => create.mutateAsync()}><label><span>Name *</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Acme Platform" /></label><label><span>Slug *</span><input required pattern="[a-z0-9][a-z0-9-]*" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })} placeholder="acme-platform" /></label>{create.isError && <div className="form-error full-span">{create.error instanceof Error ? create.error.message : 'Unable to create organization.'}</div>}</Form>
+      <Form id="create-organization" className="form-grid" onSubmit={() => create.mutateAsync()}><label><span>Name *</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Acme Platform" /></label><label><span>Slug *</span><input required pattern="[a-z0-9][a-z0-9-]*" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })} placeholder="acme-platform" /></label><label><span>Billing region *</span><input required value={form.billing_region} onChange={(event) => setForm({ ...form, billing_region: event.target.value.toUpperCase() })} placeholder="CN, US, SG, or *" /></label>{create.isError && <div className="form-error full-span">{create.error instanceof Error ? create.error.message : 'Unable to create organization.'}</div>}</Form>
     </Modal>
 
     <Drawer open={Boolean(detail)} onClose={() => setDetail(null)} title="Organization governance">
-      {detail && <><div className="detail-hero"><span className="provider-glyph"><Building2 size={15} /></span><div><strong>{detail.name}</strong><code>{detail.slug}</code></div><StatusBadge value={detail.status} /></div><div className="detail-list"><div><span>Organization ID</span><strong>{detail.id}</strong></div><div><span>Created</span><strong>{formatDate(detail.created_at)}</strong></div><div><span>Updated</span><strong>{formatDate(detail.updated_at)}</strong></div></div><OrganizationMembers organization={detail} /><div className="drawer-actions"><Button onClick={() => updateStatus.mutate({ organization: detail, status: detail.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE' })} disabled={updateStatus.isPending}>{detail.status === 'ACTIVE' ? 'Disable organization' : 'Enable organization'}</Button>{detail.status !== 'ARCHIVED' && <Button variant="danger" onClick={() => archive.mutate(detail.id)} disabled={archive.isPending}><Trash2 size={13} />Archive</Button>}</div>{(updateStatus.isError || archive.isError) && <div className="form-error">{String(updateStatus.error || archive.error)}</div>}</>}
+      {detail && <><div className="detail-hero"><span className="provider-glyph"><Building2 size={15} /></span><div><strong>{detail.name}</strong><code>{detail.slug}</code></div><StatusBadge value={detail.status} /></div><div className="detail-list"><div><span>Organization ID</span><strong>{detail.id}</strong></div><div><span>Billing region</span><strong>{detail.billing_region || '*'}</strong></div><div><span>Created</span><strong>{formatDate(detail.created_at)}</strong></div><div><span>Updated</span><strong>{formatDate(detail.updated_at)}</strong></div></div><OrganizationMembers organization={detail} /><OrganizationInvitations organization={detail} /><div className="drawer-actions"><Button onClick={() => updateStatus.mutate({ organization: detail, status: detail.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE' })} disabled={updateStatus.isPending}>{detail.status === 'ACTIVE' ? 'Disable organization' : 'Enable organization'}</Button>{detail.status !== 'ARCHIVED' && <Button variant="danger" onClick={() => archive.mutate(detail.id)} disabled={archive.isPending}><Trash2 size={13} />Archive</Button>}</div>{(updateStatus.isError || archive.isError) && <div className="form-error">{String(updateStatus.error || archive.error)}</div>}</>}
     </Drawer>
   </div>
+}
+
+type OrganizationInvitation = { id: string; email: string; role: string; status: string; expires_at: string }
+
+function OrganizationInvitations({ organization }: { organization: Organization }) {
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ email: '', role: 'MEMBER' })
+  const client = useQueryClient()
+  const toast = useToast()
+  const result = useQuery({ queryKey: ['organization-invitations', organization.id], queryFn: () => api<unknown>(`/organizations/${organization.id}/invitations`).then(asPage<OrganizationInvitation>) })
+  const create = useMutation({ mutationFn: () => api(`/organizations/${organization.id}/invitations`, { method: 'POST', body: JSON.stringify(form) }), onSuccess: () => { setOpen(false); setForm({ email: '', role: 'MEMBER' }); void client.invalidateQueries({ queryKey: ['organization-invitations', organization.id] }); toast('Invitation queued for delivery') } })
+  const revoke = useMutation({ mutationFn: (id: string) => api(`/organizations/${organization.id}/invitations/${id}`, { method: 'DELETE' }), onSuccess: () => { void client.invalidateQueries({ queryKey: ['organization-invitations', organization.id] }); toast('Invitation revoked') } })
+  const rows = result.data?.items || []
+  return <section className="drawer-section"><div className="section-heading"><div><strong>Invitations</strong><small>Expiring email invitations and assigned roles</small></div><Button size="sm" onClick={() => setOpen(true)}><Send size={13} />Invite</Button></div>{result.isLoading && <Skeleton rows={2} />}{result.isError && <ErrorState error={result.error} onRetry={() => result.refetch()} />}{result.isSuccess && rows.length === 0 && <EmptyState title="No invitations" />}{rows.map((invitation) => <div className="member-row" key={invitation.id}><Mail size={15} /><div><strong>{invitation.email}</strong><small>Expires {formatDate(invitation.expires_at)}</small></div><Badge tone="violet">{invitation.role}</Badge><StatusBadge value={invitation.status} />{invitation.status === 'PENDING' && <Button size="sm" variant="ghost" onClick={() => revoke.mutate(invitation.id)} aria-label="Revoke invitation"><Trash2 size={13} /></Button>}</div>)}<Modal open={open} onClose={() => setOpen(false)} title="Invite organization member" description="The recipient receives an expiring, single-use invitation link." footer={<><Button onClick={() => setOpen(false)}>Cancel</Button><SubmitButton form="organization-invitation" pending={create.isPending}>Send invitation</SubmitButton></>}><Form id="organization-invitation" className="form-grid" onSubmit={() => create.mutateAsync()}><label className="full-span"><span>Email address</span><input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label><span>Role</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="VIEWER">Viewer</option><option value="MEMBER">Member</option><option value="ADMIN">Administrator</option><option value="OWNER">Owner</option></select></label>{create.isError && <div className="form-error full-span">{create.error instanceof Error ? create.error.message : 'Could not create invitation.'}</div>}</Form></Modal></section>
 }
 
 function OrganizationMembers({ organization }: { organization: Organization }) {

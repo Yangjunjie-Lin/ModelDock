@@ -11,9 +11,10 @@ import (
 	"github.com/relayedock/relayedock/internal/id"
 )
 
+// #nosec G101 -- SQL projection names API-key columns but contains no credential value.
 const v2APIKeyColumns = `k.id,k.user_id,k.organization_id,k.project_id,COALESCE(k.team_id::text,''),k.name,k.environment,k.key_prefix,k.key_hash,k.status,
 	k.expires_at,k.rate_limit_rpm,k.rate_limit_tpm,k.monthly_token_limit,k.monthly_cost_limit,k.allowed_models,
-	k.created_at,k.updated_at,k.last_used_at,
+	 k.created_at,k.updated_at,k.last_used_at,COALESCE(k.frozen_reason,''),k.frozen_at,k.last_leak_detected_at,
 	COALESCE((SELECT max(v.version) FROM api_key_versions v WHERE v.api_key_id=k.id),0)`
 
 func scanV2APIKey(row pgx.Row) (domain.APIKey, error) {
@@ -22,7 +23,7 @@ func scanV2APIKey(row pgx.Row) (domain.APIKey, error) {
 	err := row.Scan(&key.ID, &key.UserID, &key.OrganizationID, &key.ProjectID, &key.TeamID, &key.Name, &key.Environment,
 		&key.KeyPrefix, &key.KeyHash, &key.Status, &key.ExpiresAt, &key.RateLimitRPM, &key.RateLimitTPM,
 		&key.MonthlyTokenLimit, &key.MonthlyCostLimit, &allowed, &key.CreatedAt, &key.UpdatedAt,
-		&key.LastUsedAt, &key.CurrentVersion)
+		&key.LastUsedAt, &key.FrozenReason, &key.FrozenAt, &key.LastLeakDetectedAt, &key.CurrentVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return key, ErrNotFound
 	}
@@ -53,9 +54,47 @@ func (s *Store) CreateProjectAPIKey(ctx context.Context, key domain.APIKey) (dom
 	if key.Status == "" {
 		key.Status = "ACTIVE"
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('api-key-create:'||$1,0))`, key.UserID); err != nil {
+		return domain.APIKey{}, err
+	}
+	var userAbuse, userPayment, orgAbuse, orgPayment string
+	var userScore, orgScore int
+	if err = tx.QueryRow(ctx, `SELECT u.abuse_status,u.payment_risk,u.risk_score,o.abuse_status,o.payment_risk,o.risk_score
+		FROM users u JOIN organizations o ON o.id=$2 WHERE u.id=$1`, key.UserID, key.OrganizationID).
+		Scan(&userAbuse, &userPayment, &userScore, &orgAbuse, &orgPayment, &orgScore); err != nil {
+		return domain.APIKey{}, err
+	}
+	if userAbuse == "FROZEN" || orgAbuse == "FROZEN" || userPayment == "BLOCKED" || orgPayment == "BLOCKED" {
+		return domain.APIKey{}, ErrRiskFrozen
+	}
+	if userAbuse == "RESTRICTED" || orgAbuse == "RESTRICTED" || userScore >= 90 || orgScore >= 90 {
+		return domain.APIKey{}, ErrRiskRestricted
+	}
+	var recent int64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE user_id=$1 AND created_at>=now()-interval '1 hour'`, key.UserID).Scan(&recent); err != nil {
+		return domain.APIKey{}, err
+	}
+	if recent >= 10 {
+		return domain.APIKey{}, ErrKeyCreationRate
+	}
+	if _, err = effectivePlanVersionTx(ctx, tx, key.OrganizationID); err != nil {
+		return domain.APIKey{}, err
+	}
+	var activeKeys int64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE organization_id=$1 AND status='ACTIVE'`, key.OrganizationID).Scan(&activeKeys); err != nil {
+		return domain.APIKey{}, err
+	}
+	if err = enforceIntegerEntitlementTx(ctx, tx, key.OrganizationID, "api_key_count", activeKeys, 1); err != nil {
+		return domain.APIKey{}, err
+	}
 	if key.TeamID != "" {
 		var allowed bool
-		err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM team_memberships tm JOIN teams t ON t.id=tm.team_id
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM team_memberships tm JOIN teams t ON t.id=tm.team_id
 			WHERE tm.team_id=$1 AND tm.user_id=$2 AND tm.organization_id=$3 AND tm.status='ACTIVE' AND t.status='ACTIVE')`,
 			key.TeamID, key.UserID, key.OrganizationID).Scan(&allowed)
 		if err != nil {
@@ -65,12 +104,15 @@ func (s *Store) CreateProjectAPIKey(ctx context.Context, key domain.APIKey) (dom
 			return domain.APIKey{}, ErrNotFound
 		}
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO api_keys(id,user_id,organization_id,project_id,team_id,name,environment,key_prefix,key_hash,status,
+	_, err = tx.Exec(ctx, `INSERT INTO api_keys(id,user_id,organization_id,project_id,team_id,name,environment,key_prefix,key_hash,status,
 		expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,allowed_models)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, key.ID, key.UserID, key.OrganizationID,
 		key.ProjectID, nullString(key.TeamID), key.Name, key.Environment, key.KeyPrefix, key.KeyHash, key.Status, key.ExpiresAt,
 		key.RateLimitRPM, key.RateLimitTPM, key.MonthlyTokenLimit, key.MonthlyCostLimit, jsonBytes(key.AllowedModels))
 	if err != nil {
+		return domain.APIKey{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return domain.APIKey{}, err
 	}
 	return s.ProjectAPIKeyByID(ctx, key.ID)
@@ -112,6 +154,7 @@ func scanAPIKeyVersion(row pgx.Row) (domain.APIKeyVersion, error) {
 	return version, err
 }
 
+// #nosec G101 -- SQL projection names API-key columns but contains no credential value.
 const apiKeyVersionColumns = `id,api_key_id,version,key_prefix,key_hash,status,valid_from,grace_expires_at,expires_at,created_at,last_used_at`
 
 func (s *Store) ListAPIKeyVersions(ctx context.Context, keyID string) ([]domain.APIKeyVersion, error) {
@@ -150,7 +193,8 @@ func (s *Store) AuthenticateAPIKeyVersion(ctx context.Context, hash []byte) (dom
 		Scan(&authn.Key.ID, &authn.Key.UserID, &authn.Key.OrganizationID, &authn.Key.ProjectID, &authn.Key.TeamID, &authn.Key.Name,
 			&authn.Key.Environment, &authn.Key.KeyPrefix, &authn.Key.KeyHash, &authn.Key.Status, &authn.Key.ExpiresAt,
 			&authn.Key.RateLimitRPM, &authn.Key.RateLimitTPM, &authn.Key.MonthlyTokenLimit, &authn.Key.MonthlyCostLimit,
-			&allowed, &authn.Key.CreatedAt, &authn.Key.UpdatedAt, &authn.Key.LastUsedAt, &authn.Key.CurrentVersion,
+			&allowed, &authn.Key.CreatedAt, &authn.Key.UpdatedAt, &authn.Key.LastUsedAt, &authn.Key.FrozenReason, &authn.Key.FrozenAt,
+			&authn.Key.LastLeakDetectedAt, &authn.Key.CurrentVersion,
 			&authn.Version.ID, &authn.Version.APIKeyID, &authn.Version.Version, &authn.Version.KeyPrefix,
 			&authn.Version.KeyHash, &authn.Version.Status, &authn.Version.ValidFrom, &authn.Version.GraceExpiresAt,
 			&authn.Version.ExpiresAt, &authn.Version.CreatedAt, &authn.Version.LastUsedAt)
