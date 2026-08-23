@@ -34,7 +34,10 @@ $version = (Get-Content -LiteralPath (Join-Path $repoRoot "VERSION") -Raw).Trim(
 $repository = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { "Yangjunjie-Lin/ModelDock" }
 $workflowRun = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { "LOCAL" }
 $refType = if ($env:GITHUB_REF_TYPE -in @("branch", "tag")) { $env:GITHUB_REF_TYPE } else { "branch" }
-$refName = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { (git -C $repoRoot branch --show-current).Trim() }
+$refName = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else {
+    $branch = [string](git -C $repoRoot branch --show-current)
+    if ($branch.Trim()) { $branch.Trim() } else { "detached-$($commit.Substring(0,12))" }
+}
 $started = [DateTimeOffset]::UtcNow
 $status = "FAIL"
 $completed = [System.Collections.Generic.List[string]]::new()
