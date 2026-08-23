@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -26,7 +27,10 @@ func scanAPIKey(row pgx.Row) (domain.APIKey, error) {
 	if err != nil {
 		return k, err
 	}
-	k.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
+	k.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
+	if err != nil {
+		return k, err
+	}
 	_ = json.Unmarshal(allowed, &k.AllowedModels)
 	if k.AllowedModels == nil {
 		k.AllowedModels = []string{}
@@ -81,13 +85,20 @@ func (s *Store) MonthlyTokens(ctx context.Context, keyID string) (int64, error) 
 func (s *Store) MonthlyCost(ctx context.Context, keyID string) (domain.Decimal, error) {
 	var value string
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE api_key_id=$1 AND date>=date_trunc('month',current_date)::date`, keyID).Scan(&value)
-	return domain.Decimal(value), err
+	if err != nil {
+		return "", err
+	}
+	return domain.ParseDecimal(value)
 }
 func (s *Store) MonthlyUserUsage(ctx context.Context, userID string) (int64, domain.Decimal, error) {
 	var tokens int64
 	var cost string
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&tokens, &cost)
-	return tokens, domain.Decimal(cost), err
+	if err != nil {
+		return 0, "", err
+	}
+	parsed, err := domain.ParseDecimal(cost)
+	return tokens, parsed, err
 }
 func (s *Store) RevokeAPIKey(ctx context.Context, keyID, userID string, admin bool) error {
 	tx, err := s.pool.Begin(ctx)
@@ -192,7 +203,18 @@ func (s *Store) ListRequestLogs(ctx context.Context, userID *string, limit, offs
 			&estimatedCost, &referenceCost, &savingsAmount, &l.LatencyMS, &l.TTFTMS, &l.UpstreamRequestID, &l.ErrorCode, &reason, &l.CreatedAt); err != nil {
 			return nil, err
 		}
-		l.EstimatedCost, l.ReferenceCost, l.SavingsAmount = domain.Decimal(estimatedCost), domain.Decimal(referenceCost), domain.Decimal(savingsAmount)
+		l.EstimatedCost, err = domain.ParseDecimal(estimatedCost)
+		if err != nil {
+			return nil, err
+		}
+		l.ReferenceCost, err = domain.ParseDecimal(referenceCost)
+		if err != nil {
+			return nil, err
+		}
+		l.SavingsAmount, err = domain.ParseDecimal(savingsAmount)
+		if err != nil {
+			return nil, err
+		}
 		_ = json.Unmarshal(reason, &l.SchedulerReason)
 		out = append(out, l)
 	}
@@ -259,10 +281,22 @@ func (s *Store) Dashboard(ctx context.Context, userID *string) (map[string]any, 
 	if err := s.pool.QueryRow(ctx, todayQuery, todayArgs...).Scan(&todayTokens, &todayCost, &savings); err != nil {
 		return nil, err
 	}
+	parsedTodayCost, err := domain.ParseDecimal(todayCost)
+	if err != nil {
+		return nil, err
+	}
+	parsedSavings, err := domain.ParseDecimal(savings)
+	if err != nil {
+		return nil, err
+	}
+	parsedCost, err := domain.ParseDecimal(cost)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{"total_requests": requests, "requests_today": today, "today_tokens": todayTokens,
-		"today_cost": domain.Decimal(todayCost), "savings_amount": domain.Decimal(savings), "input_tokens": input, "total_input_tokens": input,
+		"today_cost": parsedTodayCost, "savings_amount": parsedSavings, "input_tokens": input, "total_input_tokens": input,
 		"cached_input_tokens": cached, "total_cached_tokens": cached, "output_tokens": output, "total_output_tokens": output,
-		"estimated_cost": domain.Decimal(cost), "errors": errorsCount, "success_rate": success, "average_latency_ms": avgLatency,
+		"estimated_cost": parsedCost, "errors": errorsCount, "success_rate": success, "average_latency_ms": avgLatency,
 		"p95_latency_ms": p95Latency, "active_credentials": active, "healthy_credentials": healthy,
 		"rate_limited_credentials": rateLimited, "request_trend": requestTrend, "token_trend": tokenTrend,
 		"model_distribution": modelDistribution, "status_code_distribution": statusDistribution, "alerts": alerts}, nil
@@ -372,7 +406,11 @@ func (s *Store) UsageSeries(ctx context.Context, userID *string, days int) ([]ma
 		if err := rows.Scan(&date, &req, &in, &cached, &outTok, &cost, &errs); err != nil {
 			return nil, err
 		}
-		out = append(out, map[string]any{"date": date, "requests": req, "input_tokens": in, "cached_input_tokens": cached, "output_tokens": outTok, "cost": domain.Decimal(cost), "errors": errs})
+		parsedCost, parseErr := domain.ParseDecimal(cost)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		out = append(out, map[string]any{"date": date, "requests": req, "input_tokens": in, "cached_input_tokens": cached, "output_tokens": outTok, "cost": parsedCost, "errors": errs})
 	}
 	return out, rows.Err()
 }
@@ -383,14 +421,21 @@ func (s *Store) UsageSummary(ctx context.Context, userID string, days int) (map[
 		return nil, err
 	}
 	var requests, input, cached, output, errs int64
-	cost := domain.Decimal("0")
+	cost := domain.MustDecimal("0")
 	for _, row := range daily {
 		requests += asInt64(row["requests"])
 		input += asInt64(row["input_tokens"])
 		cached += asInt64(row["cached_input_tokens"])
 		output += asInt64(row["output_tokens"])
 		errs += asInt64(row["errors"])
-		cost = cost.Add(asDecimal(row["cost"]))
+		rowCost, decimalErr := asDecimal(row["cost"])
+		if decimalErr != nil {
+			return nil, decimalErr
+		}
+		cost, decimalErr = cost.Add(rowCost)
+		if decimalErr != nil {
+			return nil, decimalErr
+		}
 	}
 	rows, err := s.pool.Query(ctx, `SELECT model,sum(requests),sum(input_tokens+output_tokens),sum(cost_exact)::text FROM usage_daily WHERE user_id=$1 AND date>=current_date-$2::int GROUP BY model ORDER BY sum(requests) DESC`, userID, days)
 	if err != nil {
@@ -405,7 +450,11 @@ func (s *Store) UsageSummary(ctx context.Context, userID string, days int) (map[
 		if err := rows.Scan(&model, &req, &tokens, &modelCost); err != nil {
 			return nil, err
 		}
-		byModel = append(byModel, map[string]any{"model": model, "requests": req, "tokens": tokens, "cost": domain.Decimal(modelCost)})
+		parsedCost, parseErr := domain.ParseDecimal(modelCost)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		byModel = append(byModel, map[string]any{"model": model, "requests": req, "tokens": tokens, "cost": parsedCost})
 	}
 	return map[string]any{"requests": requests, "input_tokens": input, "cached_input_tokens": cached, "output_tokens": output, "estimated_cost": cost, "errors": errs, "daily": daily, "by_model": byModel}, rows.Err()
 }
@@ -417,9 +466,19 @@ func (s *Store) ConsoleOverview(ctx context.Context, userID string) (map[string]
 	if err != nil {
 		return nil, err
 	}
+	parsedCost, err := domain.ParseDecimal(cost)
+	if err != nil {
+		return nil, err
+	}
 	var monthlyTokens int64
 	var monthlyCost string
-	_ = s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&monthlyTokens, &monthlyCost)
+	if err = s.pool.QueryRow(ctx, `SELECT COALESCE(sum(input_tokens+output_tokens),0),COALESCE(sum(cost_exact),0)::text FROM usage_daily WHERE user_id=$1 AND date>=date_trunc('month',current_date)::date`, userID).Scan(&monthlyTokens, &monthlyCost); err != nil {
+		return nil, err
+	}
+	parsedMonthlyCost, err := domain.ParseDecimal(monthlyCost)
+	if err != nil {
+		return nil, err
+	}
 	var activeKeys, models int64
 	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE user_id=$1 AND status='ACTIVE' AND (expires_at IS NULL OR expires_at>now())`, userID).Scan(&activeKeys)
 	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM model_routes WHERE enabled=true`).Scan(&models)
@@ -443,7 +502,7 @@ func (s *Store) ConsoleOverview(ctx context.Context, userID string) (map[string]
 	if requests > 0 {
 		errorRate = float64(errorsToday) * 100 / float64(requests)
 	}
-	return map[string]any{"requests_today": requests, "tokens_today": tokens, "estimated_cost_today": domain.Decimal(cost), "error_rate": errorRate, "monthly_tokens_used": monthlyTokens, "monthly_cost_used": domain.Decimal(monthlyCost), "monthly_token_limit": u.MonthlyTokenLimit, "monthly_cost_limit": u.MonthlyCostLimit, "active_api_keys": activeKeys, "available_models": models, "recent_requests": recent, "request_trend": trend}, nil
+	return map[string]any{"requests_today": requests, "tokens_today": tokens, "estimated_cost_today": parsedCost, "error_rate": errorRate, "monthly_tokens_used": monthlyTokens, "monthly_cost_used": parsedMonthlyCost, "monthly_token_limit": u.MonthlyTokenLimit, "monthly_cost_limit": u.MonthlyCostLimit, "active_api_keys": activeKeys, "available_models": models, "recent_requests": recent, "request_trend": trend}, nil
 }
 
 func asInt64(v any) int64 {
@@ -457,23 +516,29 @@ func asInt64(v any) int64 {
 	}
 	return 0
 }
-func asDecimal(v any) domain.Decimal {
+func asDecimal(v any) (domain.Decimal, error) {
 	switch value := v.(type) {
 	case domain.Decimal:
-		return value
+		if err := value.Validate(); err != nil {
+			return "", err
+		}
+		return value, nil
 	case string:
-		return domain.Decimal(value)
+		return domain.ParseDecimal(value)
 	default:
-		return domain.Decimal("0")
+		return "", fmt.Errorf("unsupported decimal value %T", v)
 	}
 }
 
-func decimalFromStringPointer(value *string) *domain.Decimal {
+func decimalFromStringPointer(value *string) (*domain.Decimal, error) {
 	if value == nil {
-		return nil
+		return nil, nil
 	}
-	decimal := domain.Decimal(*value)
-	return &decimal
+	decimal, err := domain.ParseDecimal(*value)
+	if err != nil {
+		return nil, err
+	}
+	return &decimal, nil
 }
 
 func (s *Store) Audit(ctx context.Context, actor, action, resourceType, resourceID, ip string, after any) {

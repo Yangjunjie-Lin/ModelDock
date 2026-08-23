@@ -63,7 +63,14 @@ func admitProjectBudgets(ctx context.Context, d Dependencies, key domain.APIKey,
 			return false, err
 		}
 		tokenBlocked := policy.TokenLimit != nil && usage.TotalTokens+estimatedTokens > *policy.TokenLimit
-		costBlocked := policy.CostLimit != nil && usage.Cost.Compare(*policy.CostLimit) >= 0
+		costBlocked := false
+		if policy.CostLimit != nil {
+			comparison, compareErr := usage.Cost.Compare(*policy.CostLimit)
+			if compareErr != nil {
+				return false, compareErr
+			}
+			costBlocked = comparison >= 0
+		}
 		if !tokenBlocked && !costBlocked {
 			continue
 		}
@@ -99,10 +106,18 @@ func commitProjectBudget(ctx context.Context, d Dependencies, key domain.APIKey,
 		}
 		level := ""
 		webhookType := ""
-		if policy.EnforceHardLimit && budgetLimitReached(policy, usage) {
+		limitReached, err := budgetLimitReached(policy, usage)
+		if err != nil {
+			return err
+		}
+		thresholdReached, err := budgetThresholdReached(policy, usage)
+		if err != nil {
+			return err
+		}
+		if policy.EnforceHardLimit && limitReached {
 			level = "exceeded"
 			webhookType = "budget.exceeded"
-		} else if budgetThresholdReached(policy, usage) {
+		} else if thresholdReached {
 			level = "warning"
 			webhookType = "budget.warning"
 		}
@@ -118,22 +133,60 @@ func commitProjectBudget(ctx context.Context, d Dependencies, key domain.APIKey,
 	return nil
 }
 
-func budgetLimitReached(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) bool {
-	return (policy.TokenLimit != nil && usage.TotalTokens >= *policy.TokenLimit) ||
-		(policy.CostLimit != nil && usage.Cost.Compare(*policy.CostLimit) >= 0)
+func budgetLimitReached(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) (bool, error) {
+	if policy.TokenLimit != nil && usage.TotalTokens >= *policy.TokenLimit {
+		return true, nil
+	}
+	if policy.CostLimit == nil {
+		return false, nil
+	}
+	comparison, err := usage.Cost.Compare(*policy.CostLimit)
+	return comparison >= 0, err
 }
 
-func budgetThresholdReached(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) bool {
+func budgetThresholdReached(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) (bool, error) {
 	threshold := policy.AlertThreshold
-	if threshold.IsNegative() {
-		threshold = domain.Decimal("0")
+	negative, err := threshold.IsNegative()
+	if err != nil {
+		return false, err
 	}
-	if threshold.Compare(domain.Decimal("1")) > 0 {
-		threshold = domain.Decimal("1")
+	if negative {
+		threshold = domain.MustDecimal("0")
 	}
-	return (policy.TokenLimit != nil && domain.Decimal(strconv.FormatInt(usage.TotalTokens, 10)).Compare(
-		domain.Decimal(strconv.FormatInt(*policy.TokenLimit, 10)).Multiply(threshold)) >= 0) ||
-		(policy.CostLimit != nil && usage.Cost.Compare(policy.CostLimit.Multiply(threshold)) >= 0)
+	comparison, err := threshold.Compare(domain.MustDecimal("1"))
+	if err != nil {
+		return false, err
+	}
+	if comparison > 0 {
+		threshold = domain.MustDecimal("1")
+	}
+	if policy.TokenLimit != nil {
+		limit, multiplyErr := domain.MustDecimal(strconv.FormatInt(*policy.TokenLimit, 10)).Multiply(threshold)
+		if multiplyErr != nil {
+			return false, multiplyErr
+		}
+		tokenComparison, compareErr := domain.MustDecimal(strconv.FormatInt(usage.TotalTokens, 10)).Compare(limit)
+		if compareErr != nil {
+			return false, compareErr
+		}
+		if tokenComparison >= 0 {
+			return true, nil
+		}
+	}
+	if policy.CostLimit != nil {
+		limit, multiplyErr := policy.CostLimit.Multiply(threshold)
+		if multiplyErr != nil {
+			return false, multiplyErr
+		}
+		costComparison, compareErr := usage.Cost.Compare(limit)
+		if compareErr != nil {
+			return false, compareErr
+		}
+		if costComparison >= 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func budgetMetadata(policy domain.ProjectBudgetPolicy, usage domain.ProjectBudgetUsage) map[string]any {

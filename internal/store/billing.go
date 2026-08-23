@@ -25,14 +25,18 @@ func scanWallet(row pgx.Row) (domain.Wallet, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return wallet, ErrNotFound
 	}
-	if err == nil {
-		wallet.AvailableBalance = domain.Decimal(available)
-		wallet.ReservedBalance = domain.Decimal(reserved)
-		wallet.CreditLimit = domain.Decimal(credit)
-		wallet.RiskLimit = domain.Decimal(riskLimit)
-		wallet.RiskExposure = domain.Decimal(riskExposure)
+	if err != nil {
+		return wallet, err
 	}
-	return wallet, err
+	values := []*domain.Decimal{&wallet.AvailableBalance, &wallet.ReservedBalance, &wallet.CreditLimit, &wallet.RiskLimit, &wallet.RiskExposure}
+	for index, raw := range []string{available, reserved, credit, riskLimit, riskExposure} {
+		parsed, parseErr := domain.ParseDecimal(raw)
+		if parseErr != nil {
+			return wallet, parseErr
+		}
+		*values[index] = parsed
+	}
+	return wallet, nil
 }
 
 const walletColumns = `w.id,w.organization_id,o.name,w.currency,w.billing_mode,w.available_balance::text,
@@ -73,7 +77,15 @@ func (s *Store) WalletAllowsRequest(ctx context.Context, organizationID string) 
 	if wallet.Status != "ACTIVE" {
 		return false, nil
 	}
-	return wallet.BillingMode != "PREPAID" || wallet.AvailableBalance.Add(wallet.CreditLimit).IsPositive(), nil
+	if wallet.BillingMode != "PREPAID" {
+		return true, nil
+	}
+	available, err := wallet.AvailableBalance.Add(wallet.CreditLimit)
+	if err != nil {
+		return false, err
+	}
+	positive, err := available.IsPositive()
+	return positive, err
 }
 
 func (s *Store) UpdateWallet(ctx context.Context, wallet domain.Wallet) (domain.Wallet, error) {
@@ -132,7 +144,10 @@ func (s *Store) CreateWalletTransaction(ctx context.Context, transaction domain.
 	if err != nil {
 		return domain.WalletTransaction{}, err
 	}
-	transaction.BalanceAfter = domain.Decimal(balanceAfter)
+	transaction.BalanceAfter, err = domain.ParseDecimal(balanceAfter)
+	if err != nil {
+		return domain.WalletTransaction{}, err
+	}
 	journalType := transaction.TransactionType
 	if journalType != "TOPUP" {
 		journalType = "ADJUSTMENT"
@@ -171,7 +186,9 @@ func (s *Store) CreateWalletTransaction(ctx context.Context, transaction domain.
 	if err != nil {
 		return domain.WalletTransaction{}, err
 	}
-	if transaction.Amount.IsPositive() {
+	amountPositive := amount.Sign() > 0
+	amountNegative := amount.Sign() < 0
+	if amountPositive {
 		sourceKind := "ADJUSTMENT"
 		if transaction.TransactionType == "TOPUP" {
 			sourceKind = "TOPUP"
@@ -180,7 +197,7 @@ func (s *Store) CreateWalletTransaction(ctx context.Context, transaction domain.
 			"wallet-transaction:"+transaction.ID, transaction.Amount.String(), currency, false); err != nil {
 			return domain.WalletTransaction{}, err
 		}
-	} else if transaction.Amount.IsNegative() {
+	} else if amountNegative {
 		if err = allocateCashDebitTx(ctx, tx, transaction.WalletID, transaction.ID, formatRat(absAmount)); err != nil {
 			return domain.WalletTransaction{}, err
 		}
@@ -209,12 +226,19 @@ func scanWalletTransaction(row pgx.Row) (domain.WalletTransaction, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return transaction, ErrNotFound
 	}
-	if err == nil {
-		transaction.Amount = domain.Decimal(amount)
-		transaction.BalanceAfter = domain.Decimal(balanceAfter)
-		_ = json.Unmarshal(metadata, &transaction.Metadata)
+	if err != nil {
+		return transaction, err
 	}
-	return transaction, err
+	transaction.Amount, err = domain.ParseDecimal(amount)
+	if err != nil {
+		return transaction, err
+	}
+	transaction.BalanceAfter, err = domain.ParseDecimal(balanceAfter)
+	if err != nil {
+		return transaction, err
+	}
+	_ = json.Unmarshal(metadata, &transaction.Metadata)
+	return transaction, nil
 }
 
 func (s *Store) ListWalletTransactions(ctx context.Context, walletID string, limit, offset int) ([]domain.WalletTransaction, error) {

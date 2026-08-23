@@ -527,10 +527,11 @@ func registerProjectBudgetV2(g *gin.RouterGroup, d Dependencies, admin bool) {
 		if policy.Status == "" {
 			policy.Status = "ACTIVE"
 		}
+		thresholdComparison, thresholdErr := policy.AlertThreshold.Compare(domain.MustDecimal("1"))
 		if strings.TrimSpace(policy.Name) == "" || (policy.Period != "DAILY" && policy.Period != "MONTHLY") ||
-			(policy.Status != "ACTIVE" && policy.Status != "DISABLED") || policy.AlertThreshold.IsNegative() || policy.AlertThreshold.Compare(domain.Decimal("1")) > 0 ||
+			(policy.Status != "ACTIVE" && policy.Status != "DISABLED") || invalidOrNegativeDecimal(policy.AlertThreshold) || thresholdErr != nil || thresholdComparison > 0 ||
 			(policy.TokenLimit == nil && policy.CostLimit == nil) || (policy.TokenLimit != nil && *policy.TokenLimit < 0) ||
-			(policy.CostLimit != nil && policy.CostLimit.IsNegative()) {
+			(policy.CostLimit != nil && invalidOrNegativeDecimal(*policy.CostLimit)) {
 			openAIError(c, http.StatusBadRequest, "invalid_request", "name, period, at least one non-negative limit, and a threshold from 0 to 1 are required.")
 			return
 		}

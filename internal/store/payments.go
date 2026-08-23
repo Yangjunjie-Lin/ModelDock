@@ -74,8 +74,9 @@ func (s *Store) CreateRechargeOrder(ctx context.Context, request CreateRechargeO
 	request.Currency = strings.ToUpper(strings.TrimSpace(request.Currency))
 	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
 	request.PaymentProvider = strings.ToLower(strings.TrimSpace(request.PaymentProvider))
+	amountPositive, amountErr := request.Amount.IsPositive()
 	if request.PlatformOrderNo == "" || request.OrganizationID == "" || request.IdempotencyKey == "" ||
-		len(request.IdempotencyKey) > 200 || !request.Amount.IsPositive() || len(request.Currency) != 3 ||
+		len(request.IdempotencyKey) > 200 || amountErr != nil || !amountPositive || len(request.Currency) != 3 ||
 		len(request.Region) != 2 || request.ExpiresAt.Before(time.Now().UTC()) {
 		return domain.RechargeOrder{}, false, errors.New("invalid recharge order")
 	}
@@ -663,7 +664,8 @@ func (s *Store) CreateRefundOrder(ctx context.Context, request CreateRefundOrder
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.RefundOrder{}, false, err
 	}
-	if order.Status != "CREDITED" || !request.Amount.IsPositive() ||
+	amountPositive, amountErr := request.Amount.IsPositive()
+	if order.Status != "CREDITED" || amountErr != nil || !amountPositive ||
 		request.IdempotencyKey == "" || strings.TrimSpace(request.Reason) == "" {
 		return domain.RefundOrder{}, false, ErrPaymentState
 	}

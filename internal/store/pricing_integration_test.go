@@ -58,7 +58,8 @@ func TestCommercialPricingIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if referenceCost.Compare(domain.Decimal("1.000000000001")) != 0 {
+	comparison, compareErr := referenceCost.Compare(domain.MustDecimal("1.000000000001"))
+	if compareErr != nil || comparison != 0 {
 		t.Fatalf("exact project reference cost=%s", referenceCost)
 	}
 	cost, err := s.CreateProviderCostPriceBook(ctx, domain.ProviderCostPriceBook{ProviderID: providerID, ModelID: modelID, InputTokenCost: "1", CachedInputTokenCost: "0.25", OutputTokenCost: "2", RequestFixedCost: "0", Currency: "USD", Unit: 1_000_000, EffectiveAt: now.Add(-3 * time.Hour), Source: "integration", ApprovalStatus: "APPROVED"}, nil)

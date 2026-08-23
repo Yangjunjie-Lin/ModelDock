@@ -307,7 +307,10 @@ func scanUser(row pgx.Row) (domain.User, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
-	u.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
+	if err != nil {
+		return u, err
+	}
+	u.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
 	return u, err
 }
 

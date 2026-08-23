@@ -167,13 +167,16 @@ func TestBudgetThresholdAndHardLimitBoundaries(t *testing.T) {
 	tokenLimit := int64(100)
 	costLimit := domain.Decimal("10")
 	policy := domain.ProjectBudgetPolicy{TokenLimit: &tokenLimit, CostLimit: &costLimit, AlertThreshold: domain.Decimal("0.8")}
-	if budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 79, Cost: domain.Decimal("7.99")}) {
+	reached, err := budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 79, Cost: domain.Decimal("7.99")})
+	if err != nil || reached {
 		t.Fatal("threshold triggered before either dimension reached 80 percent")
 	}
-	if !budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 80}) {
+	reached, err = budgetThresholdReached(policy, domain.ProjectBudgetUsage{TotalTokens: 80})
+	if err != nil || !reached {
 		t.Fatal("token threshold did not trigger at the boundary")
 	}
-	if !budgetLimitReached(policy, domain.ProjectBudgetUsage{Cost: domain.Decimal("10")}) {
+	reached, err = budgetLimitReached(policy, domain.ProjectBudgetUsage{Cost: domain.Decimal("10")})
+	if err != nil || !reached {
 		t.Fatal("hard cost limit did not trigger at the boundary")
 	}
 }

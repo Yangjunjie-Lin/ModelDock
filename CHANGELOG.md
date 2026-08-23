@@ -6,6 +6,31 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced self-declared commercial and runtime fields with signed Evidence
+  Attestation V2 and target-environment Runtime Attestation V2.
+- Added repository-locked Draft 2020-12 schema validation, mandatory Gate ID /
+  profile / role catalogs, and 31 signature, schema, runtime, and same-digest
+  negative scenarios.
+- Made Go-live documents output-only and moved exact Commit/Tree/Workflow/Image
+  identity into clean-checkout CI artifacts.
+- Reordered formal release execution so Server, Admin, and Console candidates
+  are built once, scanned and attested, tested by immutable digest, and promoted
+  without rebuilding.
+- Changed Decimal arithmetic and comparison to return errors, added strict
+  `ParseDecimal`, restricted `MustDecimal` to constants/tests, and made money
+  database scans and funding settlement fail on invalid values.
+
+### Security
+
+- Added Ed25519 signature verification, trusted issuer/role allowlists anchored
+  by an out-of-repository policy hash, controlled evidence SHA verification,
+  expiry/future-date checks, and exact Commit/Tree binding.
+- Kept all external commercial gates and runtime claims fail-closed; no legal,
+  license, payment, Provider, supplier, tax, security, or operations approval
+  is asserted by this change.
+
 ## [3.0.0-beta.1] - 2026-08-21
 
 ### Changed

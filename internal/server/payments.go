@@ -168,7 +168,7 @@ func registerAdminPaymentRoutes(g *gin.RouterGroup, d Dependencies) {
 			Reason         string         `json:"reason"`
 			IdempotencyKey string         `json:"idempotency_key"`
 		}
-		if c.ShouldBindJSON(&input) != nil || !input.Amount.IsPositive() || strings.TrimSpace(input.Reason) == "" {
+		if c.ShouldBindJSON(&input) != nil || !validPositiveDecimal(input.Amount) || strings.TrimSpace(input.Reason) == "" {
 			openAIError(c, http.StatusBadRequest, "invalid_request", "A positive exact amount and reason are required.")
 			return
 		}
@@ -305,7 +305,7 @@ func createRechargeOrder(c *gin.Context, d Dependencies, organizationID string) 
 		PaymentProvider string         `json:"payment_provider"`
 		IdempotencyKey  string         `json:"idempotency_key"`
 	}
-	if c.ShouldBindJSON(&input) != nil || !input.Amount.IsPositive() {
+	if c.ShouldBindJSON(&input) != nil || !validPositiveDecimal(input.Amount) {
 		openAIError(c, http.StatusBadRequest, "invalid_request", "A positive exact amount is required.")
 		return
 	}

@@ -113,7 +113,10 @@ func scanTeam(row pgx.Row) (domain.Team, error) {
 		return team, ErrNotFound
 	}
 	if err == nil {
-		team.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
+		team.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
+		if err != nil {
+			return team, err
+		}
 		_ = json.Unmarshal(metadata, &team.Metadata)
 		if team.Metadata == nil {
 			team.Metadata = map[string]any{}

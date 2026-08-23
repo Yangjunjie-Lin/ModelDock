@@ -30,6 +30,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Set up Node.js for the pinned evidence validator
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tools/commercial-evidence/package-lock.json
+      - name: Install the repository-locked evidence validator
+        working-directory: tools/commercial-evidence
+        run: npm ci --ignore-scripts
       - name: Verify gofmt
         shell: bash
         run: |
@@ -40,10 +49,11 @@ jobs:
         run: |
           ./scripts/verify-exact-money.ps1
           ./tests/release/verify-commercial-readiness.ps1
+          ./scripts/update-readme-commercial-status.ps1 -Check
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        run: go test -count=1 -timeout=300s ./...
 
   frontend:
     name: Frontend (${{ matrix.app }})
@@ -109,6 +119,8 @@ jobs:
           npm --prefix apps/admin-web audit --audit-level=high
           npm --prefix apps/console-web ci
           npm --prefix apps/console-web audit --audit-level=high
+          npm --prefix tools/commercial-evidence ci --ignore-scripts
+          npm --prefix tools/commercial-evidence audit --audit-level=high
       - name: Review dependency changes
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
@@ -133,6 +145,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+  workflow-security:
+    name: Actionlint and workflow permission audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install checksum-verified Actionlint 1.7.7
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --output /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  /tmp/actionlint.tar.gz' | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -version
+      - name: Validate workflow syntax
+        run: /tmp/actionlint
+      - name: Audit Action pins and permission scopes
+        shell: pwsh
+        run: ./scripts/verify-workflow-security.ps1
 
   compose:
     name: Docker Compose validation
@@ -177,10 +209,38 @@ jobs:
       - name: Build final CI images
         shell: bash
         run: |
+          mkdir -p .cache
           common=(--build-arg VERSION="${{ steps.source.outputs.version }}" --build-arg COMMIT="$GITHUB_SHA" --build-arg BUILD_DATE="${{ steps.source.outputs.build_date }}" --build-arg SOURCE_DATE_EPOCH="${{ steps.source.outputs.source_epoch }}")
           docker build -f deploy/docker/Dockerfile.relaydock "${common[@]}" -t "modeldock/ci-server:$GITHUB_SHA" .
           docker build -f deploy/docker/Dockerfile.admin-web "${common[@]}" -t "modeldock/ci-admin-web:$GITHUB_SHA" .
           docker build -f deploy/docker/Dockerfile.console-web "${common[@]}" -t "modeldock/ci-console-web:$GITHUB_SHA" .
+      - name: Verify all candidate images run as non-root
+        shell: bash
+        run: |
+          test "$(docker image inspect modeldock/ci-server:$GITHUB_SHA --format '{{.Config.User}}')" = '10001:10001'
+          test "$(docker image inspect modeldock/ci-admin-web:$GITHUB_SHA --format '{{.Config.User}}')" = '101:101'
+          test "$(docker image inspect modeldock/ci-console-web:$GITHUB_SHA --format '{{.Config.User}}')" = '101:101'
+      - name: Generate Server SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: modeldock/ci-server:${{ github.sha }}
+          format: spdx-json
+          output-file: .cache/server.spdx.json
+          upload-artifact: false
+      - name: Generate Admin SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: modeldock/ci-admin-web:${{ github.sha }}
+          format: spdx-json
+          output-file: .cache/admin.spdx.json
+          upload-artifact: false
+      - name: Generate Console SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: modeldock/ci-console-web:${{ github.sha }}
+          format: spdx-json
+          output-file: .cache/console.spdx.json
+          upload-artifact: false
       - name: Scan server image
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
@@ -257,6 +317,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: Set up Node.js for signed evidence tests
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tools/commercial-evidence/package-lock.json
+      - name: Install the repository-locked evidence validator
+        working-directory: tools/commercial-evidence
+        run: npm ci --ignore-scripts
       - name: Create isolated test configuration
         shell: pwsh
         run: ./scripts/new-ci-env.ps1 -OutputPath .env
@@ -264,7 +333,7 @@ jobs:
         run: mkdir -p data/postgres data/redis data/cockpit logs .cache/commercial-results
       - name: Start isolated PostgreSQL and Redis
         run: docker compose --env-file .env up -d --wait --wait-timeout 120 postgres redis
-      - name: Build exact-commit integration image
+      - name: Build exact-commit integration images once
         shell: bash
         run: |
           version="$(tr -d '\r\n' < VERSION)"
@@ -274,9 +343,24 @@ jobs:
             --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
             --build-arg BUILD_DATE="$build_date" --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
             -t relaydock/server:local .
+          docker build -f deploy/docker/Dockerfile.admin-web \
+            --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$build_date" --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
+            -t relaydock/admin-web:local .
+          docker build -f deploy/docker/Dockerfile.console-web \
+            --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$build_date" --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
+            -t relaydock/console-web:local .
       - name: Run every commercial and Marketplace suite
         shell: pwsh
-        run: ./scripts/verify-commercial-integration.ps1 -EnvFile .env -ConfirmIsolatedTestDatabase -OutputDirectory .cache/commercial-results
+        run: ./scripts/verify-commercial-integration.ps1 -EnvFile .env -ConfirmIsolatedTestDatabase -OutputDirectory .cache/commercial-results -ServerImage relaydock/server:local -AdminImage relaydock/admin-web:local -ConsoleImage relaydock/console-web:local
+      - name: Generate and verify exact-commit engineering reports
+        shell: pwsh
+        run: |
+          ./scripts/verify-commercial-readiness.ps1 -Profile ENGINEERING_PREVIEW -Commit $env:GITHUB_SHA -TestReportPath .cache/commercial-results/commercial-test-evidence.json -ReportOutput .cache/commercial-results/commercial-readiness-report.md -GoLiveOutput .cache/commercial-results/go-live-checklist.md
+          $report = Get-Content -LiteralPath .cache/commercial-results/go-live-checklist.md -Raw
+          if ($report -notmatch [regex]::Escape("- Commit: $env:GITHUB_SHA")) { throw 'Generated Go-live Report commit does not equal HEAD.' }
+          if ((git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) { throw 'Checkout HEAD changed during commercial verification.' }
       - name: Collect safe service state on failure
         if: failure()
         run: docker compose --env-file .env ps > .cache/commercial-results/compose-state.txt

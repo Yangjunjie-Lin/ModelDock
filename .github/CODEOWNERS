@@ -7,6 +7,10 @@
 /internal/crypto/                      @Yangjunjie-Lin
 /internal/store/                       @Yangjunjie-Lin
 /deploy/                               @Yangjunjie-Lin
+/release/                              @Yangjunjie-Lin
+/scripts/verify-commercial-evidence.mjs @Yangjunjie-Lin
+/scripts/verify-commercial-readiness.ps1 @Yangjunjie-Lin
+/tests/release/                        @Yangjunjie-Lin
 /SECURITY.md                           @Yangjunjie-Lin
 /RELEASE.md                            @Yangjunjie-Lin
 /docs/licensing-decision.md            @Yangjunjie-Lin

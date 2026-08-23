@@ -207,8 +207,8 @@ func qualityTrafficAdmitted(requestID, providerID, routeID string, capBPS int) b
 		return false
 	}
 	sum := sha256.Sum256([]byte(requestID + "\x00" + providerID + "\x00" + routeID))
-	bucket := int(binary.BigEndian.Uint64(sum[:8]) % 10000)
-	return bucket < capBPS
+	bucket := binary.BigEndian.Uint64(sum[:8]) % 10000
+	return bucket < uint64(capBPS)
 }
 
 func candidateMatches(candidate routeCandidate, config map[string]any) bool {

@@ -539,8 +539,14 @@ func scanBudgetPolicy(row pgx.Row) (domain.ProjectBudgetPolicy, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}
-	out.CostLimit = decimalFromStringPointer(costLimit)
-	out.AlertThreshold = domain.Decimal(alertThreshold)
+	if err != nil {
+		return out, err
+	}
+	out.CostLimit, err = decimalFromStringPointer(costLimit)
+	if err != nil {
+		return out, err
+	}
+	out.AlertThreshold, err = domain.ParseDecimal(alertThreshold)
 	return out, err
 }
 
@@ -575,8 +581,12 @@ func (s *Store) UpsertProjectBudgetPolicy(ctx context.Context, policy domain.Pro
 	if policy.Status == "" {
 		policy.Status = "ACTIVE"
 	}
-	if policy.AlertThreshold.IsZero() {
-		policy.AlertThreshold = domain.Decimal("0.8")
+	if strings.TrimSpace(policy.AlertThreshold.String()) == "" {
+		policy.AlertThreshold = domain.MustDecimal("0.8")
+	} else if zero, err := policy.AlertThreshold.IsZero(); err != nil {
+		return domain.ProjectBudgetPolicy{}, err
+	} else if zero {
+		policy.AlertThreshold = domain.MustDecimal("0.8")
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO project_budget_policies(id,project_id,name,period,token_limit,cost_limit,cost_limit_exact,alert_threshold,enforce_hard_limit,status)
 		VALUES($1,$2,$3,$4,$5,round($6::numeric,8),$6,$7,$8,$9) ON CONFLICT(project_id,name) DO UPDATE SET

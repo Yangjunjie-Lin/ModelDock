@@ -31,7 +31,10 @@ func scanV2APIKey(row pgx.Row) (domain.APIKey, error) {
 	if err != nil {
 		return key, err
 	}
-	key.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
+	key.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
+	if err != nil {
+		return key, err
+	}
 	_ = json.Unmarshal(allowed, &key.AllowedModels)
 	if key.AllowedModels == nil {
 		key.AllowedModels = []string{}
@@ -207,7 +210,10 @@ func (s *Store) AuthenticateAPIKeyVersion(ctx context.Context, hash []byte) (dom
 	if err != nil {
 		return domain.APIKeyAuthentication{}, err
 	}
-	authn.Key.MonthlyCostLimit = decimalFromStringPointer(monthlyCostLimit)
+	authn.Key.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
+	if err != nil {
+		return domain.APIKeyAuthentication{}, err
+	}
 	_ = json.Unmarshal(allowed, &authn.Key.AllowedModels)
 	if authn.Key.AllowedModels == nil {
 		authn.Key.AllowedModels = []string{}

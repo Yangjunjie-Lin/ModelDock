@@ -175,7 +175,7 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		return
 	}
 	requestedModel = strings.TrimSpace(requestedModel)
-	logEntry := domain.RequestLog{RequestID: requestID(c), TraceID: traceID(c), UserID: key.UserID, APIKeyID: key.ID, OrganizationID: key.OrganizationID, ProjectID: key.ProjectID, RequestedModel: requestedModel, Endpoint: endpoint, Streaming: false, CreatedAt: time.Now().UTC()}
+	logEntry := domain.RequestLog{RequestID: requestID(c), TraceID: traceID(c), UserID: key.UserID, APIKeyID: key.ID, OrganizationID: key.OrganizationID, ProjectID: key.ProjectID, RequestedModel: requestedModel, Endpoint: endpoint, Streaming: false, EstimatedCost: domain.MustDecimal("0"), ReferenceCost: domain.MustDecimal("0"), SavingsAmount: domain.MustDecimal("0"), CreatedAt: time.Now().UTC()}
 	var providerAttemptStarted time.Time
 	var providerAttemptTTFTMS *int64
 	stream, _ := payload["stream"].(bool)
@@ -475,7 +475,15 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			openAIError(c, 503, "service_unavailable", "Quota state is temporarily unavailable.")
 			return
 		}
-		if used.Compare(*key.MonthlyCostLimit) >= 0 {
+		quotaReached, compareErr := decimalAtLeast(used, *key.MonthlyCostLimit)
+		if compareErr != nil {
+			logEntry.StatusCode = 503
+			logEntry.ErrorCode = "quota_state_invalid"
+			d.Metrics.Error()
+			openAIError(c, 503, "service_unavailable", "The monthly cost quota contains an invalid amount.")
+			return
+		}
+		if quotaReached {
 			logEntry.StatusCode = 403
 			logEntry.ErrorCode = "quota_exceeded"
 			d.Metrics.Error()
@@ -500,7 +508,18 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			openAIError(c, 503, "service_unavailable", "Quota state is temporarily unavailable.")
 			return
 		}
-		if (user.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *user.MonthlyTokenLimit) || (user.MonthlyCostLimit != nil && cost.Compare(*user.MonthlyCostLimit) >= 0) {
+		costBlocked := false
+		if user.MonthlyCostLimit != nil {
+			costBlocked, err = decimalAtLeast(cost, *user.MonthlyCostLimit)
+			if err != nil {
+				logEntry.StatusCode = 503
+				logEntry.ErrorCode = "quota_state_invalid"
+				d.Metrics.Error()
+				openAIError(c, 503, "service_unavailable", "The user monthly cost quota contains an invalid amount.")
+				return
+			}
+		}
+		if (user.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *user.MonthlyTokenLimit) || costBlocked {
 			logEntry.StatusCode = 403
 			logEntry.ErrorCode = "quota_exceeded"
 			d.Metrics.Error()
@@ -526,8 +545,18 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 				openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "Team quota state is temporarily unavailable.")
 				return
 			}
-			if (team.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *team.MonthlyTokenLimit) ||
-				(team.MonthlyCostLimit != nil && cost.Compare(*team.MonthlyCostLimit) >= 0) {
+			costBlocked := false
+			if team.MonthlyCostLimit != nil {
+				costBlocked, err = decimalAtLeast(cost, *team.MonthlyCostLimit)
+				if err != nil {
+					logEntry.StatusCode = http.StatusServiceUnavailable
+					logEntry.ErrorCode = "quota_state_invalid"
+					d.Metrics.Error()
+					openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "The team monthly cost quota contains an invalid amount.")
+					return
+				}
+			}
+			if (team.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *team.MonthlyTokenLimit) || costBlocked {
 				logEntry.StatusCode = http.StatusForbidden
 				logEntry.ErrorCode = "team_quota_exceeded"
 				d.Metrics.Error()
@@ -863,12 +892,23 @@ streamLoop:
 	logEntry.UsageSource = fundingUsageSource
 	if cost, err := d.Store.CalculateCost(c.Request.Context(), projectRoute.ProviderID, projectRoute.UpstreamModel, usage.Input, usage.Cached, usage.Output); err == nil {
 		logEntry.EstimatedCost = cost
+	} else {
+		logEntry.ErrorCode = "pricing_calculation_invalid"
+		d.Metrics.Error()
+		d.Logger.Error("pricing_calculation_invalid", "request_id", logEntry.RequestID, "error", err)
 	}
 	if routingDecision.Strategy != "manual" {
 		if reference, err := d.Store.CalculateProjectReferenceCost(c.Request.Context(), key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
 			logEntry.ReferenceCost = reference
-			if reference.Compare(logEntry.EstimatedCost) > 0 {
-				logEntry.SavingsAmount = reference.Subtract(logEntry.EstimatedCost)
+			comparison, compareErr := reference.Compare(logEntry.EstimatedCost)
+			if compareErr != nil {
+				logEntry.ErrorCode = "pricing_calculation_invalid"
+			} else if comparison > 0 {
+				if savings, subtractErr := reference.Subtract(logEntry.EstimatedCost); subtractErr == nil {
+					logEntry.SavingsAmount = savings
+				} else {
+					logEntry.ErrorCode = "pricing_calculation_invalid"
+				}
 			}
 		}
 	}

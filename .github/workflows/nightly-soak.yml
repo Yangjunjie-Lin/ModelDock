@@ -38,6 +38,7 @@ jobs:
       - name: Create isolated configuration and directories
         shell: pwsh
         run: |
+          if ((git status --porcelain).Count -ne 0) { throw 'Nightly formal test checkout must be clean.' }
           ./scripts/new-ci-env.ps1 -OutputPath .env
           New-Item -ItemType Directory -Force data/postgres,data/redis,data/cockpit,logs,.cache/nightly-soak | Out-Null
       - name: Build and start exact-commit test topology
@@ -73,7 +74,13 @@ jobs:
               throw
             }
           } while ([DateTimeOffset]::UtcNow -lt $deadline)
-          [ordered]@{ commit_sha=$env:GITHUB_SHA; migration=24; iterations=$iteration; completed_at=[DateTimeOffset]::UtcNow.ToString('o'); status='PASS' } |
+          $digest = (docker image inspect relaydock/server:local --format '{{.Id}}').Trim()
+          [ordered]@{
+            schema_version='2.0.0'; repository=$env:GITHUB_REPOSITORY; commit_sha=$env:GITHUB_SHA
+            tree_sha=(git rev-parse 'HEAD^{tree}').Trim(); migration_version='0024_exact_money_and_release_evidence'
+            version=(Get-Content VERSION -Raw).Trim(); workflow_run_id=$env:GITHUB_RUN_ID; ref_name=$env:GITHUB_REF_NAME
+            server_image_digest=$digest; iterations=$iteration; completed_at=[DateTimeOffset]::UtcNow.ToString('o'); status='PASS'
+          } |
             ConvertTo-Json | Set-Content .cache/nightly-soak/summary.json -Encoding utf8
       - name: Collect safe service state on failure
         if: failure()

@@ -3,7 +3,9 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,38 @@ import (
 // silently round a NUMERIC value while decoding it.
 type Decimal string
 
+var decimalPattern = regexp.MustCompile(`^[+-]?(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$`)
+
+// ParseDecimal validates the exact NUMERIC(30,12) representation used by all
+// commercial money paths. Empty values, exponents, fractions, excessive scale,
+// and values outside the database range are errors; callers must decide
+// explicitly whether an optional absence means zero.
+func ParseDecimal(value string) (Decimal, error) {
+	value = strings.TrimSpace(value)
+	if !decimalPattern.MatchString(value) {
+		return "", fmt.Errorf("invalid NUMERIC(30,12) decimal %q", value)
+	}
+	if _, ok := new(big.Rat).SetString(value); !ok {
+		return "", fmt.Errorf("invalid decimal %q", value)
+	}
+	return Decimal(value), nil
+}
+
+// MustDecimal is for compile-time constants and tests. Request, database, and
+// worker inputs must use ParseDecimal and propagate the returned error.
+func MustDecimal(value string) Decimal {
+	decimal, err := ParseDecimal(value)
+	if err != nil {
+		panic(err)
+	}
+	return decimal
+}
+
+func (d Decimal) Validate() error {
+	_, err := ParseDecimal(string(d))
+	return err
+}
+
 func (d *Decimal) UnmarshalJSON(raw []byte) error {
 	value := strings.TrimSpace(string(raw))
 	if strings.HasPrefix(value, `"`) {
@@ -25,81 +59,103 @@ func (d *Decimal) UnmarshalJSON(raw []byte) error {
 		value = strings.TrimSpace(parsed)
 	}
 	if value == "" || value == "null" {
-		value = "0"
+		return errors.New("decimal is required")
 	}
-	if _, ok := new(big.Rat).SetString(value); !ok {
-		return errors.New("invalid decimal")
+	parsed, err := ParseDecimal(value)
+	if err != nil {
+		return err
 	}
-	*d = Decimal(value)
+	*d = parsed
 	return nil
 }
 
 func (d Decimal) MarshalJSON() ([]byte, error) {
-	value := strings.TrimSpace(string(d))
-	if value == "" {
-		value = "0"
+	value, err := ParseDecimal(string(d))
+	if err != nil {
+		return nil, err
 	}
-	if _, ok := new(big.Rat).SetString(value); !ok {
-		return nil, errors.New("invalid decimal")
-	}
-	return json.Marshal(value)
+	return json.Marshal(string(value))
 }
 func (d Decimal) String() string {
-	if strings.TrimSpace(string(d)) == "" {
-		return "0"
-	}
 	return string(d)
 }
-func (d Decimal) IsZero() bool {
-	r, ok := new(big.Rat).SetString(d.String())
-	return ok && r.Sign() == 0
+func (d Decimal) IsZero() (bool, error) {
+	r, err := decimalRat(d)
+	return err == nil && r.Sign() == 0, err
 }
-func (d Decimal) IsNegative() bool {
-	r, ok := new(big.Rat).SetString(d.String())
-	return ok && r.Sign() < 0
+func (d Decimal) IsNegative() (bool, error) {
+	r, err := decimalRat(d)
+	return err == nil && r.Sign() < 0, err
 }
-func (d Decimal) IsPositive() bool {
-	r, ok := new(big.Rat).SetString(d.String())
-	return ok && r.Sign() > 0
+func (d Decimal) IsPositive() (bool, error) {
+	r, err := decimalRat(d)
+	return err == nil && r.Sign() > 0, err
 }
-func (d Decimal) Add(other Decimal) Decimal {
-	a := decimalRatOrZero(d)
-	b := decimalRatOrZero(other)
+func (d Decimal) Add(other Decimal) (Decimal, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return "", err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return "", err
+	}
 	a.Add(a, b)
-	return Decimal(a.FloatString(12))
+	return ParseDecimal(a.FloatString(12))
 }
 
-func (d Decimal) Subtract(other Decimal) Decimal {
-	a := decimalRatOrZero(d)
-	b := decimalRatOrZero(other)
+func (d Decimal) Subtract(other Decimal) (Decimal, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return "", err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return "", err
+	}
 	a.Sub(a, b)
-	return Decimal(a.FloatString(12))
+	return ParseDecimal(a.FloatString(12))
 }
 
 // Compare returns -1, 0, or 1 without crossing a binary floating-point
-// boundary. Decimal values are validated when they enter the JSON or database
-// boundary; an invalid in-process value is treated as zero as a fail-closed
-// compatibility default.
-func (d Decimal) Compare(other Decimal) int {
-	a := decimalRatOrZero(d)
-	b := decimalRatOrZero(other)
-	return a.Cmp(b)
+// boundary. Invalid operands are returned as errors and can never silently
+// become zero.
+func (d Decimal) Compare(other Decimal) (int, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return 0, err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return 0, err
+	}
+	return a.Cmp(b), nil
 }
 
 // Multiply returns an exact base-10 product normalized to the database money
 // scale. It is used for thresholds and reports as well as settled amounts.
-func (d Decimal) Multiply(other Decimal) Decimal {
-	a := decimalRatOrZero(d)
-	b := decimalRatOrZero(other)
-	return Decimal(new(big.Rat).Mul(a, b).FloatString(12))
+func (d Decimal) Multiply(other Decimal) (Decimal, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return "", err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return "", err
+	}
+	return ParseDecimal(new(big.Rat).Mul(a, b).FloatString(12))
 }
 
-func decimalRatOrZero(value Decimal) *big.Rat {
-	parsed, ok := new(big.Rat).SetString(value.String())
-	if !ok {
-		return new(big.Rat)
+func decimalRat(value Decimal) (*big.Rat, error) {
+	validated, err := ParseDecimal(string(value))
+	if err != nil {
+		return nil, err
 	}
-	return parsed
+	parsed, ok := new(big.Rat).SetString(string(validated))
+	if !ok {
+		return nil, errors.New("invalid decimal")
+	}
+	return parsed, nil
 }
 
 type User struct {

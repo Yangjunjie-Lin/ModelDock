@@ -682,8 +682,15 @@ func (s *Store) CalculateProjectReferenceCost(ctx context.Context, projectID str
 		if calculateErr != nil {
 			return domain.Decimal("0"), calculateErr
 		}
-		cost := domain.Decimal(result.ProviderCost)
-		if cost.Compare(highest) > 0 {
+		cost, decimalErr := domain.ParseDecimal(result.ProviderCost)
+		if decimalErr != nil {
+			return domain.Decimal("0"), decimalErr
+		}
+		comparison, decimalErr := cost.Compare(highest)
+		if decimalErr != nil {
+			return domain.Decimal("0"), decimalErr
+		}
+		if comparison > 0 {
 			highest = cost
 		}
 	}

@@ -6,51 +6,73 @@ import (
 )
 
 func TestDecimalJSONPreservesInputDigits(t *testing.T) {
-	var value struct {
-		Amount Decimal `json:"amount"`
-	}
-	if err := json.Unmarshal([]byte(`{"amount":"0.100000000001"}`), &value); err != nil {
+	var value Decimal
+	if err := json.Unmarshal([]byte(`"123456789012345678.123456789012"`), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.Amount.String() != "0.100000000001" {
-		t.Fatalf("amount=%s", value.Amount)
+	if value.String() != "123456789012345678.123456789012" {
+		t.Fatalf("unexpected value %s", value)
 	}
-	raw, err := json.Marshal(value)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != `{"amount":"0.100000000001"}` {
-		t.Fatalf("json=%s", raw)
+	if string(encoded) != `"123456789012345678.123456789012"` {
+		t.Fatalf("unexpected JSON %s", encoded)
 	}
 }
 
-func TestDecimalArithmeticIsExactAtMoneyScale(t *testing.T) {
-	if got := Decimal("0.1").Add(Decimal("0.2")); got.Compare(Decimal("0.3")) != 0 {
-		t.Fatalf("0.1 + 0.2 = %s", got)
+func TestDecimalArithmeticReturnsErrorsAndRoundsAtMoneyScale(t *testing.T) {
+	got, err := MustDecimal("0.1").Add(MustDecimal("0.2"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := Decimal("999999999999999999.999999999999").Subtract(Decimal("0.000000000001")); got.String() != "999999999999999999.999999999998" {
-		t.Fatalf("large-scale subtraction = %s", got)
+	comparison, err := got.Compare(MustDecimal("0.3"))
+	if err != nil || comparison != 0 {
+		t.Fatalf("0.1+0.2=%s comparison=%d err=%v", got, comparison, err)
 	}
-	if got := Decimal("12.345678901234").Multiply(Decimal("0.8")); got.String() != "9.876543120987" {
-		t.Fatalf("12-place multiplication = %s", got)
+	got, err = MustDecimal("999999999999999999.999999999999").Subtract(MustDecimal("0.000000000001"))
+	if err != nil || got.String() != "999999999999999999.999999999998" {
+		t.Fatalf("unexpected subtraction %s err=%v", got, err)
+	}
+	got, err = MustDecimal("12.345678901234").Multiply(MustDecimal("0.8"))
+	if err != nil || got.String() != "9.876543120987" {
+		t.Fatalf("unexpected product %s err=%v", got, err)
+	}
+	got, err = MustDecimal("0.000000000001").Multiply(MustDecimal("0.5"))
+	if err != nil || got.String() != "0.000000000001" {
+		t.Fatalf("rounding boundary=%s err=%v", got, err)
 	}
 }
 
-func TestDecimalRejectsInvalidJSONAndPreservesZero(t *testing.T) {
-	for _, raw := range []string{`{"amount":"NaN"}`, `{"amount":"1e309x"}`} {
-		var value struct {
-			Amount Decimal `json:"amount"`
-		}
-		if err := json.Unmarshal([]byte(raw), &value); err == nil {
-			t.Fatalf("invalid decimal accepted: %s", raw)
+func TestDecimalRejectsInvalidNullScaleAndRange(t *testing.T) {
+	for _, input := range []string{`"not-a-number"`, `"1.0000000000001"`, `"1000000000000000000"`, `null`, `""`, `"1e2"`, `"1/2"`} {
+		var value Decimal
+		if err := json.Unmarshal([]byte(input), &value); err == nil {
+			t.Fatalf("expected %s to fail", input)
 		}
 	}
-	if raw, err := json.Marshal(struct {
-		Amount Decimal `json:"amount"`
-	}{Amount: Decimal("0")}); err != nil || string(raw) != `{"amount":"0"}` {
-		t.Fatalf("zero JSON=%s err=%v", raw, err)
+	for _, value := range []Decimal{"invalid", "", "1000000000000000000"} {
+		if _, err := value.Add(MustDecimal("1")); err == nil {
+			t.Fatalf("Add accepted %q", value)
+		}
+		if _, err := value.Subtract(MustDecimal("1")); err == nil {
+			t.Fatalf("Subtract accepted %q", value)
+		}
+		if _, err := value.Multiply(MustDecimal("1")); err == nil {
+			t.Fatalf("Multiply accepted %q", value)
+		}
+		if _, err := value.Compare(MustDecimal("1")); err == nil {
+			t.Fatalf("Compare accepted %q", value)
+		}
 	}
-	if got := Decimal("invalid").Add(Decimal("1")); got.Compare(Decimal("1")) != 0 {
-		t.Fatalf("invalid in-process decimal did not fail closed to zero: %s", got)
-	}
+}
+
+func TestMustDecimalPanicsOnlyForInvalidConstants(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected MustDecimal to panic")
+		}
+	}()
+	_ = MustDecimal("invalid")
 }

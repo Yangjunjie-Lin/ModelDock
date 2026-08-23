@@ -117,10 +117,22 @@ func (s *Store) ReserveFunding(ctx context.Context, request FundingReservationRe
 	if walletStatus != "ACTIVE" || currency != strings.ToUpper(request.Currency) {
 		return domain.FundingOperation{}, false, ErrWalletUnavailable
 	}
-	availableAmount := mustFundingRat(available)
-	creditAmount := mustFundingRat(creditLimit)
-	riskLimitAmount := mustFundingRat(riskLimit)
-	riskExposureAmount := mustFundingRat(riskExposure)
+	availableAmount, err := fundingRat(available)
+	if err != nil {
+		return domain.FundingOperation{}, false, err
+	}
+	creditAmount, err := fundingRat(creditLimit)
+	if err != nil {
+		return domain.FundingOperation{}, false, err
+	}
+	riskLimitAmount, err := fundingRat(riskLimit)
+	if err != nil {
+		return domain.FundingOperation{}, false, err
+	}
+	riskExposureAmount, err := fundingRat(riskExposure)
+	if err != nil {
+		return domain.FundingOperation{}, false, err
+	}
 	remaining := new(big.Rat).Sub(new(big.Rat).Set(availableAmount), maximum)
 	allowed := true
 	if billingMode == "PREPAID" {
@@ -249,8 +261,14 @@ func (s *Store) SettleFunding(ctx context.Context, request FundingSettlementRequ
 	if err != nil {
 		return domain.FundingOperation{}, err
 	}
-	maximum := mustFundingRat(operation.MaximumAmount.String())
-	actual := mustFundingRat(actualAmount)
+	maximum, err := fundingRat(operation.MaximumAmount.String())
+	if err != nil {
+		return domain.FundingOperation{}, err
+	}
+	actual, err := fundingRat(actualAmount)
+	if err != nil {
+		return domain.FundingOperation{}, err
+	}
 	reservedUsed := new(big.Rat).Set(actual)
 	if reservedUsed.Cmp(maximum) > 0 {
 		reservedUsed.Set(maximum)
@@ -283,14 +301,25 @@ func (s *Store) SettleFunding(ctx context.Context, request FundingSettlementRequ
 			return domain.FundingOperation{}, err
 		}
 	}
-	newAvailable := new(big.Rat).Add(mustFundingRat(available), release)
+	availableRat, err := fundingRat(available)
+	if err != nil {
+		return domain.FundingOperation{}, err
+	}
+	newAvailable := new(big.Rat).Add(availableRat, release)
 	newAvailable.Sub(newAvailable, overage)
-	newRiskExposure := mustFundingRat(riskExposure)
+	newRiskExposure, err := fundingRat(riskExposure)
+	if err != nil {
+		return domain.FundingOperation{}, err
+	}
 	if overage.Sign() > 0 {
 		newRiskExposure.Add(newRiskExposure, overage)
 	}
 	freeze := walletStatus != "ACTIVE"
-	if newRiskExposure.Cmp(mustFundingRat(riskLimit)) > 0 && overage.Sign() > 0 {
+	riskLimitRat, err := fundingRat(riskLimit)
+	if err != nil {
+		return domain.FundingOperation{}, err
+	}
+	if newRiskExposure.Cmp(riskLimitRat) > 0 && overage.Sign() > 0 {
 		freeze = true
 	}
 	if billingMode == "POSTPAID" && !creditEnforced {
@@ -749,7 +778,11 @@ func (s *Store) ReverseFunding(ctx context.Context, operationID, idempotencyKey,
 	if operation.Status == "REVERSED" {
 		return operation, tx.Commit(ctx)
 	}
-	if !operation.SettledAmount.IsPositive() {
+	settledPositive, decimalErr := operation.SettledAmount.IsPositive()
+	if decimalErr != nil {
+		return domain.FundingOperation{}, decimalErr
+	}
+	if !settledPositive {
 		return domain.FundingOperation{}, ErrFundingTerminal
 	}
 	amount := operation.SettledAmount.String()
@@ -820,11 +853,18 @@ func scanFundingOperation(row pgx.Row, operation *domain.FundingOperation) error
 		&operation.ActualInputTokens, &operation.ActualCachedInputTokens, &operation.ActualOutputTokens, &operation.UsageSource,
 		&operation.ObservedOutputBytes, &operation.FailureCode, &operation.ReservedAt, &operation.SettledAt, &operation.ReleasedAt,
 		&operation.HeartbeatAt, &operation.CreatedAt, &operation.UpdatedAt, &operation.CredentialOwner, &operation.ProviderCredentialID, &operation.PlatformServiceFee)
-	if err == nil {
-		operation.MaximumAmount, operation.PromotionAmount, operation.ConsumedPromotionAmount, operation.TaxRate, operation.ExchangeRate = domain.Decimal(maximum), domain.Decimal(promotion), domain.Decimal(consumedPromotion), domain.Decimal(taxRate), domain.Decimal(exchangeRate)
-		operation.SettledAmount, operation.ReleasedAmount = domain.Decimal(settled), domain.Decimal(released)
+	if err != nil {
+		return err
 	}
-	return err
+	fields := []*domain.Decimal{&operation.MaximumAmount, &operation.PromotionAmount, &operation.ConsumedPromotionAmount, &operation.TaxRate, &operation.ExchangeRate, &operation.SettledAmount, &operation.ReleasedAmount}
+	for index, raw := range []string{maximum, promotion, consumedPromotion, taxRate, exchangeRate, settled, released} {
+		parsed, parseErr := domain.ParseDecimal(raw)
+		if parseErr != nil {
+			return parseErr
+		}
+		*fields[index] = parsed
+	}
+	return nil
 }
 
 func (s *Store) FundingOperationByID(ctx context.Context, operationID string) (domain.FundingOperation, error) {
@@ -965,8 +1005,22 @@ func insertFundingEvent(ctx context.Context, tx pgx.Tx, operationID, status, amo
 
 func walletAccountKey(walletID, kind string) string { return "wallet:" + walletID + ":" + kind }
 func systemAccountKey(kind, currency string) string { return "system:" + kind + ":" + currency }
+func fundingRat(value string) (*big.Rat, error) {
+	decimal, err := domain.ParseDecimal(value)
+	if err != nil {
+		return nil, err
+	}
+	result, ok := new(big.Rat).SetString(decimal.String())
+	if !ok {
+		return nil, errors.New("invalid funding decimal")
+	}
+	return result, nil
+}
 func mustFundingRat(value string) *big.Rat {
-	result, _ := new(big.Rat).SetString(zeroIfEmpty(value))
+	result, err := fundingRat(zeroIfEmpty(value))
+	if err != nil {
+		panic(err)
+	}
 	return result
 }
 func isFundingTerminal(status string) bool {

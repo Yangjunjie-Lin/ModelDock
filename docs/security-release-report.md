@@ -1,106 +1,67 @@
 # Security release report
 
 **Decision: NO-GO**
-**Review date:** 2026-08-21 (Asia/Shanghai)
-**Candidate:** `3.0.0-beta.1`; no Tag, Release, or deployment created
-**Scope:** current uncommitted `fix/commercial-readiness-closure` working tree
 
-The isolated security and financial regression controls passed, but no
-independent assessment, production-environment review, or current vulnerability
-database was available. A local working-tree test is not exact-release-commit
-evidence. These limitations remain machine-blocking in
-`release/commercial-gates.yaml`.
+**Candidate:** `3.0.0-beta.1`
 
-## Tested controls
+**Latest migration:** `0024_exact_money_and_release_evidence`
 
-| Area | Result | Evidence |
+**Release/Tag/production promotion created:** no
+
+This tracked document records engineering observations and stop conditions; it
+is not exact-commit release evidence. Protected CI must regenerate the signed
+machine report against a clean checkout and the immutable Server/Admin/Console
+candidate digests.
+
+## Current engineering observations
+
+| Check | Local observation on 2026-08-23 | Formal release status |
 | --- | --- | --- |
-| Registration, verification, MFA, reset, and invitation | PASS in isolated tests | Account integration suite exercised lifecycle, single-use tokens, mandatory Admin TOTP enrollment, and revocation. |
-| Session/request integrity | PASS in tested paths | CSRF-protected mutations, session invalidation, and public/aggregate redaction assertions passed. |
-| Tenant isolation and administrator authority | PASS in tested paths | Cross-organization reads were denied; supplier self-approval and same-admin four-eyes approval were rejected. |
-| API key compatibility/revocation | PASS | `rdk_test_*` and `/v1` compatibility remain; disabling the owning user/provider stopped new access. |
-| Provider and supplier admission | PASS in synthetic paths | Contract/region/quality/canary/kill-switch and payout-readiness gates fail closed. No real Provider or supplier approval exists. |
-| Payment, refund, request, and payout replay | PASS in sandbox | Replays retained one durable financial effect and stable idempotency evidence. No production channel was tested. |
-| Wallet double-spend and ledger integrity | PASS | 100 concurrent reservations, crash recovery, reversals, refund allocation, payable settlement, and zero-difference reconciliation passed. |
-| SSRF and upstream boundary controls | PASS in repository tests | Endpoint ownership, public/HTTPS host constraints, redirect/header restrictions, Provider fault handling, and bounded upstream behavior were exercised. |
-| Input/output and data handling | PASS in tested paths | Oversized/error paths, CSV formula protection, structured redacted diagnostics, retention cleanup, and deletion pseudonymization have regression coverage. |
-| Local recovery behavior | PASS with scope limit | Redis/PostgreSQL interruption, app/worker restart, logical backup/restore, and emergency cutover passed locally; managed production recovery is unproven. |
-| Audit and evidence preservation | PASS in tested paths | Append-only financial/Marketplace evidence and historical retention after supplier suspension/exit were verified. |
+| `gofmt` | PASS | Must repeat on PR HEAD |
+| `go vet ./...` | PASS | Must repeat on PR HEAD |
+| `go test -count=1 -timeout=300s ./...` | PASS | Must repeat on PR HEAD |
+| `govulncheck ./...` v1.6.0 | PASS; 0 reachable vulnerabilities | Must repeat with current vulnerability data on PR HEAD |
+| `gosec -exclude-generated` v2.22.10 | PASS; 0 issues after explicit source scan | Must repeat on PR HEAD |
+| Admin locked install/lint/typecheck/build/audit | PASS; no test script; audit 0 vulnerabilities | Must repeat on PR HEAD |
+| Console locked install/lint/typecheck/test/build/audit | PASS; 11/11 tests; audit 0 vulnerabilities | Must repeat on PR HEAD |
+| Evidence validator locked install/audit | PASS; audit 0 vulnerabilities | Must repeat on PR HEAD |
+| Gitleaks 8.30.1 directory and Git history | PASS; no leaks in working tree or 25 commits | Must repeat with protected PR history |
+| Development/Mock/Production Compose configuration | PASS | Runtime deployment remains unproven |
+| Actionlint 1.7.7 and workflow permission audit | PASS | Must repeat on PR HEAD |
+| Docker candidate build, non-root, SBOM, Provenance, Trivy HIGH/CRITICAL | Not release evidence until the clean committed candidate run | **BLOCKED** |
+| Independent penetration test and production surface assessment | No evidence supplied | **BLOCKED** |
 
-Passing rows are regression evidence, not an independent penetration test.
+Passing engineering rows do not approve a license, legal entity/text, payment
+or payout provider, Provider resale/data-processing rights, supplier KYB,
+production SMTP/PITR/failover, tax, or independent security assessment.
 
-## Secret, dependency, and supply-chain results
+## Evidence-chain security controls
 
-### Repository secrets
+- Draft 2020-12 schemas reject unknown properties, invalid profiles/times/SHAs,
+  missing Runtime, wrong schema versions and a modified mandatory Gate set.
+- Evidence Attestation V2 verifies the controlled evidence file SHA-256,
+  Ed25519 signature, exact Gate/profile/repository/Commit/Tree/Version/Migration,
+  workflow run, issuer allowlist, required role and validity window.
+- The production issuer policy is empty and its SHA-256 must be anchored in a
+  protected out-of-repository variable. Editing YAML cannot create trust.
+- Runtime claims are signed target-environment output. Sandbox/manual payment,
+  sandbox payout, count-only claims, invalid Provider contract windows and
+  incomplete supplier predicates fail closed.
+- Commercial evidence binds Gateway tests, Admin/Console builds, scanners,
+  SBOM, Provenance and candidate tags to the same three immutable digests.
+- The Go-live report is output-only. Any BLOCKED/NOT RUN item computes NO-GO.
 
-Gitleaks 8.30.1 ran in both directory and Git-history modes with redaction:
+## Remaining security blockers
 
-- working tree: approximately 437.85 MB scanned, no leaks found;
-- history: 4 commits / approximately 4.91 MB scanned, no leaks found.
+1. No independent tester and Security-signed penetration-test disposition.
+2. No signed production TLS/DNS/WAF/IAM/KMS/network/logging/privacy review.
+3. No signed managed PITR, failover, key recovery or measured RPO/RTO drill.
+4. No production Runtime Attestation for payment, payout, SMTP, Providers,
+   suppliers, database migration/query summary and candidate image digests.
+5. No clean protected PR/Release run has yet supplied the final Trivy, SBOM,
+   Provenance and exact-commit artifacts for this change.
 
-Test credentials use synthetic values and `.invalid` addresses. No real API
-key, payment secret, contract content, personal document, or production log was
-added by this work.
-
-### Dependencies and static checks
-
-| Check | Result |
-| --- | --- |
-| `go vet ./...` | PASS |
-| Full Go tests | PASS |
-| Admin and Console `npm audit --audit-level=high` | PASS; 0 reported vulnerabilities |
-| Exact-money static gate | PASS |
-| `govulncheck ./...` | **NOT RUN**: vulnerability service TLS handshake timeout; no usable local vulnerability database |
-| `gosec ./...` | **NOT RUN**: module/tool retrieval TLS handshake timeout; no cached executable |
-
-The unavailable checks remain unresolved; they are not represented as clean.
-
-### Images and SBOM
-
-The local images used for validation were inspected as non-root:
-
-| Image | Configured user | SBOM |
-| --- | --- | --- |
-| `relaydock/server:local` | `10001:10001` | SPDX JSON generated and parsed; 60 packages |
-| `relaydock/admin-web:local` | `101:101` | SPDX JSON generated and parsed; 72 packages |
-| `relaydock/console-web:local` | `101:101` | SPDX JSON generated and parsed; 72 packages |
-
-Syft 1.50.0 generated all three SBOMs. Its optional update check timed out, but
-SBOM generation and JSON validation completed successfully.
-
-Trivy 0.73.0 could not perform a vulnerability scan. The local Trivy volume did
-not contain a vulnerability database. Downloads from both the default
-`mirror.gcr.io/aquasec/trivy-db:2` source and
-`ghcr.io/aquasecurity/trivy-db:2` failed with TLS handshake timeouts. Therefore
-the result is **NOT RUN / BLOCKED**, not zero findings.
-
-## Open security and assurance risks
-
-1. No independent penetration test covers the complete public, Console, Admin,
-   payment webhook, payout, supplier, or `/v1` attack surface.
-2. Production TLS, DNS, WAF, cloud IAM/network policy, KMS/Secret Manager,
-   managed PostgreSQL/Redis, observability access, and administrator network
-   controls were not inspected.
-3. Production log sampling/privacy review and prompt/response leakage review
-   are absent.
-4. Provider/payment/payout/supplier contracts and incident obligations are
-   absent, so security and data-handling terms are not approved.
-5. Managed PITR, multi-zone failover, Redis promotion, backup-key recovery, and
-   measured production RPO/RTO are unproven.
-6. Current Go vulnerability, SAST, and image vulnerability evidence is missing
-   because the required tools/data could not be obtained in this environment.
-7. Tests ran on an uncommitted working tree. Protected CI must reproduce them on
-   the exact reviewed commit and immutable image digests.
-
-The external work and acceptable evidence fields are listed in
-[external-security-assessment-required.md](external-security-assessment-required.md).
-Until those controlled references, hashes, approvers, expiry dates, and reviewed
-commit are present, the security release gate remains `BLOCKED`.
-
-## Automatic stop conditions
-
-Any cross-organization access, unauthorized approval, secret disclosure,
-duplicate financial posting, wallet double-spend, unexplained ledger
-difference, unapproved Provider/supplier attempt, payout replay with a new
-idempotency key, negative-margin admission, audit-history mutation, or failed
-restore is an automatic `NO-GO` and must not be manually converted to success.
+Any tenant escape, secret disclosure, unauthorized approval, invalid Decimal,
+duplicate posting, wallet double-spend, unexplained reconciliation difference,
+unapproved Provider/supplier traffic, payout replay, digest mismatch, stale
+source identity, failed scan or failed restore is an automatic `NO-GO`.

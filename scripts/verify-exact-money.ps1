@@ -66,4 +66,20 @@ if ($findings.Count -gt 0) {
     throw "Exact-money verification found $($findings.Count) unapproved floating-point or JavaScript Number path(s)."
 }
 
-Write-Host "PASS exact-money static verification; retained floats are non-monetary and legacy compatibility reads are explicitly reviewed."
+$decimalSource = Get-Content -LiteralPath (Join-Path $repoRoot "internal/domain/domain.go") -Raw
+$requiredContracts = @(
+    'func ParseDecimal\(value string\) \(Decimal, error\)',
+    'func MustDecimal\(value string\) Decimal',
+    'func \(d Decimal\) Add\(other Decimal\) \(Decimal, error\)',
+    'func \(d Decimal\) Subtract\(other Decimal\) \(Decimal, error\)',
+    'func \(d Decimal\) Multiply\(other Decimal\) \(Decimal, error\)',
+    'func \(d Decimal\) Compare\(other Decimal\) \(int, error\)'
+)
+foreach ($contract in $requiredContracts) {
+    if ($decimalSource -notmatch $contract) { throw "Decimal error-return contract is missing: $contract" }
+}
+if ($decimalSource -match 'decimalRatOrZero|invalid[^\r\n]*treated as zero') {
+    throw "A silent-zero Decimal fallback remains in the commercial amount type."
+}
+
+Write-Host "PASS exact-money static verification; Decimal arithmetic returns errors and retained floats are non-monetary."

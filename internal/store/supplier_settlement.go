@@ -86,9 +86,10 @@ func (s *Store) UpdateSupplierSettlementPolicy(ctx context.Context, value domain
 	value.SettlementCycle = strings.ToUpper(strings.TrimSpace(value.SettlementCycle))
 	value.PayoutAdapter = strings.ToLower(strings.TrimSpace(value.PayoutAdapter))
 	value.PayoutRegion = strings.ToUpper(strings.TrimSpace(value.PayoutRegion))
+	minimumNegative, minimumErr := value.MinimumPayout.IsNegative()
 	if value.SettlementCycle != "DAILY" && value.SettlementCycle != "WEEKLY" && value.SettlementCycle != "MONTHLY" ||
 		value.CommissionBPS < 0 || value.CommissionBPS > 10000 || value.RiskReserveBPS < 0 || value.RiskReserveBPS > 10000 ||
-		value.ReserveHoldDays < 0 || value.ReserveHoldDays > 3660 || value.MinimumPayout.IsNegative() ||
+		value.ReserveHoldDays < 0 || value.ReserveHoldDays > 3660 || minimumErr != nil || minimumNegative ||
 		value.PayoutAdapter == "" || value.Enabled && (len(value.PayoutRegion) != 2 || value.PayoutAdapter == "disabled") {
 		return domain.SupplierSettlementPolicy{}, ErrSupplierSettlementState
 	}
@@ -234,7 +235,11 @@ func (s *Store) AccrueEligibleSupplierUsage(ctx context.Context, limit int) (int
 			continue
 		}
 		created++
-		if split.Payable.IsPositive() {
+		payablePositive, decimalErr := split.Payable.IsPositive()
+		if decimalErr != nil {
+			return 0, decimalErr
+		}
+		if payablePositive {
 			_, err = tx.Exec(ctx, `INSERT INTO supplier_payable_entry(id,idempotency_key,supplier_id,provider_id,accrual_id,
 				entry_type,entry_side,amount,currency,available_at,reference,metadata)
 				VALUES($1,$2,$3,$4,$5,'USAGE_ACCRUAL','CREDIT',$6,$7,$8,$9,$10)`, id.UUID(), "usage-accrual:"+accrualID,
@@ -663,7 +668,19 @@ func (s *Store) ApproveSupplierSettlement(ctx context.Context, batchID, provider
 	if err != nil {
 		return domain.SupplierSettlementBatch{}, err
 	}
-	if status != "PENDING_APPROVAL" && status != "DISPUTED" && status != "FAILED" || createdBy == actor || domain.Decimal(payout).IsNegative() || !domain.Decimal(payout).IsPositive() {
+	payoutDecimal, decimalErr := domain.ParseDecimal(payout)
+	if decimalErr != nil {
+		return domain.SupplierSettlementBatch{}, decimalErr
+	}
+	payoutNegative, decimalErr := payoutDecimal.IsNegative()
+	if decimalErr != nil {
+		return domain.SupplierSettlementBatch{}, decimalErr
+	}
+	payoutPositive, decimalErr := payoutDecimal.IsPositive()
+	if decimalErr != nil {
+		return domain.SupplierSettlementBatch{}, decimalErr
+	}
+	if status != "PENDING_APPROVAL" && status != "DISPUTED" && status != "FAILED" || createdBy == actor || payoutNegative || !payoutPositive {
 		return domain.SupplierSettlementBatch{}, ErrSupplierSettlementState
 	}
 	minRat, _ := new(big.Rat).SetString(minimum)
@@ -1061,7 +1078,12 @@ func (s *Store) RetrySupplierSettlement(ctx context.Context, batchID, reason, ac
 }
 
 func (s *Store) CreateSupplierRefundShare(ctx context.Context, accrualID, amount, reference, idempotencyKey, actor string) (domain.SupplierPayableEntry, bool, error) {
-	if !domain.Decimal(amount).IsPositive() || strings.TrimSpace(reference) == "" || strings.TrimSpace(idempotencyKey) == "" {
+	refundAmount, decimalErr := domain.ParseDecimal(amount)
+	amountPositive := false
+	if decimalErr == nil {
+		amountPositive, decimalErr = refundAmount.IsPositive()
+	}
+	if decimalErr != nil || !amountPositive || strings.TrimSpace(reference) == "" || strings.TrimSpace(idempotencyKey) == "" {
 		return domain.SupplierPayableEntry{}, false, ErrSupplierSettlementState
 	}
 	tx, err := s.pool.Begin(ctx)

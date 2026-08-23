@@ -751,13 +751,17 @@ func validFinanceIdempotency(value string) bool {
 func validPositiveFinanceDecimal(value string) bool {
 	value = strings.TrimSpace(value)
 	decimal := domain.Decimal(value)
-	return financeDecimalPattern.MatchString(value) && decimal.IsPositive()
+	return financeDecimalPattern.MatchString(value) && validPositiveDecimal(decimal)
 }
 
 func validNonNegativeFinanceDecimal(value string) bool {
 	value = strings.TrimSpace(value)
 	decimal := domain.Decimal(value)
-	return financeDecimalPattern.MatchString(value) && !decimal.IsNegative() && (decimal.IsZero() || decimal.IsPositive())
+	if !financeDecimalPattern.MatchString(value) || invalidOrNegativeDecimal(decimal) {
+		return false
+	}
+	zero, err := decimal.IsZero()
+	return err == nil && (zero || validPositiveDecimal(decimal))
 }
 
 func negativeOptionalInt64(value *int64) bool {

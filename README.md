@@ -9,7 +9,7 @@
 | Commercial operation | NO-GO |
 | Marketplace production | NO-GO |
 
-Last verified commit: `9ef82a669b704028f1919e094b0bd82a11dba866` · Latest migration: `0024` · Evidence date: `2026-08-21`
+Tracked status snapshot: VERSION `3.0.0-beta.1` · Migration `0024_exact_money_and_release_evidence` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
 <!-- commercial-status:end -->
 
 ModelDock is the commercial evolution of RelayDock: a self-hosted,

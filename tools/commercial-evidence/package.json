@@ -1,0 +1,11 @@
+{
+  "name": "@modeldock/commercial-evidence-validator",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "22.22.3" },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
+  }
+}

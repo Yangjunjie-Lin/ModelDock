@@ -572,9 +572,17 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 			openAIError(c, 400, "invalid_request", "provider_id, provider_model_id, and scores between 0 and 100 are required.")
 			return
 		}
+		// Model prices are optional at creation; omission is the explicit
+		// business rule that maps them to zero before money validation.
+		if strings.TrimSpace(model.InputPrice.String()) == "" {
+			model.InputPrice = domain.MustDecimal("0")
+		}
+		if strings.TrimSpace(model.OutputPrice.String()) == "" {
+			model.OutputPrice = domain.MustDecimal("0")
+		}
 		model.Enabled = true
 		out, err := d.Store.CreateModel(c.Request.Context(), model)
-		if err == nil && (model.InputPrice.IsPositive() || model.OutputPrice.IsPositive()) {
+		if err == nil && (validPositiveDecimal(model.InputPrice) || validPositiveDecimal(model.OutputPrice)) {
 			_, err = d.Store.CreateModelPrice(c.Request.Context(), domain.ModelPrice{ModelID: out.ID, InputPrice: model.InputPrice,
 				OutputPrice: model.OutputPrice, Currency: firstNonEmpty(model.PriceCurrency, "USD"), Source: "manual"})
 			if err == nil {
@@ -831,7 +839,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 	g.POST("/pricing/quote", func(c *gin.Context) { pricingQuoteHandler(c, d) })
 	g.POST("/models/:id/prices", func(c *gin.Context) {
 		var v domain.ModelPrice
-		if c.ShouldBindJSON(&v) != nil || v.InputPrice.IsNegative() || v.CachedInputPrice.IsNegative() || v.OutputPrice.IsNegative() {
+		if c.ShouldBindJSON(&v) != nil || invalidOrNegativeDecimal(v.InputPrice) || invalidOrNegativeDecimal(v.CachedInputPrice) || invalidOrNegativeDecimal(v.OutputPrice) {
 			openAIError(c, 400, "invalid_request", "Non-negative input, cached input, and output prices are required.")
 			return
 		}
@@ -895,7 +903,7 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 			CreditEnforced *bool           `json:"credit_enforced"`
 			Status         string          `json:"status"`
 		}
-		if c.ShouldBindJSON(&in) != nil || !validBillingMode(in.BillingMode) || !validWalletStatus(in.Status) || in.CreditLimit.IsNegative() || (in.RiskLimit != nil && in.RiskLimit.IsNegative()) {
+		if c.ShouldBindJSON(&in) != nil || !validBillingMode(in.BillingMode) || !validWalletStatus(in.Status) || invalidOrNegativeDecimal(in.CreditLimit) || (in.RiskLimit != nil && invalidOrNegativeDecimal(*in.RiskLimit)) {
 			openAIError(c, 400, "invalid_request", "billing_mode, status, and non-negative credit/risk limits are required.")
 			return
 		}
@@ -2137,7 +2145,7 @@ func createWalletAdjustment(c *gin.Context, d Dependencies, transactionType stri
 		Reference      string         `json:"reference"`
 		Metadata       map[string]any `json:"metadata"`
 	}
-	if c.ShouldBindJSON(&in) != nil || in.Amount.IsZero() || (transactionType == "TOPUP" && in.Amount.IsNegative()) {
+	if c.ShouldBindJSON(&in) != nil || invalidOrZeroDecimal(in.Amount) || (transactionType == "TOPUP" && !validPositiveDecimal(in.Amount)) {
 		openAIError(c, 400, "invalid_request", "A non-zero amount is required; topups must be positive.")
 		return
 	}

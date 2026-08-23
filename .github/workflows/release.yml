@@ -2,8 +2,7 @@ name: ModelDock Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       release_profile:
@@ -11,10 +10,7 @@ on:
         required: true
         default: COMMERCIAL_BETA
         type: choice
-        options:
-          - ENGINEERING_PREVIEW
-          - COMMERCIAL_BETA
-          - MARKETPLACE_PRODUCTION
+        options: [ENGINEERING_PREVIEW, COMMERCIAL_BETA, MARKETPLACE_PRODUCTION]
 
 permissions:
   contents: read
@@ -23,18 +19,22 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  GO_VERSION: 1.26.6
+  NODE_VERSION: 22.22.3
+
 jobs:
   ci:
-    name: Required CI gate
+    name: Required protected CI gate
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
   validate:
-    name: Validate release contract
+    name: Validate exact annotated tag contract
     needs: ci
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       profile: ${{ steps.metadata.outputs.profile }}
@@ -43,75 +43,58 @@ jobs:
       source_epoch: ${{ steps.metadata.outputs.source_epoch }}
       owner: ${{ steps.metadata.outputs.owner }}
     steps:
-      - name: Check out tag and complete history
+      - name: Check out exact tag and complete history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Download exact-commit commercial test evidence
-        if: (github.event.inputs.release_profile || vars.MODELDOCK_RELEASE_PROFILE || 'COMMERCIAL_BETA') != 'ENGINEERING_PREVIEW'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          pattern: commercial-integration-${{ github.sha }}
-          path: .cache/commercial-evidence
-          merge-multiple: true
-      - name: Validate tag ancestry, version, changelog, and licensing decision
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tools/commercial-evidence/package-lock.json
+      - name: Install repository-locked evidence validator
+        working-directory: tools/commercial-evidence
+        run: npm ci --ignore-scripts
+      - name: Validate immutable source identity and release metadata
         id: metadata
         shell: pwsh
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_PROFILE: ${{ github.event.inputs.release_profile || vars.MODELDOCK_RELEASE_PROFILE || 'COMMERCIAL_BETA' }}
         run: |
-          if ((git cat-file -t $env:GITHUB_REF).Trim() -ne 'tag') {
-            throw 'Formal releases require an annotated Git tag.'
-          }
+          if ((git status --porcelain).Count -ne 0) { throw 'Release checkout is not clean.' }
+          if ($env:GITHUB_REF_TYPE -cne 'tag' -or (git cat-file -t $env:GITHUB_REF).Trim() -ne 'tag') { throw 'Formal releases require a pre-existing annotated Git tag.' }
           git fetch origin $env:DEFAULT_BRANCH --quiet
           git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
           if ($LASTEXITCODE -ne 0) { throw 'Release commit is not on the default branch.' }
-          $semverTag = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
-          if ($env:GITHUB_REF_NAME -notmatch $semverTag) {
-            throw 'Release tag must exactly match v plus a Semantic Version 2.0 value.'
-          }
+          $pattern = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+          if ($env:GITHUB_REF_NAME -notmatch $pattern) { throw 'Release tag is not SemVer 2.0.' }
           $version = $env:GITHUB_REF_NAME.Substring(1)
+          ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md
+          ./scripts/update-readme-commercial-status.ps1 -Check
           $buildTime = ([DateTimeOffset]::Parse((git show -s --format=%cI $env:GITHUB_SHA).Trim())).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-          $sourceEpoch = (git show -s --format=%ct $env:GITHUB_SHA).Trim()
-          $owner = $env:GITHUB_REPOSITORY_OWNER.ToLowerInvariant()
-          if ($env:RELEASE_PROFILE -eq 'ENGINEERING_PREVIEW') {
-            ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md
-            ./scripts/verify-commercial-readiness.ps1 -Profile ENGINEERING_PREVIEW -Commit $env:GITHUB_SHA -ReportOutput .cache/commercial-readiness-report.md
-          } else {
-            ./scripts/verify-release.ps1 -Version $version -Commit $env:GITHUB_SHA -NotesOutput .cache/release-notes.md -RequireApprovedLicense
-            ./scripts/verify-commercial-readiness.ps1 -Profile $env:RELEASE_PROFILE -Commit $env:GITHUB_SHA -TestReportPath .cache/commercial-evidence/commercial-test-evidence.json -ReportOutput .cache/commercial-readiness-report.md
-          }
           "version=$version" >> $env:GITHUB_OUTPUT
           "profile=$env:RELEASE_PROFILE" >> $env:GITHUB_OUTPUT
           "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "build_date=$buildTime" >> $env:GITHUB_OUTPUT
-          "source_epoch=$sourceEpoch" >> $env:GITHUB_OUTPUT
-          "owner=$owner" >> $env:GITHUB_OUTPUT
-      - name: Upload exact changelog release notes
+          "source_epoch=$((git show -s --format=%ct $env:GITHUB_SHA).Trim())" >> $env:GITHUB_OUTPUT
+          "owner=$($env:GITHUB_REPOSITORY_OWNER.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - name: Upload exact release notes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-notes
           path: .cache/release-notes.md
           if-no-files-found: error
           retention-days: 7
-      - name: Upload commercial gate report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: commercial-readiness-${{ github.sha }}
-          path: .cache/commercial-readiness-report.md
-          if-no-files-found: error
-          retention-days: 30
 
   engineering-preview:
-    name: Create non-production engineering preview artifact
+    name: Non-production engineering preview
     needs: validate
     if: needs.validate.outputs.profile == 'ENGINEERING_PREVIEW'
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
     steps:
-      - name: Check out exact tag source
+      - name: Check out exact tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Package source-only preview
         run: git archive --format=tar.gz --output=modeldock-engineering-preview-${{ github.sha }}.tar.gz HEAD
@@ -123,8 +106,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  images:
-    name: Build, attest, and scan ${{ matrix.component }}
+  candidates:
+    name: Build once, attest, SBOM, and scan ${{ matrix.component }}
     needs: validate
     if: needs.validate.outputs.profile != 'ENGINEERING_PREVIEW'
     runs-on: ubuntu-24.04
@@ -141,15 +124,17 @@ jobs:
           - component: server
             dockerfile: deploy/docker/Dockerfile.relaydock
             image_suffix: modeldock-server
-          - component: admin-web
+          - component: admin
             dockerfile: deploy/docker/Dockerfile.admin-web
             image_suffix: modeldock-admin-web
-          - component: console-web
+          - component: console
             dockerfile: deploy/docker/Dockerfile.console-web
             image_suffix: modeldock-console-web
     steps:
       - name: Check out exact tag source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to GHCR
@@ -158,7 +143,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push unique candidate image
+      - name: Reject an existing candidate tag
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
+          CANDIDATE: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$CANDIDATE" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing candidate tag $IMAGE:$CANDIDATE" >&2
+            exit 1
+          fi
+      - name: Build and push the unique candidate exactly once
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -176,22 +171,20 @@ jobs:
           provenance: mode=max
           sbom: true
           outputs: type=image,push=true,rewrite-timestamp=true
-          cache-from: type=gha,scope=release-${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=release-${{ matrix.component }}
-      - name: Record GitHub build provenance
+      - name: Record GitHub Artifact Attestation
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-name: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
-      - name: Generate SPDX JSON SBOM
+      - name: Generate exact-digest SPDX JSON SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: sbom-${{ matrix.component }}.spdx.json
           upload-artifact: false
-      - name: Scan final release image
+      - name: Trivy HIGH and CRITICAL exact-digest scan
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}@${{ steps.build.outputs.digest }}
@@ -199,65 +192,175 @@ jobs:
           exit-code: 1
           vuln-type: os,library
           severity: CRITICAL,HIGH
-      - name: Install Cosign when repository signing is enabled
-        if: vars.MODELDOCK_SIGN_IMAGES == 'true'
-        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
-      - name: Sign immutable image digest with GitHub OIDC
-        if: vars.MODELDOCK_SIGN_IMAGES == 'true'
+      - name: Verify candidate tag still points to built digest
+        id: tag
+        shell: bash
         env:
           IMAGE: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign sign --yes "$IMAGE@$DIGEST"
-      - name: Upload SBOM for formal release
+          CANDIDATE: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          actual="sha256:$(docker buildx imagetools inspect --raw "$IMAGE:$CANDIDATE" | sha256sum | awk '{print $1}')"
+          test "$actual" = "$DIGEST"
+          echo "digest=$actual" >> "$GITHUB_OUTPUT"
+      - name: Write immutable candidate evidence
+        shell: pwsh
+        env:
+          COMPONENT: ${{ matrix.component }}
+          IMAGE: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAG_DIGEST: ${{ steps.tag.outputs.digest }}
+          CANDIDATE: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          [ordered]@{
+            component=$env:COMPONENT; image=$env:IMAGE; digest=$env:DIGEST; commit=$env:GITHUB_SHA
+            candidate_tag=$env:CANDIDATE; candidate_tag_digest=$env:TAG_DIGEST
+            scan_status='PASS'; scan_digest=$env:DIGEST; scan_commit=$env:GITHUB_SHA
+            sbom_status='PASS'; sbom_digest=$env:DIGEST; sbom_commit=$env:GITHUB_SHA
+            provenance_status='PASS'; provenance_digest=$env:DIGEST; provenance_commit=$env:GITHUB_SHA
+          } | ConvertTo-Json | Set-Content "image-$env:COMPONENT.json" -Encoding utf8
+      - name: Upload candidate metadata and SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sbom-${{ matrix.component }}
-          path: sbom-${{ matrix.component }}.spdx.json
+          name: candidate-${{ matrix.component }}
+          path: |
+            image-${{ matrix.component }}.json
+            sbom-${{ matrix.component }}.spdx.json
           if-no-files-found: error
           retention-days: 30
 
-      - name: Write candidate digest metadata
-        shell: pwsh
-        env:
-          IMAGE: ghcr.io/${{ needs.validate.outputs.owner }}/${{ matrix.image_suffix }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          COMPONENT: ${{ matrix.component }}
-          CANDIDATE_TAG: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+  commercial-test:
+    name: Full commercial integration on candidate Server digest
+    needs: [validate, candidates]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out exact tag source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tools/commercial-evidence/package-lock.json
+      - name: Install repository-locked evidence validator
+        working-directory: tools/commercial-evidence
+        run: npm ci --ignore-scripts
+      - name: Download all candidate metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: candidate-*
+          path: .cache/candidates
+          merge-multiple: true
+      - name: Log in and pull exact immutable candidates
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull and locally name only recorded digests
+        shell: bash
         run: |
-          [ordered]@{
-            component = $env:COMPONENT
-            image = $env:IMAGE
-            digest = $env:DIGEST
-            candidate_tag = $env:CANDIDATE_TAG
-            commit = $env:GITHUB_SHA
-          } | ConvertTo-Json | Set-Content -LiteralPath "image-$env:COMPONENT.json" -Encoding utf8
-      - name: Upload verified image metadata
+          set -euo pipefail
+          for component in server admin console; do
+            file=".cache/candidates/image-$component.json"
+            image="$(jq -er .image "$file")"
+            digest="$(jq -er .digest "$file")"
+            commit="$(jq -er .commit "$file")"
+            test "$commit" = "$GITHUB_SHA"
+            docker pull "$image@$digest"
+            docker tag "$image@$digest" "relaydock/$component:release-candidate"
+          done
+      - name: Create isolated test topology
+        shell: pwsh
+        run: |
+          ./scripts/new-ci-env.ps1 -OutputPath .env
+          New-Item -ItemType Directory -Force data/postgres,data/redis,data/cockpit,logs,.cache/commercial-results | Out-Null
+      - name: Start isolated PostgreSQL and Redis
+        run: docker compose --env-file .env up -d --wait --wait-timeout 120 postgres redis
+      - name: Run all commercial suites on the recorded candidates
+        shell: pwsh
+        run: ./scripts/verify-commercial-integration.ps1 -EnvFile .env -ConfirmIsolatedTestDatabase -OutputDirectory .cache/commercial-results -ServerImage relaydock/server:release-candidate -AdminImage relaydock/admin:release-candidate -ConsoleImage relaydock/console:release-candidate -CandidateMetadataDirectory .cache/candidates
+      - name: Upload exact-commit same-digest commercial evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: image-metadata-${{ matrix.component }}
-          path: image-${{ matrix.component }}.json
+          name: release-commercial-evidence-${{ github.sha }}
+          path: .cache/commercial-results
+          if-no-files-found: error
+          retention-days: 30
+      - name: Stop isolated services
+        if: always()
+        run: docker compose --env-file .env down --remove-orphans
+
+  final-gate:
+    name: Final signed Commercial Readiness decision
+    needs: [validate, commercial-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact tag source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: tools/commercial-evidence/package-lock.json
+      - name: Install repository-locked evidence validator
+        working-directory: tools/commercial-evidence
+        run: npm ci --ignore-scripts
+      - name: Download exact candidate test evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-commercial-evidence-${{ github.sha }}
+          path: .cache/commercial-results
+      - name: Compute decision and generate exact Go-live report
+        shell: pwsh
+        env:
+          MODELDOCK_TRUST_POLICY_SHA256: ${{ vars.MODELDOCK_TRUST_POLICY_SHA256 }}
+        run: |
+          New-Item -ItemType Directory -Force .cache/release-evidence | Out-Null
+          ./scripts/verify-commercial-readiness.ps1 -Profile '${{ needs.validate.outputs.profile }}' -Commit $env:GITHUB_SHA -TestReportPath .cache/commercial-results/commercial-test-evidence.json -EvidenceRoot .cache/release-evidence -ReportOutput .cache/final-commercial-readiness.md -GoLiveOutput .cache/final-go-live.md
+          $report = Get-Content -LiteralPath .cache/final-go-live.md -Raw
+          if ($report -notmatch [regex]::Escape("- Commit: $env:GITHUB_SHA")) { throw 'Go-live Report does not bind the exact release HEAD.' }
+      - name: Upload final decision even when blocked
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: final-commercial-decision-${{ github.sha }}
+          path: |
+            .cache/final-commercial-readiness.md
+            .cache/final-go-live.md
           if-no-files-found: error
           retention-days: 30
 
   publish:
-    name: Promote verified digests to formal tags
-    needs: [validate, images]
-    if: needs.validate.outputs.profile != 'ENGINEERING_PREVIEW'
+    name: Promote the exact verified digests
+    needs: [validate, final-gate]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Check out tag and complete history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-      - name: Download verified image metadata
+      - name: Download candidate metadata
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: image-metadata-*
-          path: release-image-metadata
+          pattern: candidate-*
+          path: .cache/candidates
           merge-multiple: true
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -267,56 +370,29 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Reject tag races and existing formal image tags
-        shell: bash
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          set -euo pipefail
-          mapfile -t files < <(find release-image-metadata -maxdepth 1 -type f -name 'image-*.json' -print | sort)
-          test "${#files[@]}" -eq 3
-          remote_commit="$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME^{}" | awk '{print $1}')"
-          test "$remote_commit" = "$GITHUB_SHA"
-          for file in "${files[@]}"; do
-            image="$(jq -er '.image' "$file")"
-            digest="$(jq -er '.digest' "$file")"
-            commit="$(jq -er '.commit' "$file")"
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-            test "$commit" = "$GITHUB_SHA"
-            for tag in "$VERSION" "sha-$GITHUB_SHA"; do
-              if docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
-                actual="sha256:$(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum | awk '{print $1}')"
-                if [ "$actual" != "$digest" ]; then
-                  echo "Refusing to overwrite existing formal image tag $image:$tag" >&2
-                  exit 1
-                fi
-              fi
-            done
-          done
-      - name: Promote only verified digests
+      - name: Refuse existing formal tags and promote without rebuilding
         shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           : > release-image-digests.md
-          printf "Built from commit %c%s%c.\n\n" 96 "$GITHUB_SHA" 96 >> release-image-digests.md
-          while IFS= read -r file; do
-            image="$(jq -er ".image" "$file")"
-            digest="$(jq -er ".digest" "$file")"
+          for component in server admin console; do
+            file=".cache/candidates/image-$component.json"
+            image="$(jq -er .image "$file")"
+            digest="$(jq -er .digest "$file")"
+            test "$(jq -er .commit "$file")" = "$GITHUB_SHA"
             for tag in "$VERSION" "sha-$GITHUB_SHA"; do
               if docker buildx imagetools inspect "$image:$tag" >/dev/null 2>&1; then
-                read -r existing_hash _ < <(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum)
-                test "sha256:$existing_hash" = "$digest"
-              else
-                docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
+                echo "Refusing to overwrite existing formal tag $image:$tag" >&2
+                exit 1
               fi
-              read -r manifest_hash _ < <(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum)
-              actual="sha256:$manifest_hash"
+              docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
+              actual="sha256:$(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum | awk '{print $1}')"
               test "$actual" = "$digest"
             done
-            printf -- "- %c%s@%s%c (%c%s%c, %csha-%s%c)\n" 96 "$image" "$digest" 96 96 "$VERSION" 96 96 "$GITHUB_SHA" 96 >> release-image-digests.md
-          done < <(find release-image-metadata -maxdepth 1 -type f -name "image-*.json" -print | sort)
+            printf -- '- `%s@%s`\n' "$image" "$digest" >> release-image-digests.md
+          done
       - name: Upload promoted digest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -326,11 +402,9 @@ jobs:
           retention-days: 30
 
   release:
-    name: Create formal GitHub Release
+    name: Create GitHub Release only after promotion
     needs: [validate, publish]
-    if: needs.validate.outputs.profile != 'ENGINEERING_PREVIEW'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -338,28 +412,26 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-notes
-          path: release-notes
-      - name: Download all SBOMs
+          path: .cache/release-notes
+      - name: Download SBOMs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: sbom-*
-          path: release-artifacts
+          pattern: candidate-*
+          path: .cache/release-artifacts
           merge-multiple: true
       - name: Download promoted digest record
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-image-digests
-          path: release-artifacts
-      - name: Add immutable image digests to release notes
-        run: |
-          printf '\n## Verified images\n\n' >> release-notes/release-notes.md
-          cat release-artifacts/release-image-digests.md >> release-notes/release-notes.md
-      - name: Create release only after every required gate
+          path: .cache/release-artifacts
+      - name: Create release after every required gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.validate.outputs.version }}
           PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
-          args=(release create "$GITHUB_REF_NAME" release-artifacts/*.spdx.json release-artifacts/release-image-digests.md --verify-tag --title "ModelDock $VERSION" --notes-file release-notes/release-notes.md)
-          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          printf '\n## Verified immutable images\n\n' >> .cache/release-notes/release-notes.md
+          cat .cache/release-artifacts/release-image-digests.md >> .cache/release-notes/release-notes.md
+          args=(release create "$GITHUB_REF_NAME" .cache/release-artifacts/*.spdx.json .cache/release-artifacts/release-image-digests.md --verify-tag --title "ModelDock $VERSION" --notes-file .cache/release-notes/release-notes.md)
+          if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
           gh "${args[@]}"
