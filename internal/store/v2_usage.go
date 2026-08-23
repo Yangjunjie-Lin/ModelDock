@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,15 @@ import (
 // budget event, and webhook outbox rows atomically.  V1 InsertRequestLog is
 // retained for compatibility; all V2 data-plane writes should use this method.
 func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.RequestLog) error {
+	for field, value := range map[string]domain.Decimal{
+		"estimated_cost": logEntry.EstimatedCost,
+		"reference_cost": logEntry.ReferenceCost,
+		"savings_amount": logEntry.SavingsAmount,
+	} {
+		if err := value.Validate(); err != nil {
+			return fmt.Errorf("invalid request log %s: %w", field, err)
+		}
+	}
 	createdAt := logEntry.CreatedAt.UTC()
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()

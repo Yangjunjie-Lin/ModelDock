@@ -51,7 +51,7 @@ func TestGovernanceRiskFreezeAndLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestID := "governance-policy-log-" + userID
-	if err = s.InsertScopedRequestLog(ctx, domain.RequestLog{RequestID: requestID, UserID: userID, APIKeyID: keyID, OrganizationID: domain.LegacyOrganizationID, ProjectID: domain.LegacyProjectID, RequestedModel: "governance-fixture", ResolvedModel: "governance-fixture", Endpoint: "/v1/responses", StatusCode: 403}); err != nil {
+	if err = s.InsertScopedRequestLog(ctx, domain.RequestLog{RequestID: requestID, UserID: userID, APIKeyID: keyID, OrganizationID: domain.LegacyOrganizationID, ProjectID: domain.LegacyProjectID, RequestedModel: "governance-fixture", ResolvedModel: "governance-fixture", Endpoint: "/v1/responses", StatusCode: 403, EstimatedCost: domain.Decimal("0"), ReferenceCost: domain.Decimal("0"), SavingsAmount: domain.Decimal("0")}); err != nil {
 		t.Fatal(err)
 	}
 	var saveContent bool

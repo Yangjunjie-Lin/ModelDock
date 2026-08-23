@@ -191,7 +191,7 @@ func TestCommercialPricingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestID := "pricing-request-" + id.UUID()
-	err = s.InsertScopedRequestLog(ctx, domain.RequestLog{RequestID: requestID, UserID: userID, APIKeyID: keyID, OrganizationID: orgID, ProjectID: domain.LegacyProjectID, ProviderID: providerID, RequestedModel: "pricing-integration-model", ResolvedModel: "pricing-integration-model", Endpoint: "/responses", StatusCode: 200, InputTokens: 1_000_000, TotalTokens: 1_000_000, EstimatedCost: domain.Decimal("999.99"), PricingVersionID: settlementQuote.PricingVersionID, PromotionAmount: settlementQuote.PromotionAmount, ExchangeRate: "1", TaxRate: "0", CreatedAt: time.Now().UTC()})
+	err = s.InsertScopedRequestLog(ctx, domain.RequestLog{RequestID: requestID, UserID: userID, APIKeyID: keyID, OrganizationID: orgID, ProjectID: domain.LegacyProjectID, ProviderID: providerID, RequestedModel: "pricing-integration-model", ResolvedModel: "pricing-integration-model", Endpoint: "/responses", StatusCode: 200, InputTokens: 1_000_000, TotalTokens: 1_000_000, EstimatedCost: domain.Decimal("999.99"), ReferenceCost: domain.Decimal("0"), SavingsAmount: domain.Decimal("0"), PricingVersionID: settlementQuote.PricingVersionID, PromotionAmount: settlementQuote.PromotionAmount, ExchangeRate: "1", TaxRate: "0", CreatedAt: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
