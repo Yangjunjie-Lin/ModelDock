@@ -423,7 +423,7 @@ jobs:
               actual="sha256:${raw_digest%% *}"
               test "$actual" = "$digest"
             done
-            printf -- '- `%s@%s`\n' "$image" "$digest" >> release-image-digests.md
+            printf -- "- \`%s@%s\`\n" "$image" "$digest" >> release-image-digests.md
           done
       - name: Upload promoted digest record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
