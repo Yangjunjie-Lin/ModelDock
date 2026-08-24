@@ -890,7 +890,12 @@ streamLoop:
 		logEntry.TotalTokens = fundingUsage.Total
 	}
 	logEntry.UsageSource = fundingUsageSource
-	if cost, err := d.Store.CalculateCost(c.Request.Context(), projectRoute.ProviderID, projectRoute.UpstreamModel, usage.Input, usage.Cached, usage.Output); err == nil {
+	// The client may have disconnected before the provider stream finishes. Pricing
+	// and settlement still have to complete against the immutable price snapshot,
+	// so do not reuse the cancelled HTTP request context for those ledger writes.
+	pricingCtx, pricingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer pricingCancel()
+	if cost, err := d.Store.CalculateCost(pricingCtx, projectRoute.ProviderID, projectRoute.UpstreamModel, usage.Input, usage.Cached, usage.Output); err == nil {
 		logEntry.EstimatedCost = cost
 	} else {
 		logEntry.ErrorCode = "pricing_calculation_invalid"
@@ -898,7 +903,7 @@ streamLoop:
 		d.Logger.Error("pricing_calculation_invalid", "request_id", logEntry.RequestID, "error", err)
 	}
 	if routingDecision.Strategy != "manual" {
-		if reference, err := d.Store.CalculateProjectReferenceCost(c.Request.Context(), key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
+		if reference, err := d.Store.CalculateProjectReferenceCost(pricingCtx, key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
 			logEntry.ReferenceCost = reference
 			comparison, compareErr := reference.Compare(logEntry.EstimatedCost)
 			if compareErr != nil {
