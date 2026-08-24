@@ -488,7 +488,7 @@ func (s *Store) ensureRetailMargin(ctx context.Context, organizationID *string, 
 	if !strings.EqualFold(cost.Currency, retail.Currency) {
 		return false, ErrPricingCurrencyMismatch
 	}
-	var amount string
+	amount := "0"
 	var bps int64
 	_ = s.pool.QueryRow(ctx, `SELECT minimum_margin_amount::text,minimum_margin_bps FROM pricing_margin_policies WHERE enabled
 		AND (organization_id IS NULL OR organization_id=$3) AND (provider_id IS NULL OR provider_id=$2) AND (model_id IS NULL OR model_id=$1)
