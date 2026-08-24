@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$EnvFile = ".env"
+    [string]$EnvFile = ".env",
+    [string]$GoExecutable = "go"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,8 +16,12 @@ $values = @{}
 Get-Content -LiteralPath $envPath | ForEach-Object {
     if ($_ -match '^\s*([^#=]+)=(.*)$') { $values[$matches[1].Trim()] = $matches[2].Trim() }
 }
-foreach ($name in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL")) {
+foreach ($name in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL", "POSTGRES_HOST_PORT")) {
     if (-not $values.ContainsKey($name) -or [string]::IsNullOrWhiteSpace($values[$name])) { throw "$name is required in the local untracked .env." }
+}
+$postgresHostPort = 0
+if (-not [int]::TryParse($values.POSTGRES_HOST_PORT, [ref]$postgresHostPort) -or $postgresHostPort -lt 1 -or $postgresHostPort -gt 65535) {
+    throw "POSTGRES_HOST_PORT must be a valid TCP port."
 }
 $run = [Guid]::NewGuid().ToString("N").Substring(0, 20)
 $databaseName = "relaydock_payment_test_$run"
@@ -29,9 +34,9 @@ try {
     docker exec $container createdb -U $values.POSTGRES_USER $databaseName
     if ($LASTEXITCODE -ne 0) { throw "Could not create the disposable payment database." }
     $created = $true
-    $builder = [System.UriBuilder]([Uri]([string]$values.DATABASE_URL)); $builder.Path = "/$databaseName"
+    $builder = [System.UriBuilder]([Uri]([string]$values.DATABASE_URL)); $builder.Host = "127.0.0.1"; $builder.Port = $postgresHostPort; $builder.Path = "/$databaseName"
     $env:TEST_DATABASE_URL = $builder.Uri.AbsoluteUri
-    docker run --rm --network relaydock_relaydock-internal --env TEST_DATABASE_URL -v relaydock-go-mod-cache:/go/pkg/mod -v "${repoRoot}:/src" -w /src golang:1.26.6-alpine go test -count=1 -run TestPaymentOrdersIntegration ./internal/store
+    & $GoExecutable -C $repoRoot test -count=1 -run TestPaymentOrdersIntegration ./internal/store
     if ($LASTEXITCODE -ne 0) { throw "Payment integration test failed." }
     Write-Host "PASS payment webhook replay, failure isolation, crash recovery, and bidirectional traceability"
 } finally {

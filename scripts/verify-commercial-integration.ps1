@@ -6,6 +6,7 @@ param(
     [string]$ServerImage = "relaydock/server:local",
     [string]$AdminImage = "relaydock/admin-web:local",
     [string]$ConsoleImage = "relaydock/console-web:local",
+    [string]$GoExecutable = "go",
     [string]$CandidateMetadataDirectory = "",
     [switch]$AllowDirtyDevelopment
 )
@@ -123,14 +124,14 @@ if ($CandidateMetadataDirectory) {
 try {
     Invoke-Suite "verify-migrations" { & (Join-Path $repoRoot "tests/integration/verify-migrations.ps1") -EnvFile $EnvFile -ConfirmIsolatedTestDatabase }
     Invoke-Suite "verify-accounts" { & (Join-Path $repoRoot "tests/integration/verify-accounts.ps1") -ConfirmIsolatedTestDatabase -ExistingImage $ServerImage }
-    Invoke-Suite "verify-pricing" { & (Join-Path $repoRoot "tests/integration/verify-pricing.ps1") -EnvFile $EnvFile -ConfirmIsolatedTestDatabase }
-    Invoke-Suite "verify-funding" { & (Join-Path $repoRoot "tests/integration/verify-funding.ps1") -EnvFile $EnvFile -ConfirmIsolatedTestDatabase }
-    Invoke-Suite "verify-payments" { & (Join-Path $repoRoot "tests/integration/verify-payments.ps1") -EnvFile $EnvFile }
-    Invoke-Suite "verify-subscriptions" { & (Join-Path $repoRoot "tests/integration/verify-subscriptions.ps1") -EnvFile $EnvFile -ConfirmIsolatedTestDatabase }
-    Invoke-Suite "verify-financial-close" { & (Join-Path $repoRoot "tests/integration/verify-financial-close.ps1") -EnvFile $EnvFile -ConfirmIsolatedTestDatabase }
+    Invoke-Suite "verify-pricing" { & (Join-Path $repoRoot "tests/integration/verify-pricing.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable -ConfirmIsolatedTestDatabase }
+    Invoke-Suite "verify-funding" { & (Join-Path $repoRoot "tests/integration/verify-funding.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable -ConfirmIsolatedTestDatabase }
+    Invoke-Suite "verify-payments" { & (Join-Path $repoRoot "tests/integration/verify-payments.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable }
+    Invoke-Suite "verify-subscriptions" { & (Join-Path $repoRoot "tests/integration/verify-subscriptions.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable -ConfirmIsolatedTestDatabase }
+    Invoke-Suite "verify-financial-close" { & (Join-Path $repoRoot "tests/integration/verify-financial-close.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable -ConfirmIsolatedTestDatabase }
     Invoke-Suite "verify-commercial-onboarding" { & (Join-Path $repoRoot "tests/integration/verify-commercial-onboarding.ps1") -ConfirmIsolatedTestDatabase -StartupTimeoutSeconds 180 -ExistingServerImage $ServerImage }
-    Invoke-Suite "verify-supplier-settlement" { & (Join-Path $repoRoot "tests/integration/verify-supplier-settlement.ps1") -EnvFile $EnvFile -GoExecutable go -ConfirmIsolatedTestDatabase }
-    Invoke-Suite "verify-marketplace-launch" { & (Join-Path $repoRoot "tests/integration/verify-marketplace-launch.ps1") -EnvFile $EnvFile -GoExecutable go -ConfirmIsolatedTestDatabase }
+    Invoke-Suite "verify-supplier-settlement" { & (Join-Path $repoRoot "tests/integration/verify-supplier-settlement.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable -ConfirmIsolatedTestDatabase }
+    Invoke-Suite "verify-marketplace-launch" { & (Join-Path $repoRoot "tests/integration/verify-marketplace-launch.ps1") -EnvFile $EnvFile -GoExecutable $GoExecutable -ConfirmIsolatedTestDatabase }
     Invoke-Suite "verify-release-metadata" { & (Join-Path $repoRoot "tests/integration/verify-release-metadata.ps1") -Version $version -Commit $commit }
     Invoke-Suite "verify-exact-money" { & (Join-Path $repoRoot "scripts/verify-exact-money.ps1") }
     Invoke-Suite "verify-release-negative-tests" { & (Join-Path $repoRoot "tests/release/verify-commercial-readiness.ps1") }
