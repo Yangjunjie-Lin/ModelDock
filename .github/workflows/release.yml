@@ -419,7 +419,8 @@ jobs:
                 exit 1
               fi
               docker buildx imagetools create --tag "$image:$tag" "$image@$digest"
-              actual="sha256:$(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum | awk '{print $1}')"
+              raw_digest="$(docker buildx imagetools inspect --raw "$image:$tag" | sha256sum)"
+              actual="sha256:${raw_digest%% *}"
               test "$actual" = "$digest"
             done
             printf -- '- `%s@%s`\n' "$image" "$digest" >> release-image-digests.md

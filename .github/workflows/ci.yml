@@ -220,9 +220,9 @@ jobs:
       - name: Verify all candidate images run as non-root
         shell: bash
         run: |
-          test "$(docker image inspect modeldock/ci-server:$GITHUB_SHA --format '{{.Config.User}}')" = '10001:10001'
-          test "$(docker image inspect modeldock/ci-admin-web:$GITHUB_SHA --format '{{.Config.User}}')" = '101:101'
-          test "$(docker image inspect modeldock/ci-console-web:$GITHUB_SHA --format '{{.Config.User}}')" = '101:101'
+          test "$(docker image inspect "modeldock/ci-server:$GITHUB_SHA" --format '{{.Config.User}}')" = '10001:10001'
+          test "$(docker image inspect "modeldock/ci-admin-web:$GITHUB_SHA" --format '{{.Config.User}}')" = '101:101'
+          test "$(docker image inspect "modeldock/ci-console-web:$GITHUB_SHA" --format '{{.Config.User}}')" = '101:101'
       - name: Generate Server SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
