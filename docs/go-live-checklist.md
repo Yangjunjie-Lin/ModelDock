@@ -1,10 +1,10 @@
 # ModelDock go-live report contract
 
-> Machine-generated tracked contract; do not edit. The exact-commit report is emitted to .cache/go-live-checklist.md and uploaded by CI.
+> **NOT RELEASE EVIDENCE.** Machine-generated tracked contract; do not edit. The exact-commit report is emitted to the ignored .cache directory and uploaded by CI.
 
 **Decision: NO-GO**
 **Candidate version:** `3.0.0-beta.1`
-**Latest migration:** `0024_exact_money_and_release_evidence`
+**Latest migration:** `0025_commercial_attestation_and_decimal_hardening`
 **Exact commit:** generated and checked against HEAD only in the CI artifact
 **Release created:** no
 

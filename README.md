@@ -5,11 +5,13 @@
 <!-- commercial-status:start -->
 | Release profile | Machine decision |
 | --- | --- |
-| Engineering implementation | GO — ENGINEERING_PREVIEW |
+| Engineering Preview | Candidate — protected CI required |
 | Commercial operation | NO-GO |
 | Marketplace production | NO-GO |
 
-Tracked status snapshot: VERSION `3.0.0-beta.1` · Migration `0024_exact_money_and_release_evidence` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
+Protected status: [ModelDock CI](https://github.com/Yangjunjie-Lin/ModelDock/actions/workflows/ci.yml) · [Release gate](https://github.com/Yangjunjie-Lin/ModelDock/actions/workflows/release.yml)
+
+Tracked metadata: VERSION `3.0.0-beta.1` · Migration `0025_commercial_attestation_and_decimal_hardening` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
 <!-- commercial-status:end -->
 
 ModelDock is the commercial evolution of RelayDock: a self-hosted,
@@ -502,7 +504,7 @@ Supplier onboarding, KYB state, endpoint verification, quality probes, canary
 controls, payables, settlement batches, disputes, and supplier exit are
 implemented and covered by synthetic tests. They remain commercially blocked
 until the machine-verifiable external evidence in
-`release/commercial-gates.yaml` is genuinely approved.
+`release/commercial-gates.json` is paired with a valid signed Attestation Artifact Bundle.
 
 ## V3 roadmap
 

@@ -161,7 +161,11 @@ func (s *Store) TeamMonthlyUsage(ctx context.Context, teamID string) (int64, dom
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(sum(r.input_tokens+r.output_tokens),0),
 		COALESCE(sum(r.estimated_cost_exact),0)::text FROM request_logs r JOIN api_keys k ON k.id=r.api_key_id
 		WHERE k.team_id=$1 AND r.created_at>=date_trunc('month',now())`, teamID).Scan(&tokens, &cost)
-	return tokens, domain.Decimal(cost), err
+	if err != nil {
+		return 0, "", err
+	}
+	parsedCost, err := parseStoredDecimal(cost, "request_logs.estimated_cost.team_sum")
+	return tokens, parsedCost, err
 }
 
 func (s *Store) UpsertTeam(ctx context.Context, team domain.Team) (domain.Team, error) {

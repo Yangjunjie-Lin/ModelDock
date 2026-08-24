@@ -179,7 +179,10 @@ func (s *Store) ExportUsageRows(ctx context.Context, filter domain.UsageExportFi
 			&row.OutputTokens, &row.TotalTokens, &estimatedCost, &row.LatencyMS, &row.CreatedAt); err != nil {
 			return nil, err
 		}
-		row.EstimatedCost = domain.Decimal(estimatedCost)
+		row.EstimatedCost, err = parseStoredDecimal(estimatedCost, "request_logs.estimated_cost")
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -209,8 +212,12 @@ func (s *Store) ProjectUsageSeries(ctx context.Context, projectID string, from, 
 		if err := rows.Scan(&date, &requests, &input, &cached, &output, &cost, &failures); err != nil {
 			return nil, err
 		}
+		parsedCost, parseErr := parseStoredDecimal(cost, "request_logs.estimated_cost.daily_sum")
+		if parseErr != nil {
+			return nil, parseErr
+		}
 		out = append(out, map[string]any{"date": date, "requests": requests, "input_tokens": input,
-			"cached_input_tokens": cached, "output_tokens": output, "cost": domain.Decimal(cost), "errors": failures})
+			"cached_input_tokens": cached, "output_tokens": output, "cost": parsedCost, "errors": failures})
 	}
 	return out, rows.Err()
 }
@@ -246,9 +253,13 @@ func (s *Store) ProjectUsageHourlySeries(ctx context.Context, projectID string, 
 		if err := rows.Scan(&hour, &requests, &input, &cached, &output, &cost, &failures); err != nil {
 			return nil, err
 		}
+		parsedCost, parseErr := parseStoredDecimal(cost, "request_logs.estimated_cost.hourly_sum")
+		if parseErr != nil {
+			return nil, parseErr
+		}
 		out = append(out, map[string]any{"time": hour.UTC().Format(time.RFC3339), "requests": requests,
 			"input_tokens": input, "cached_input_tokens": cached, "output_tokens": output,
-			"cost": domain.Decimal(cost), "errors": failures})
+			"cost": parsedCost, "errors": failures})
 	}
 	return out, rows.Err()
 }

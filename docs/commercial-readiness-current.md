@@ -2,9 +2,9 @@
 
 **Candidate version:** `3.0.0-beta.1`
 
-**Latest migration:** `0024_exact_money_and_release_evidence`
+**Latest migration:** `0025_commercial_attestation_and_decimal_hardening`
 
-**Engineering implementation:** **GO — ENGINEERING_PREVIEW**
+**Engineering implementation:** **CANDIDATE — protected CI required**
 
 **Commercial decision:** **NO-GO**
 
@@ -39,12 +39,13 @@ for hand edits.
 | 15 | PASS (engineering) / BLOCKED (production) | Supplier onboarding, authority separation and default-deny states | Real KYB, contract, tax/invoice, payout and security approval. |
 | 16 | PASS (engineering) / BLOCKED (production) | Quality probes, canary, circuit and kill-switch controls | Contracted real-provider probe/canary evidence. |
 | 17 | PASS (engineering) / BLOCKED (production) | Exact accrual, reserve, bills, dispute, batches and replay controls | Production payout institution and real reconciliation. |
-| 18 | PASS (engineering) / BLOCKED (production) | Launch, second-admin, suspension/cutover/exit and 31 fail-closed negative scenarios | Complete Marketplace Gate set and real accountable sign-off. |
+| 18 | PASS (engineering) / BLOCKED (production) | Launch, second-admin, suspension/cutover/exit and 44 fail-closed negative scenarios | Complete Marketplace Gate set and real accountable sign-off. |
 
 ## Evidence Chain V2
 
-`release/commercial-gates.yaml` is now only the required Gate catalog plus
-signed Attestation containers. It no longer self-declares payment/payout/SMTP
+`release/commercial-gates.json` is now only the required immutable Gate catalog.
+Signed Attestations live in a GitHub Actions Artifact Bundle, not the source
+Commit. The catalog no longer self-declares payment/payout/SMTP
 mode or Provider/Supplier counts. Draft 2020-12 validation rejects missing,
 duplicate, renamed or unknown Gates, unknown fields, wrong profiles, invalid
 times and malformed SHAs. The verifier then checks evidence existence/hash,

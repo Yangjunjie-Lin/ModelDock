@@ -65,6 +65,38 @@ func TestCalculateRequiresExplicitExchangeRateAcrossCurrencies(t *testing.T) {
 	}
 }
 
+func TestCalculateRejectsInvalidProviderPromotionTaxAndRange(t *testing.T) {
+	baseCost := Rate{Input: "1", Cached: "0", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}
+	baseRetail := Rate{Input: "2", Cached: "0", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}
+	for _, value := range []string{"", "NaN", "Infinity", "-1", "1e2", "1000000000000000000", "0.1234567890123"} {
+		cost := baseCost
+		cost.Input = value
+		if _, err := Calculate(cost, baseRetail, Tokens{Input: 1}, "0", "0", "1"); err == nil {
+			t.Fatalf("invalid Provider price %q was accepted", value)
+		}
+	}
+	for _, promotion := range []string{"NaN", "Infinity", "-1", "1000000000000000000"} {
+		if _, err := Calculate(baseCost, baseRetail, Tokens{Input: 1}, promotion, "0", "1"); err == nil {
+			t.Fatalf("invalid Promotion %q was accepted", promotion)
+		}
+	}
+	for _, tax := range []string{"NaN", "Infinity", "-1", "1000000000000000000"} {
+		if _, err := Calculate(baseCost, baseRetail, Tokens{Input: 1}, "0", tax, "1"); err == nil {
+			t.Fatalf("invalid Tax %q was accepted", tax)
+		}
+	}
+}
+
+func TestCalculateRejectsMissingOrMalformedCurrencies(t *testing.T) {
+	for _, currency := range []string{"", "US", "usd1"} {
+		cost := Rate{Input: "1", Cached: "0", Output: "0", Fixed: "0", Unit: 1, Currency: currency}
+		retail := Rate{Input: "2", Cached: "0", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}
+		if _, err := Calculate(cost, retail, Tokens{Input: 1}, "0", "0", "1"); err == nil {
+			t.Fatalf("invalid currency %q was accepted", currency)
+		}
+	}
+}
+
 func TestMinimumMarginRejectsNegativeMargin(t *testing.T) {
 	cost := Rate{Input: "1", Cached: "1", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}
 	retail := Rate{Input: "0.5", Cached: "0.5", Output: "0", Fixed: "0", Unit: 1, Currency: "USD"}

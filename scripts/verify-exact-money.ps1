@@ -26,6 +26,14 @@ $moneyNumberPattern = '(?i)(\bNumber|\bparseFloat)\([^\)]*(amount|cost|price|bal
 $moneySQLPattern = '(?i)((amount|cost|price|balance|budget|fee|margin|savings|refund|payable|invoice)[A-Za-z0-9_\.]*.*::float8|sum\([^\)]*(amount|cost|price|balance|fee|margin|savings|refund|payable|invoice)[^\)]*\)::float8)'
 $legacyMoneyReadPattern = '(?i)(SELECT|sum\(|COALESCE\()[^\r\n`]*(monthly_cost_limit|input_price|cached_input_price|output_price|estimated_cost|reference_cost|savings_amount)\b'
 $exactCompanionPattern = '(?i)(monthly_cost_limit_exact|input_price_exact|cached_input_price_exact|output_price_exact|estimated_cost_exact|reference_cost_exact|savings_amount_exact)'
+$dynamicMustDecimalPattern = 'domain\.MustDecimal\((?!\s*")'
+$unsafeCommercialDecimalCastPattern = 'domain\.Decimal\('
+$commercialDecimalCastPaths = @(
+    "internal/store/funding.go", "internal/store/payments.go", "internal/store/pricing.go",
+    "internal/store/resources.go", "internal/store/subscriptions.go", "internal/store/supplier_settlement.go",
+    "internal/store/v2_control.go", "internal/store/v2_usage.go", "internal/store/v2_tenants.go",
+    "internal/store/marketplace_enterprise.go", "internal/server/finance.go"
+)
 $extensions = @(".go", ".sql", ".ts", ".tsx")
 $roots = @("internal", "migrations", "apps", "tests")
 $findings = [System.Collections.Generic.List[object]]::new()
@@ -42,7 +50,9 @@ foreach ($root in $roots) {
             $trimmed = $line.Trim()
             if ($trimmed.StartsWith("//") -or $trimmed.StartsWith("/*") -or $trimmed.StartsWith("*")) { continue }
             $legacyMoneyRead = $file.Extension -in @(".go", ".sql") -and $line -match $legacyMoneyReadPattern -and $line -notmatch $exactCompanionPattern
-            $candidate = $line -match $floatPattern -or $line -match $moneyTypePattern -or $line -match $moneyNumberPattern -or $line -match $moneySQLPattern -or $legacyMoneyRead
+            $unsafeCast = $relative -in $commercialDecimalCastPaths -and $line -match $unsafeCommercialDecimalCastPattern
+            $candidate = $line -match $floatPattern -or $line -match $moneyTypePattern -or $line -match $moneyNumberPattern -or
+                $line -match $moneySQLPattern -or $legacyMoneyRead -or $line -match $dynamicMustDecimalPattern -or $unsafeCast
             if (-not $candidate) { continue }
             $allowed = $false
             foreach ($entry in $allowlist.entries) {

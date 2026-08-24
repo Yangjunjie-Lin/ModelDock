@@ -964,7 +964,7 @@ SELECT concat_ws('|',
     $migrationVersion = Invoke-Psql -SQL "SELECT name FROM schema_migrations WHERE version=19;"
     Assert-True ($migrationVersion -eq "public_commercial_onboarding") "Migration 19 is absent from the isolated ledger."
     $latestMigrationVersion = Invoke-Psql -SQL "SELECT max(version) FROM schema_migrations;"
-    Assert-True ($latestMigrationVersion -eq "24") "The isolated commercial onboarding ledger is not current through migration 24."
+    Assert-True ($latestMigrationVersion -eq "25") "The isolated commercial onboarding ledger is not current through migration 25."
     $evidenceTableCount = Invoke-Psql -SQL "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('public_commercial_terms','public_payment_fee_schedule','commercial_funnel_events','commercial_funnel_api_call_counter');"
     Assert-True ([int]$evidenceTableCount -eq 4) "The commercial onboarding evidence schema is incomplete."
     $auditCount = Invoke-Psql -SQL "SELECT count(*) FROM audit_logs WHERE action IN ('commercial.public_terms.publish','commercial.payment_fee.publish');"

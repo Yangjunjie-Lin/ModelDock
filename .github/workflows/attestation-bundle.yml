@@ -1,0 +1,86 @@
+name: ModelDock Attestation Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full protected candidate Commit SHA
+        required: true
+        type: string
+      release_profile:
+        description: Target release profile
+        required: true
+        type: choice
+        options: [COMMERCIAL_BETA, MARKETPLACE_PRODUCTION]
+      runtime_run_id:
+        description: Run containing the signed Runtime Attestation
+        required: true
+        type: string
+      external_run_id:
+        description: Controlled run containing signed external Attestations and evidence exports
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bundle:
+    name: Assemble exact-commit signed Attestation Bundle
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.release_profile == 'COMMERCIAL_BETA' && 'commercial-beta' || 'marketplace-production' }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+          cache-dependency-path: tools/commercial-evidence/package-lock.json
+      - name: Install locked JSON Schema validator
+        working-directory: tools/commercial-evidence
+        run: npm ci --ignore-scripts
+      - name: Download signed Runtime Attestation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runtime-attestation-${{ inputs.commit_sha }}-${{ inputs.release_profile }}
+          path: .cache/runtime
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.runtime_run_id }}
+      - name: Download controlled external Attestations and evidence exports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: external-attestations-${{ inputs.commit_sha }}-${{ inputs.release_profile }}
+          path: .cache/external
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.external_run_id }}
+      - name: Assemble and schema-validate the Artifact Bundle
+        shell: pwsh
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit_sha }}
+          EXTERNAL_RUN_ID: ${{ inputs.external_run_id }}
+          RUNTIME_RUN_ID: ${{ inputs.runtime_run_id }}
+        run: |
+          if ((git rev-parse HEAD).Trim() -cne $env:EXPECTED_COMMIT) { throw 'Attestation Bundle checkout mismatch.' }
+          if (@(git status --porcelain --untracked-files=all).Count -ne 0) { throw 'Attestation Bundle checkout is dirty.' }
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          $version = (Get-Content VERSION -Raw).Trim()
+          $migration = (Get-ChildItem migrations -File -Filter '*.sql' | Where-Object BaseName -Match '^[0-9]{4}_[a-z0-9_]+$' | Sort-Object BaseName | Select-Object -Last 1).BaseName
+          New-Item -ItemType Directory -Force .cache/bundle | Out-Null
+          node scripts/build-attestation-bundle.mjs --output .cache/bundle/commercial-attestation-bundle.json --commit $env:EXPECTED_COMMIT --tree $tree --version $version --migration $migration --external-workflow-run-id $env:EXTERNAL_RUN_ID --runtime-workflow-run-id $env:RUNTIME_RUN_ID --external-directory .cache/external/attestations --runtime-directory .cache/runtime
+          node scripts/validate-json-schema.mjs release/commercial-attestation-bundle.schema.json .cache/bundle/commercial-attestation-bundle.json
+          Copy-Item -Recurse -Force .cache/external/evidence .cache/bundle/evidence
+      - name: Upload exact-commit Attestation Bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: commercial-attestation-bundle-${{ inputs.commit_sha }}
+          path: .cache/bundle
+          if-no-files-found: error
+          retention-days: 30

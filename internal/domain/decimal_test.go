@@ -46,7 +46,7 @@ func TestDecimalArithmeticReturnsErrorsAndRoundsAtMoneyScale(t *testing.T) {
 }
 
 func TestDecimalRejectsInvalidNullScaleAndRange(t *testing.T) {
-	for _, input := range []string{`"not-a-number"`, `"1.0000000000001"`, `"1000000000000000000"`, `null`, `""`, `"1e2"`, `"1/2"`} {
+	for _, input := range []string{`"not-a-number"`, `"NaN"`, `"Infinity"`, `"-Infinity"`, `"1.0000000000001"`, `"1000000000000000000"`, `null`, `""`, `"1e2"`, `"1/2"`} {
 		var value Decimal
 		if err := json.Unmarshal([]byte(input), &value); err == nil {
 			t.Fatalf("expected %s to fail", input)
@@ -65,6 +65,16 @@ func TestDecimalRejectsInvalidNullScaleAndRange(t *testing.T) {
 		if _, err := value.Compare(MustDecimal("1")); err == nil {
 			t.Fatalf("Compare accepted %q", value)
 		}
+	}
+}
+
+func TestDecimalArithmeticRejectsOverflow(t *testing.T) {
+	maximum := MustDecimal("999999999999999999.999999999999")
+	if _, err := maximum.Add(MustDecimal("0.000000000001")); err == nil {
+		t.Fatal("Add accepted a NUMERIC(30,12) overflow")
+	}
+	if _, err := maximum.Multiply(MustDecimal("2")); err == nil {
+		t.Fatal("Multiply accepted a NUMERIC(30,12) overflow")
 	}
 }
 

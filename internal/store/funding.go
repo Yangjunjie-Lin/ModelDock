@@ -929,7 +929,11 @@ func (s *Store) ListJournals(ctx context.Context, walletID string, limit, offset
 				entryRows.Close()
 				return nil, queryErr
 			}
-			entry.Amount = domain.Decimal(amount)
+			entry.Amount, queryErr = parseStoredDecimal(amount, "ledger_journal_entry.amount")
+			if queryErr != nil {
+				entryRows.Close()
+				return nil, queryErr
+			}
 			journal.Entries = append(journal.Entries, entry)
 		}
 		if queryErr = entryRows.Err(); queryErr != nil {

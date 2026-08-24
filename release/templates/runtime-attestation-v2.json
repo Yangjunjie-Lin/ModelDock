@@ -1,29 +1,49 @@
 {
+  "_template_notice": "NOT RELEASE EVIDENCE",
   "schema_version": "2.0.0",
-  "release_profile": "COMMERCIAL_BETA",
+  "release_profile": "REPLACE_WITH_PROFILE",
   "repository": "Yangjunjie-Lin/ModelDock",
-  "deployment_environment_id": "REPLACE-TARGET-ENVIRONMENT",
-  "commit": "0000000000000000000000000000000000000000",
-  "tree": "0000000000000000000000000000000000000000",
+  "environment_id": "REPLACE_WITH_TARGET_ENVIRONMENT",
+  "commit_sha": "REPLACE_WITH_FULL_COMMIT_SHA",
+  "tree_sha": "REPLACE_WITH_FULL_TREE_SHA",
   "version": "3.0.0-beta.1",
-  "image_digests": {
-    "server": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "admin": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "console": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
-  "configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "migration_version": "0025_commercial_attestation_and_decimal_hardening",
+  "server_image_digest": "sha256:REPLACE",
+  "admin_image_digest": "sha256:REPLACE",
+  "console_image_digest": "sha256:REPLACE",
   "payment_adapter": { "type": "replace_me", "production_ready": false },
   "payout_adapter": { "type": "replace_me", "production_ready": false },
-  "smtp": { "provider_id_hash": "0000000000000000000000000000000000000000000000000000000000000000", "verified": false },
+  "smtp": {
+    "provider_id_hash": "REPLACE_WITH_SALTED_SHA256",
+    "delivery_verified": false,
+    "delivery_proof_sha256": "REPLACE_WITH_SHA256"
+  },
   "commercially_approved_providers": [],
   "production_ready_suppliers": [],
-  "database_migration": "0024_exact_money_and_release_evidence",
-  "database_query_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "generated_at": "2000-01-01T00:00:00Z",
-  "expires_at": "2000-01-01T00:00:00Z",
-  "workflow_run_id": "1",
-  "issuer": "REPLACE-WITH-ALLOWLISTED-OPERATIONS-ISSUER",
+  "database_query_summary": {
+    "commercially_approved_provider_count": 0,
+    "production_ready_supplier_count": 0,
+    "invalid_decimal_rows": 0,
+    "summary_sha256": "REPLACE_WITH_SHA256"
+  },
+  "configuration_summary": {
+    "sha256": "REPLACE_WITH_SHA256",
+    "redacted_keys": [
+      "PAYMENT_ADAPTER",
+      "PAYMENT_PRODUCTION_READY",
+      "PAYOUT_ADAPTER",
+      "PAYOUT_PRODUCTION_READY",
+      "SMTP_PROVIDER"
+    ]
+  },
+  "generated_at": "REPLACE_WITH_RFC3339_TIME",
+  "expires_at": "REPLACE_WITH_RFC3339_TIME",
+  "workflow_run_id": "REPLACE_WITH_GITHUB_RUN_ID",
+  "workflow_run_attempt": "REPLACE_WITH_GITHUB_RUN_ATTEMPT",
+  "issuer": "REPLACE_WITH_ALLOWLISTED_OPERATIONS_ISSUER",
   "issuer_role": "Operations",
-  "signature": "REPLACE-WITH-ED25519-SIGNATURE",
-  "signature_type": "ed25519"
+  "signature_type": "ed25519",
+  "signature": "REPLACE_WITH_SIGNATURE_OVER_CANONICAL_PAYLOAD",
+  "certificate_identity": "REPLACE_WITH_ALLOWLISTED_IDENTITY",
+  "certificate_issuer": "REPLACE_WITH_ALLOWLISTED_CERTIFICATE_ISSUER"
 }

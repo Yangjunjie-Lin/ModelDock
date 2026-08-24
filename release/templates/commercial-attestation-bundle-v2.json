@@ -1,0 +1,12 @@
+{
+  "_template_notice": "NOT RELEASE EVIDENCE",
+  "schema_version": "2.0.0",
+  "repository": "Yangjunjie-Lin/ModelDock",
+  "reviewed_commit": "REPLACE_WITH_FULL_COMMIT_SHA",
+  "reviewed_tree": "REPLACE_WITH_FULL_TREE_SHA",
+  "version": "3.0.0-beta.1",
+  "migration_version": "0025_commercial_attestation_and_decimal_hardening",
+  "evidence_origin": "TEMPLATE_NOT_RELEASE_EVIDENCE",
+  "external_attestations": [],
+  "runtime_attestations": []
+}

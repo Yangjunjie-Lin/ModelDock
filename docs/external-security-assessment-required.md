@@ -4,7 +4,7 @@ Repository tests are regression evidence, not an independent assessment. The
 following gates remain **BLOCKED** until an authorized external reviewer or the
 responsible production owner records a controlled evidence reference, SHA-256,
 approver, approval/expiry time, and exact reviewed commit in
-`release/commercial-gates.yaml`.
+`release/commercial-gates.json`.
 
 | Required assessment | Minimum evidence | Current state |
 | --- | --- | --- |

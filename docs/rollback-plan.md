@@ -82,10 +82,19 @@ If the previous binary cannot read the forward schema, do not improvise DDL.
 Return to the candidate, keep paid traffic disabled, and proceed to database
 recovery review.
 
+## Migration 0025 Attestation and Decimal hardening rollback
+
+`0025_commercial_attestation_and_decimal_hardening.sql` is additive and
+forward-repair only. Older application binaries ignore its append-only
+Attestation verification audit, Runtime readiness views, and Decimal integrity
+function. Do not delete verification audit rows. Correct readiness logic with a
+new migration and regenerate the exact-commit Runtime Attestation; never
+rewrite settled amounts or a signed Artifact.
+
 ## Database rollback and recovery
 
-The current forward schema includes migrations 1 through 24. Migrations
-0021–0024 are additive; before an application rollback disable Provider quality
+The current forward schema includes migrations 1 through 25. Migrations
+0021–0025 are additive; before an application rollback disable Provider quality
 policies and every supplier-linked Provider, then retain all quality,
 Marketplace, settlement, payout-readiness, lifecycle, and audit evidence.
 Routine application rollback retains every migration and never deletes

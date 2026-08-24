@@ -64,7 +64,7 @@ func scanRechargeOrder(row pgx.Row) (domain.RechargeOrder, error) {
 		return order, ErrNotFound
 	}
 	if err == nil {
-		order.Amount = domain.Decimal(amount)
+		order.Amount, err = parseStoredDecimal(amount, "payment_order.amount")
 		_ = json.Unmarshal(metadata, &order.Metadata)
 	}
 	return order, err
@@ -740,7 +740,7 @@ func scanRefundOrder(row pgx.Row, refund *domain.RefundOrder) error {
 		&refund.WalletTransactionID, &refund.LedgerJournalID, &refund.CreatedBy, &refund.FailureCode,
 		&refund.CreatedAt, &refund.UpdatedAt, &refund.CompletedAt)
 	if err == nil {
-		refund.Amount = domain.Decimal(amount)
+		refund.Amount, err = parseStoredDecimal(amount, "payment_refund.amount")
 	}
 	return err
 }

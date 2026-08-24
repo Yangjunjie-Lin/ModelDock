@@ -53,7 +53,8 @@ $expectedLedger = @(
 	"21:provider_quality",
 	"22:supplier_settlement",
 	"23:marketplace_launch_acceptance",
-	"24:exact_money_and_release_evidence"
+	"24:exact_money_and_release_evidence",
+	"25:commercial_attestation_and_decimal_hardening"
 )
 $expectedProviderSeeds = @(
     "anthropic|anthropic|https://api.anthropic.com/v1",
@@ -661,6 +662,31 @@ function Assert-ExpectedLedger {
 	if ($settlementTriggerResult.Output.Trim() -ne "11") {
 		throw "The supplier settlement migration did not create every evidence guard."
 	}
+
+	$attestationResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='commercial_attestation_verification_audit'" `
+		-Operation "Validating Migration 25 Attestation audit table"
+	if ($attestationResult.Output.Trim() -ne "1") {
+		throw "Migration 25 did not create the Attestation verification audit table."
+	}
+	$runtimeViewResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM information_schema.views WHERE table_schema='public' AND table_name IN ('commercial_runtime_provider_candidates_v2','commercial_runtime_supplier_candidates_v2')" `
+		-Operation "Validating Migration 25 Runtime readiness views"
+	if ($runtimeViewResult.Output.Trim() -ne "2") {
+		throw "Migration 25 did not create both database-derived Runtime readiness views."
+	}
+	$decimalIntegrityResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT COALESCE(sum(invalid_rows),0) FROM commercial_decimal_integrity_v2()" `
+		-Operation "Validating Migration 25 Decimal integrity scan"
+	if ($decimalIntegrityResult.Output.Trim() -ne "0") {
+		throw "Migration 25 Decimal integrity scan found invalid rows."
+	}
+	$attestationTriggerResult = Invoke-PsqlChecked -Database $script:testDatabase `
+		-Sql "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname='commercial_attestation_verification_immutable'" `
+		-Operation "Validating Migration 25 append-only Attestation audit"
+	if ($attestationTriggerResult.Output.Trim() -ne "1") {
+		throw "Migration 25 did not create the append-only Attestation audit trigger."
+	}
 }
 
 function Get-LedgerSnapshot {
@@ -845,7 +871,7 @@ try {
     Wait-ForSuccessfulStartup -Name $firstContainer
     $firstSnapshot = Get-LedgerSnapshot
     Remove-TestContainer -Name $firstContainer
-    Write-Host "PASS empty database applied migrations 1:core through 24:exact_money_and_release_evidence"
+    Write-Host "PASS empty database applied migrations 1:core through 25:commercial_attestation_and_decimal_hardening"
 
     $exactWrite = Invoke-PsqlChecked -Database $testDatabase `
         -Sql "WITH target AS (UPDATE users SET monthly_cost_limit_exact=0.100000000001 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT monthly_cost_limit::text||'|'||monthly_cost_limit_exact::text FROM target" `
@@ -931,7 +957,7 @@ try {
     Wait-ForSuccessfulStartup -Name $upgradeContainer
     Assert-PopulatedV1Upgrade
     Remove-TestContainer -Name $upgradeContainer
-    Write-Host "PASS populated V1 database upgraded through 24:exact_money_and_release_evidence without losing legacy data"
+    Write-Host "PASS populated V1 database upgraded through 25:commercial_attestation_and_decimal_hardening without losing legacy data"
 
     Recreate-TestDatabase
     Initialize-PopulatedV12FinancialDatabase
@@ -940,7 +966,7 @@ try {
     Wait-ForSuccessfulStartup -Name $v12UpgradeContainer
     Assert-PopulatedV12FinancialUpgrade
     Remove-TestContainer -Name $v12UpgradeContainer
-    Write-Host "PASS populated V12 funding and refund holds upgraded through 24 without becoming refundable"
+    Write-Host "PASS populated V12 funding and refund holds upgraded through 25 without becoming refundable"
 
     Write-Host "Migration contract verification passed for empty and populated-upgrade databases. Cleanup will now remove only this run's containers and random database."
 } finally {

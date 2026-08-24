@@ -18,6 +18,7 @@ var (
 )
 
 var storedDecimalPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,17})(\.[0-9]{1,12})?$`)
+var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // ValidateStoredDecimal validates the exact representation accepted by the
 // commercial NUMERIC(30,12) columns. Exponents, fractions, signs, NaN and
@@ -64,7 +65,12 @@ func Calculate(cost, retail Rate, tokens Tokens, promotion, taxRate, exchangeRat
 	if cost.Unit <= 0 || retail.Unit <= 0 {
 		return Result{}, ErrInvalidUnit
 	}
-	if !strings.EqualFold(strings.TrimSpace(cost.Currency), strings.TrimSpace(retail.Currency)) && strings.TrimSpace(exchangeRate) == "" {
+	cost.Currency = strings.ToUpper(strings.TrimSpace(cost.Currency))
+	retail.Currency = strings.ToUpper(strings.TrimSpace(retail.Currency))
+	if !currencyPattern.MatchString(cost.Currency) || !currencyPattern.MatchString(retail.Currency) {
+		return Result{}, errors.New("cost and retail currencies must be ISO 4217 codes")
+	}
+	if cost.Currency != retail.Currency && strings.TrimSpace(exchangeRate) == "" {
 		return Result{}, errors.New("an explicit exchange rate is required for different currencies")
 	}
 	if strings.TrimSpace(exchangeRate) == "" {
@@ -129,6 +135,14 @@ func MeetsMinimumMargin(cost, retail Rate, minimumAmount string, minimumBPS int6
 	}
 	if cost.Unit <= 0 || retail.Unit <= 0 {
 		return false, "", ErrInvalidUnit
+	}
+	cost.Currency = strings.ToUpper(strings.TrimSpace(cost.Currency))
+	retail.Currency = strings.ToUpper(strings.TrimSpace(retail.Currency))
+	if !currencyPattern.MatchString(cost.Currency) || !currencyPattern.MatchString(retail.Currency) {
+		return false, "", errors.New("cost and retail currencies must be ISO 4217 codes")
+	}
+	if cost.Currency != retail.Currency && strings.TrimSpace(exchangeRate) == "" {
+		return false, "", errors.New("an explicit exchange rate is required for different currencies")
 	}
 	if err := validateRate(cost); err != nil {
 		return false, "", err
@@ -211,7 +225,10 @@ func mustRat(value string) *big.Rat {
 func nonNegative(value string) (*big.Rat, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		value = "0"
+		return nil, ErrInvalidAmount
+	}
+	if err := ValidateStoredDecimal(value); err != nil {
+		return nil, err
 	}
 	r, ok := new(big.Rat).SetString(value)
 	if !ok {

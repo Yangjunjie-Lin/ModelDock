@@ -1,10 +1,12 @@
 # Security release report
 
+> **NOT RELEASE EVIDENCE.** Protected CI generates the exact report Artifact.
+
 **Decision: NO-GO**
 
 **Candidate:** `3.0.0-beta.1`
 
-**Latest migration:** `0024_exact_money_and_release_evidence`
+**Latest migration:** `0025_commercial_attestation_and_decimal_hardening`
 
 **Release/Tag/production promotion created:** no
 
@@ -43,7 +45,7 @@ production SMTP/PITR/failover, tax, or independent security assessment.
   Ed25519 signature, exact Gate/profile/repository/Commit/Tree/Version/Migration,
   workflow run, issuer allowlist, required role and validity window.
 - The production issuer policy is empty and its SHA-256 must be anchored in a
-  protected out-of-repository variable. Editing YAML cannot create trust.
+  protected out-of-repository variable. Editing the JSON catalog cannot create trust.
 - Runtime claims are signed target-environment output. Sandbox/manual payment,
   sandbox payout, count-only claims, invalid Provider contract windows and
   incomplete supplier predicates fail closed.

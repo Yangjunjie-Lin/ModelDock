@@ -87,6 +87,9 @@ jobs:
       - name: Build
         working-directory: apps/${{ matrix.app }}
         run: npm run build
+      - name: Audit high-severity dependencies
+        working-directory: apps/${{ matrix.app }}
+        run: npm audit --audit-level=high
 
   dependency-security:
     name: Dependency vulnerability scanning
@@ -330,7 +333,7 @@ jobs:
         shell: pwsh
         run: ./scripts/new-ci-env.ps1 -OutputPath .env
       - name: Prepare isolated bind and result directories
-        run: mkdir -p data/postgres data/redis data/cockpit logs .cache/commercial-results
+        run: mkdir -p data/postgres data/redis data/cockpit logs .cache/commercial-results .cache/ci-candidates
       - name: Start isolated PostgreSQL and Redis
         run: docker compose --env-file .env up -d --wait --wait-timeout 120 postgres redis
       - name: Build exact-commit integration images once
@@ -351,13 +354,95 @@ jobs:
             --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
             --build-arg BUILD_DATE="$build_date" --build-arg SOURCE_DATE_EPOCH="$source_epoch" \
             -t relaydock/console-web:local .
+      - name: Verify the exact integration images run as non-root
+        shell: bash
+        run: |
+          test "$(docker image inspect relaydock/server:local --format '{{.Config.User}}')" = '10001:10001'
+          test "$(docker image inspect relaydock/admin-web:local --format '{{.Config.User}}')" = '101:101'
+          test "$(docker image inspect relaydock/console-web:local --format '{{.Config.User}}')" = '101:101'
+      - name: Generate same-Digest Server SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: relaydock/server:local
+          format: spdx-json
+          output-file: .cache/ci-candidates/sbom-server.spdx.json
+          upload-artifact: false
+      - name: Generate same-Digest Admin SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: relaydock/admin-web:local
+          format: spdx-json
+          output-file: .cache/ci-candidates/sbom-admin.spdx.json
+          upload-artifact: false
+      - name: Generate same-Digest Console SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: relaydock/console-web:local
+          format: spdx-json
+          output-file: .cache/ci-candidates/sbom-console.spdx.json
+          upload-artifact: false
+      - name: Trivy same-Digest Server image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: relaydock/server:local
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Trivy same-Digest Admin image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: relaydock/admin-web:local
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Trivy same-Digest Console image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: relaydock/console-web:local
+          format: table
+          exit-code: 1
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Record same-Digest engineering candidate metadata and provenance
+        shell: pwsh
+        run: |
+          $images = [ordered]@{ server='relaydock/server:local'; admin='relaydock/admin-web:local'; console='relaydock/console-web:local' }
+          foreach ($component in $images.Keys) {
+            $digest = (docker image inspect $images[$component] --format '{{.Id}}').Trim()
+            if ($digest -notmatch '^sha256:[0-9a-f]{64}$') { throw "Invalid $component image Digest." }
+            [ordered]@{
+              predicate_type='https://slsa.dev/provenance/v1'
+              evidence_level='ENGINEERING_CI'
+              repository=$env:GITHUB_REPOSITORY
+              commit=$env:GITHUB_SHA
+              image_digest=$digest
+              workflow_run_id=$env:GITHUB_RUN_ID
+              workflow_run_attempt=$env:GITHUB_RUN_ATTEMPT
+            } | ConvertTo-Json | Set-Content ".cache/ci-candidates/provenance-$component.json" -Encoding utf8
+            [ordered]@{
+              component=$component
+              evidence_level='ENGINEERING_CI'
+              repository=$env:GITHUB_REPOSITORY
+              workflow_run_id=$env:GITHUB_RUN_ID
+              workflow_run_attempt=$env:GITHUB_RUN_ATTEMPT
+              digest=$digest
+              commit=$env:GITHUB_SHA
+              candidate_tag="local-$($env:GITHUB_SHA.Substring(0,12))"
+              candidate_tag_digest=$digest
+              scan_status='PASS'; scan_digest=$digest; scan_commit=$env:GITHUB_SHA
+              sbom_status='PASS'; sbom_digest=$digest; sbom_commit=$env:GITHUB_SHA
+              provenance_status='PASS'; provenance_digest=$digest; provenance_commit=$env:GITHUB_SHA
+            } | ConvertTo-Json | Set-Content ".cache/ci-candidates/image-$component.json" -Encoding utf8
+          }
       - name: Run every commercial and Marketplace suite
         shell: pwsh
-        run: ./scripts/verify-commercial-integration.ps1 -EnvFile .env -ConfirmIsolatedTestDatabase -OutputDirectory .cache/commercial-results -ServerImage relaydock/server:local -AdminImage relaydock/admin-web:local -ConsoleImage relaydock/console-web:local
+        run: ./scripts/verify-commercial-integration.ps1 -EnvFile .env -ConfirmIsolatedTestDatabase -OutputDirectory .cache/commercial-results -ServerImage relaydock/server:local -AdminImage relaydock/admin-web:local -ConsoleImage relaydock/console-web:local -CandidateMetadataDirectory .cache/ci-candidates
       - name: Generate and verify exact-commit engineering reports
         shell: pwsh
         run: |
-          ./scripts/verify-commercial-readiness.ps1 -Profile ENGINEERING_PREVIEW -Commit $env:GITHUB_SHA -TestReportPath .cache/commercial-results/commercial-test-evidence.json -ReportOutput .cache/commercial-results/commercial-readiness-report.md -GoLiveOutput .cache/commercial-results/go-live-checklist.md
+          ./scripts/verify-commercial-readiness.ps1 -Profile ENGINEERING_PREVIEW -Commit $env:GITHUB_SHA -TestReportPath .cache/commercial-results/commercial-test-evidence.json -ReportOutput .cache/commercial-results/commercial-readiness-report.md -GoLiveOutput .cache/commercial-results/go-live-checklist.md -SecurityReportOutput .cache/commercial-results/security-release-report.md -FinancialReportOutput .cache/commercial-results/financial-reconciliation-report.md -ImageDigestReportOutput .cache/commercial-results/image-digest-report.md
           $report = Get-Content -LiteralPath .cache/commercial-results/go-live-checklist.md -Raw
           if ($report -notmatch [regex]::Escape("- Commit: $env:GITHUB_SHA")) { throw 'Generated Go-live Report commit does not equal HEAD.' }
           if ((git rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) { throw 'Checkout HEAD changed during commercial verification.' }
@@ -369,9 +454,159 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: commercial-integration-${{ github.sha }}
-          path: .cache/commercial-results
+          path: |
+            .cache/commercial-results
+            .cache/ci-candidates
           if-no-files-found: error
           retention-days: 30
       - name: Stop isolated services
         if: always()
         run: docker compose --env-file .env down --remove-orphans
+
+  go-format-required:
+    name: Go Format
+    needs: go
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.go.result }}' = success
+  go-vet-required:
+    name: Go Vet
+    needs: go
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.go.result }}' = success
+  go-test-required:
+    name: Go Test
+    needs: go
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.go.result }}' = success
+  frontend-admin-required:
+    name: Frontend Admin
+    needs: frontend
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.frontend.result }}' = success
+  frontend-console-required:
+    name: Frontend Console
+    needs: frontend
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.frontend.result }}' = success
+  exact-money-required:
+    name: Exact Money
+    needs: go
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.go.result }}' = success
+  migration-required:
+    name: Migration 1–25
+    needs: migrations
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.migrations.result }}' = success
+  commercial-required:
+    name: Commercial Integration
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  marketplace-required:
+    name: Marketplace Integration
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  evidence-schema-required:
+    name: Evidence Schema
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  evidence-signature-required:
+    name: Evidence Signature
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  runtime-attestation-required:
+    name: Runtime Attestation
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  release-negative-required:
+    name: Release Negative Tests
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  docker-build-required:
+    name: Docker Build
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  trivy-required:
+    name: Trivy
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  govulncheck-required:
+    name: Govulncheck
+    needs: dependency-security
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.dependency-security.result }}' = success
+  gosec-required:
+    name: Gosec
+    needs: dependency-security
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.dependency-security.result }}' = success
+  gitleaks-required:
+    name: Gitleaks
+    needs: secrets
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.secrets.result }}' = success
+  sbom-required:
+    name: SBOM
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success
+  actionlint-required:
+    name: Actionlint
+    needs: workflow-security
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.workflow-security.result }}' = success
+  same-digest-required:
+    name: Same-Digest Verification
+    needs: commercial-integration
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.commercial-integration.result }}' = success

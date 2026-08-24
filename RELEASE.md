@@ -42,9 +42,10 @@ pwsh ./scripts/verify-release.ps1 -Version 3.0.0-beta.1
 The workflow accepts `ENGINEERING_PREVIEW`, `COMMERCIAL_BETA`, and
 `MARKETPLACE_PRODUCTION`. Engineering Preview uploads a source-only artifact
 explicitly marked non-production and does not push images or create a GitHub
-Release. Commercial profiles fail before image construction unless every
-external evidence gate is current and approved. Prerelease SemVer values create
-GitHub Prereleases; stable SemVer values create stable releases.
+Release. Commercial profiles build unique candidate Digests first, then stop
+before promotion unless the same-Digest tests/scans and every signed
+External/Runtime Artifact Gate pass. Prerelease SemVer values create GitHub
+Prereleases; stable SemVer values create stable releases.
 
 ## Automated release artifacts
 
@@ -62,8 +63,10 @@ After the reusable CI workflow succeeds, the release workflow:
 - emits downloadable SPDX JSON SBOMs;
 - scans each final image for HIGH and CRITICAL vulnerabilities before creating
   the GitHub Release;
-- optionally signs each image digest with keyless Cosign when the repository
-  variable `MODELDOCK_SIGN_IMAGES` is exactly `true`.
+- requires the final decision job to run in the reviewed commercial-beta or
+  marketplace-production GitHub Environment;
+- attaches the generated Commercial, Go-live, Security, Financial, and Image
+  Digest reports to the GitHub Release.
 
 The promotion and GitHub Release are the last jobs. If CI, build, SBOM,
 provenance, signing, or scanning fails, no formal tag promotion or Release is

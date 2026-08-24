@@ -624,7 +624,9 @@ func (s *Store) ProjectUsage(ctx context.Context, projectID string, from, to tim
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectBudgetUsage{}, ErrNotFound
 	}
-	out.Cost = domain.Decimal(cost)
+	if err == nil {
+		out.Cost, err = parseStoredDecimal(cost, "request_logs.estimated_cost.budget_sum")
+	}
 	out.TotalTokens = out.InputTokens + out.OutputTokens
 	return out, err
 }
@@ -660,7 +662,10 @@ func scanBudgetEvent(row pgx.Row) (domain.BudgetEvent, error) {
 	if err != nil {
 		return out, err
 	}
-	out.Cost = domain.Decimal(cost)
+	out.Cost, err = parseStoredDecimal(cost, "budget_events.cost")
+	if err != nil {
+		return out, err
+	}
 	_ = json.Unmarshal(metadata, &out.Metadata)
 	if out.Metadata == nil {
 		out.Metadata = map[string]any{}

@@ -43,7 +43,7 @@ func consoleProjectOverview(c *gin.Context, d Dependencies, project domain.Proje
 		return nil, err
 	}
 	var tokenLimit int64
-	costLimit := domain.Decimal("0")
+	costLimit := domain.MustDecimal("0")
 	for _, policy := range policies {
 		if policy.Status != "ACTIVE" || policy.Period != "MONTHLY" {
 			continue

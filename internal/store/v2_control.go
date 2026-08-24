@@ -38,7 +38,10 @@ func (s *Store) ListProjectRequestLogs(ctx context.Context, projectID string, us
 			&entry.UpstreamRequestID, &entry.ErrorCode, &schedulerReason, &entry.CreatedAt); err != nil {
 			return nil, err
 		}
-		entry.EstimatedCost = domain.Decimal(estimatedCost)
+		entry.EstimatedCost, err = parseStoredDecimal(estimatedCost, "request_logs.estimated_cost")
+		if err != nil {
+			return nil, err
+		}
 		entry.SchedulerReason = map[string]any{}
 		_ = json.Unmarshal(schedulerReason, &entry.SchedulerReason)
 		out = append(out, entry)
@@ -64,8 +67,12 @@ func (s *Store) ProjectUsageByModel(ctx context.Context, projectID string, from,
 		if err := rows.Scan(&model, &requests, &input, &cached, &output, &tokens, &cost, &failures); err != nil {
 			return nil, err
 		}
+		parsedCost, parseErr := parseStoredDecimal(cost, "request_logs.estimated_cost.sum")
+		if parseErr != nil {
+			return nil, parseErr
+		}
 		out = append(out, map[string]any{"model": model, "requests": requests, "input_tokens": input,
-			"cached_input_tokens": cached, "output_tokens": output, "tokens": tokens, "cost": domain.Decimal(cost), "errors": failures})
+			"cached_input_tokens": cached, "output_tokens": output, "tokens": tokens, "cost": parsedCost, "errors": failures})
 	}
 	return out, rows.Err()
 }

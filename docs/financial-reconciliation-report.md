@@ -1,5 +1,8 @@
 # Financial reconciliation report
 
+> **NOT RELEASE EVIDENCE.** This tracked engineering note cannot replace the
+> exact-commit GitHub Actions Artifact.
+
 **Overall release decision:** `NO-GO`  
 **Synthetic financial test result:** PASS with zero reconciliation differences  
 **Revalidation date:** 2026-08-21 (Asia/Shanghai)
@@ -19,7 +22,7 @@ promotion, refund, wallet, journal, Provider statement, supplier payable, and
 reconciliation operations use idempotency keys, transactions, terminal-state
 checks, and audit evidence.
 
-Populated V1, V12, V21, and V22 fixtures upgraded through Migration 24. Exact
+Populated V1, V12, V21, and V22 fixtures upgraded through Migration 25. Exact
 12-place writes and legacy-only compatibility writes passed, and
 `exact_money_migration_differences` reported zero differences. The static
 exact-money scanner found no monetary floating-point path; retained floats are
@@ -123,7 +126,7 @@ write transactions to avoid a busy PostgreSQL connection.
 
 The following prevent commercial release despite the passing synthetic close:
 
-1. commit and review Migration 0024 and reproduce all exact-money and financial
+1. commit and review Migrations 0024–0025 and reproduce all exact-money and financial
    suites on the exact clean release commit and immutable image digests;
 2. reconcile an approved payment partner's production settlement/export, fees,
    refunds, and replay behavior;

@@ -12,13 +12,14 @@ its SHA-256; the repository stores the signed Attestation and opaque reference.
 | --- | --- | --- | --- | --- |
 | License | Owner + Legal | 许可证决定与第三方 License Inventory | Signed Attestation | BLOCKED |
 | Legal Entity | Owner + Legal | 主体注册与授权 | Signed Attestation | BLOCKED |
-| Terms/Privacy/Refund | Legal + Finance | 最终批准文本 | Signed Attestation | BLOCKED |
-| Payment | Finance | 商户协议、Sandbox/Production 验证、结算与拒付 | Runtime + Signed Attestation | BLOCKED |
+| Terms/Privacy | Legal | 最终批准文本 | Signed Attestation | BLOCKED |
+| Refund/Tax | Finance + Legal | 退款、税务和发票规则 | Signed Attestation | BLOCKED |
+| Payment | Finance + Legal | 商户协议、生产 Adapter、结算与拒付 | Runtime + Signed Attestation | BLOCKED |
 | Provider | Commercial + Legal | 商业分发权、地区与数据处理条款 | Provider Attestation | BLOCKED |
 | SMTP | Operations | 域名、投递、退信和声誉验证 | Runtime Attestation | BLOCKED |
 | PITR/Failover | Operations | Managed Restore 与 RPO/RTO Drill | Signed Attestation | BLOCKED |
 | Security | Independent Tester + Security | 渗透测试与问题处置 | Signed Attestation | BLOCKED |
-| Supplier | Legal + Finance + Security | KYB、合同、税务、Payout | Supplier Attestation | BLOCKED |
+| Supplier | Commercial + Legal + Finance + Security | KYB、合同、税务、Payout | Signed Attestation | BLOCKED |
 
 ## Controlled closure procedure
 
@@ -30,20 +31,26 @@ its SHA-256; the repository stores the signed Attestation and opaque reference.
    Attestation V2 with an Ed25519 private key held outside the repository, or
    supplies an equivalent GitHub Artifact Attestation/Sigstore identity that a
    future schema version explicitly supports.
-3. A security administrator separately adds the issuer public key and allowed
+3. A security administrator separately adds the issuer public key, certificate
+   identity/issuer, and allowed
    roles to `release/trusted-attestation-issuers.json` through protected review.
    The private key is never placed in Git, Actions variables, logs, or images.
 4. Operations generates Runtime Attestation V2 from the target environment.
    It contains only digests, booleans, counts derived from the listed masked
    IDs, and hashed configuration/query summaries—never credentials, contract
    bodies, personal details, merchant secrets, or payout destinations.
-5. Protected CI validates Schema, required Gate IDs/roles, evidence existence
+5. A protected GitHub Actions run assembles signed External and Runtime
+   Attestations plus controlled evidence exports into a
+   commercial-attestation-bundle Artifact. Attestations are not committed to
+   the source Manifest because doing so would recreate exact-commit
+   self-reference.
+6. Protected CI validates Schema, required Gate IDs/roles, evidence existence
    and hash, issuer allowlist, signature, validity window, exact Commit/Tree,
    Version/Migration, Workflow Run ID, and all three candidate image digests.
-6. `docs/go-live-checklist.md` is never an input. The validator computes the
+7. The tracked Go-live contract is never an input. The validator computes the
    Decision and writes the exact report artifact. Any absent, invalid, expired,
    future-dated, stale, wrong-role, or wrong-digest item remains `BLOCKED`.
 
-Current `trusted_issuers` and every Attestation array are empty. This is the
-intentional fail-closed state until real accountable parties complete the work.
-
+The trusted issuer list is empty and no signed Attestation Bundle Artifact has
+been supplied. This is the intentional fail-closed state until real
+accountable parties complete the work.

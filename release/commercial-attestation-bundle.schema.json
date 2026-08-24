@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Yangjunjie-Lin/ModelDock/release/commercial-attestation-bundle.schema.json",
+  "title": "ModelDock signed commercial Attestation Bundle V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "repository", "reviewed_commit", "reviewed_tree", "version",
+    "migration_version", "evidence_origin", "external_attestations", "runtime_attestations"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0.0" },
+    "repository": { "const": "Yangjunjie-Lin/ModelDock" },
+    "reviewed_commit": { "$ref": "#/$defs/commit" },
+    "reviewed_tree": { "$ref": "#/$defs/commit" },
+    "version": { "$ref": "#/$defs/semver" },
+    "migration_version": { "$ref": "#/$defs/migration" },
+    "evidence_origin": { "const": "GITHUB_ACTIONS_ARTIFACT" },
+    "external_attestations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/evidenceAttestation" }
+    },
+    "runtime_attestations": {
+      "type": "array",
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/runtimeAttestation" }
+    }
+  },
+  "$defs": {
+    "profile": { "enum": ["COMMERCIAL_BETA", "MARKETPLACE_PRODUCTION"] },
+    "role": { "enum": ["Owner", "Legal", "Finance", "Commercial", "Security", "Operations", "IndependentTester"] },
+    "gateId": {
+      "enum": [
+        "software_license", "legal_entity", "terms_of_service", "privacy_policy", "refund_policy",
+        "payment_provider_agreement", "provider_commercial_rights", "provider_regions", "production_smtp",
+        "managed_pitr_restore", "production_failover", "independent_security_assessment",
+        "current_vulnerability_scan", "finance_signoff", "operations_signoff", "security_signoff", "legal_signoff",
+        "supplier_kyb", "supplier_contract", "endpoint_ownership", "provider_quality_probe", "canary_traffic",
+        "production_payout", "tax_and_invoice", "supplier_bill_reconciliation", "marketplace_dispute_drill",
+        "payout_idempotency", "marketplace_second_admin", "supplier_exit_drill", "final_go_live"
+      ]
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "migration": { "type": "string", "pattern": "^[0-9]{4}_[a-z0-9_]+$" },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]{0,19}$" },
+    "runAttempt": { "type": "string", "pattern": "^[1-9][0-9]{0,9}$" },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" },
+    "issuer": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@:-]{1,127}$" },
+    "evidenceAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "gate_id", "release_profile", "repository", "reviewed_commit", "reviewed_tree",
+        "version", "migration_version", "evidence_reference", "evidence_sha256", "issuer", "issuer_role",
+        "approved_at", "expires_at", "workflow_run_id", "workflow_run_attempt", "signature_type",
+        "signature", "certificate_identity", "certificate_issuer"
+      ],
+      "properties": {
+        "schema_version": { "const": "2.0.0" },
+        "gate_id": { "$ref": "#/$defs/gateId" },
+        "release_profile": { "$ref": "#/$defs/profile" },
+        "repository": { "const": "Yangjunjie-Lin/ModelDock" },
+        "reviewed_commit": { "$ref": "#/$defs/commit" },
+        "reviewed_tree": { "$ref": "#/$defs/commit" },
+        "version": { "$ref": "#/$defs/semver" },
+        "migration_version": { "$ref": "#/$defs/migration" },
+        "evidence_reference": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$" },
+        "evidence_sha256": { "$ref": "#/$defs/sha256" },
+        "issuer": { "$ref": "#/$defs/issuer" },
+        "issuer_role": { "$ref": "#/$defs/role" },
+        "approved_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "workflow_run_id": { "$ref": "#/$defs/runId" },
+        "workflow_run_attempt": { "$ref": "#/$defs/runAttempt" },
+        "signature_type": { "const": "ed25519" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "certificate_identity": { "$ref": "#/$defs/issuer" },
+        "certificate_issuer": { "$ref": "#/$defs/issuer" }
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "production_ready"],
+      "properties": {
+        "type": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+        "production_ready": { "type": "boolean" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id_hash", "commercial_status", "resale_approved", "contract_valid_from", "contract_valid_to",
+        "customer_region_approved", "data_processing_region_approved", "current_price_verified",
+        "kill_switch_enabled"
+      ],
+      "properties": {
+        "id_hash": { "$ref": "#/$defs/sha256" },
+        "commercial_status": { "const": "COMMERCIAL_APPROVED" },
+        "resale_approved": { "const": true },
+        "contract_valid_from": { "type": "string", "format": "date-time" },
+        "contract_valid_to": { "type": "string", "format": "date-time" },
+        "customer_region_approved": { "const": true },
+        "data_processing_region_approved": { "const": true },
+        "current_price_verified": { "const": true },
+        "kill_switch_enabled": { "const": false }
+      }
+    },
+    "supplier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id_hash", "kyb_approved", "contract_active", "tax_ready", "invoice_ready",
+        "payout_ready", "security_review_approved"
+      ],
+      "properties": {
+        "id_hash": { "$ref": "#/$defs/sha256" },
+        "kyb_approved": { "const": true },
+        "contract_active": { "const": true },
+        "tax_ready": { "const": true },
+        "invoice_ready": { "const": true },
+        "payout_ready": { "const": true },
+        "security_review_approved": { "const": true }
+      }
+    },
+    "runtimeAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "release_profile", "repository", "environment_id", "commit_sha", "tree_sha",
+        "version", "migration_version", "server_image_digest", "admin_image_digest", "console_image_digest",
+        "payment_adapter", "payout_adapter", "smtp", "commercially_approved_providers",
+        "production_ready_suppliers", "database_query_summary", "configuration_summary", "generated_at",
+        "expires_at", "workflow_run_id", "workflow_run_attempt", "issuer", "issuer_role",
+        "signature_type", "signature", "certificate_identity", "certificate_issuer"
+      ],
+      "properties": {
+        "schema_version": { "const": "2.0.0" },
+        "release_profile": { "$ref": "#/$defs/profile" },
+        "repository": { "const": "Yangjunjie-Lin/ModelDock" },
+        "environment_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+        "commit_sha": { "$ref": "#/$defs/commit" },
+        "tree_sha": { "$ref": "#/$defs/commit" },
+        "version": { "$ref": "#/$defs/semver" },
+        "migration_version": { "$ref": "#/$defs/migration" },
+        "server_image_digest": { "$ref": "#/$defs/digest" },
+        "admin_image_digest": { "$ref": "#/$defs/digest" },
+        "console_image_digest": { "$ref": "#/$defs/digest" },
+        "payment_adapter": { "$ref": "#/$defs/adapter" },
+        "payout_adapter": { "$ref": "#/$defs/adapter" },
+        "smtp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider_id_hash", "delivery_verified", "delivery_proof_sha256"],
+          "properties": {
+            "provider_id_hash": { "$ref": "#/$defs/sha256" },
+            "delivery_verified": { "type": "boolean" },
+            "delivery_proof_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "commercially_approved_providers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/provider" }
+        },
+        "production_ready_suppliers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/supplier" }
+        },
+        "database_query_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["commercially_approved_provider_count", "production_ready_supplier_count", "invalid_decimal_rows", "summary_sha256"],
+          "properties": {
+            "commercially_approved_provider_count": { "type": "integer", "minimum": 0 },
+            "production_ready_supplier_count": { "type": "integer", "minimum": 0 },
+            "invalid_decimal_rows": { "const": 0 },
+            "summary_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "configuration_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "redacted_keys"],
+          "properties": {
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "redacted_keys": {
+              "type": "array",
+              "minItems": 5,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,127}$" }
+            }
+          }
+        },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "workflow_run_id": { "$ref": "#/$defs/runId" },
+        "workflow_run_attempt": { "$ref": "#/$defs/runAttempt" },
+        "issuer": { "$ref": "#/$defs/issuer" },
+        "issuer_role": { "const": "Operations" },
+        "signature_type": { "const": "ed25519" },
+        "signature": { "$ref": "#/$defs/signature" },
+        "certificate_identity": { "$ref": "#/$defs/issuer" },
+        "certificate_issuer": { "$ref": "#/$defs/issuer" }
+      }
+    }
+  }
+}

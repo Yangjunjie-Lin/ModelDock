@@ -161,11 +161,19 @@ func budgetThresholdReached(policy domain.ProjectBudgetPolicy, usage domain.Proj
 		threshold = domain.MustDecimal("1")
 	}
 	if policy.TokenLimit != nil {
-		limit, multiplyErr := domain.MustDecimal(strconv.FormatInt(*policy.TokenLimit, 10)).Multiply(threshold)
+		tokenLimit, parseErr := domain.ParseDecimal(strconv.FormatInt(*policy.TokenLimit, 10))
+		if parseErr != nil {
+			return false, parseErr
+		}
+		limit, multiplyErr := tokenLimit.Multiply(threshold)
 		if multiplyErr != nil {
 			return false, multiplyErr
 		}
-		tokenComparison, compareErr := domain.MustDecimal(strconv.FormatInt(usage.TotalTokens, 10)).Compare(limit)
+		totalTokens, parseErr := domain.ParseDecimal(strconv.FormatInt(usage.TotalTokens, 10))
+		if parseErr != nil {
+			return false, parseErr
+		}
+		tokenComparison, compareErr := totalTokens.Compare(limit)
 		if compareErr != nil {
 			return false, compareErr
 		}

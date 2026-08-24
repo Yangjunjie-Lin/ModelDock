@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -466,7 +467,14 @@ func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 			&inputPrice, &outputPrice, &m.PriceCurrency, &meta, &m.CreatedAt, &m.UpdatedAt, &m.ServiceSubject, &m.FilingInfo, &m.GeneratedContentLabelCapability, &m.UserDisclosure); err != nil {
 			return nil, err
 		}
-		m.InputPrice, m.OutputPrice = domain.Decimal(inputPrice), domain.Decimal(outputPrice)
+		m.InputPrice, err = domain.ParseDecimal(inputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model %s input price: %w", m.ID, err)
+		}
+		m.OutputPrice, err = domain.ParseDecimal(outputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model %s output price: %w", m.ID, err)
+		}
 		_ = json.Unmarshal(caps, &m.Capabilities)
 		_ = json.Unmarshal(meta, &m.Metadata)
 		if m.Capabilities == nil {
@@ -603,12 +611,32 @@ func (s *Store) ListModelPrices(ctx context.Context, modelID string) ([]domain.M
 		if err := rows.Scan(&p.ID, &p.ModelID, &p.Version, &p.EffectiveFrom, &inputPrice, &cachedInputPrice, &outputPrice, &p.Currency, &p.Unit, &p.Source, &p.CreatedAt); err != nil {
 			return nil, err
 		}
-		p.InputPrice, p.CachedInputPrice, p.OutputPrice = domain.Decimal(inputPrice), domain.Decimal(cachedInputPrice), domain.Decimal(outputPrice)
+		p.InputPrice, err = domain.ParseDecimal(inputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model price %s input: %w", p.ID, err)
+		}
+		p.CachedInputPrice, err = domain.ParseDecimal(cachedInputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model price %s cached input: %w", p.ID, err)
+		}
+		p.OutputPrice, err = domain.ParseDecimal(outputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model price %s output: %w", p.ID, err)
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 func (s *Store) CreateModelPrice(ctx context.Context, p domain.ModelPrice) (domain.ModelPrice, error) {
+	for label, value := range map[string]domain.Decimal{"input": p.InputPrice, "cached input": p.CachedInputPrice, "output": p.OutputPrice} {
+		negative, err := value.IsNegative()
+		if err != nil {
+			return domain.ModelPrice{}, fmt.Errorf("invalid %s model price: %w", label, err)
+		}
+		if negative {
+			return domain.ModelPrice{}, fmt.Errorf("invalid %s model price: amount must not be negative", label)
+		}
+	}
 	p.ID = id.UUID()
 	if p.Version <= 0 {
 		_ = s.pool.QueryRow(ctx, `SELECT COALESCE(max(version),0)+1 FROM model_prices WHERE model_id=$1`, p.ModelID).Scan(&p.Version)
@@ -630,23 +658,24 @@ func (s *Store) CreateModelPrice(ctx context.Context, p domain.ModelPrice) (doma
 }
 func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel string, input, cached, output int64) (domain.Decimal, error) {
 	var inputPrice, cachedPrice, outputPrice string
+	var currency string
 	var unit int64
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit FROM model_prices mp JOIN models m ON m.id=mp.model_id WHERE m.provider_id=$1 AND m.provider_model_id=$2 AND mp.effective_from<=now() ORDER BY mp.effective_from DESC,mp.version DESC LIMIT 1`, providerID, upstreamModel).Scan(&inputPrice, &cachedPrice, &outputPrice, &unit)
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,mp.currency FROM model_prices mp JOIN models m ON m.id=mp.model_id WHERE m.provider_id=$1 AND m.provider_model_id=$2 AND mp.effective_from<=now() ORDER BY mp.effective_from DESC,mp.version DESC LIMIT 1`, providerID, upstreamModel).Scan(&inputPrice, &cachedPrice, &outputPrice, &unit, &currency)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Decimal("0"), nil
+		return domain.MustDecimal("0"), nil
 	}
 	if err != nil {
-		return domain.Decimal("0"), err
+		return "", err
 	}
 	result, err := pricing.Calculate(
-		pricing.Rate{Input: inputPrice, Cached: cachedPrice, Output: outputPrice, Fixed: "0", Unit: unit, Currency: "USD"},
-		pricing.Rate{Input: "0", Cached: "0", Output: "0", Fixed: "0", Unit: unit, Currency: "USD"},
+		pricing.Rate{Input: inputPrice, Cached: cachedPrice, Output: outputPrice, Fixed: "0", Unit: unit, Currency: currency},
+		pricing.Rate{Input: "0", Cached: "0", Output: "0", Fixed: "0", Unit: unit, Currency: currency},
 		pricing.Tokens{Input: input, Cached: min(cached, input), Output: output}, "0", "0", "1",
 	)
 	if err != nil {
-		return domain.Decimal("0"), err
+		return "", err
 	}
-	return domain.Decimal(result.ProviderCost), nil
+	return domain.ParseDecimal(result.ProviderCost)
 }
 
 // CalculateProjectReferenceCost returns the highest current catalog cost among
@@ -654,41 +683,46 @@ func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel str
 // explicit, reproducible baseline and are still estimates rather than invoices.
 func (s *Store) CalculateProjectReferenceCost(ctx context.Context, projectID string, input, cached, output int64) (domain.Decimal, error) {
 	rows, err := s.pool.Query(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,
-		COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
+		COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,mp.currency FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
 		JOIN models m ON m.provider_id=r.provider_id AND m.provider_model_id=r.upstream_model
 		JOIN LATERAL (SELECT input_price,input_price_exact,cached_input_price,cached_input_price_exact,
-			output_price,output_price_exact,unit FROM model_prices WHERE model_id=m.id
+			output_price,output_price_exact,unit,currency FROM model_prices WHERE model_id=m.id
 			AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
 		WHERE pmr.project_id=$1 AND pmr.deleted_at IS NULL AND pmr.enabled AND r.enabled AND m.enabled`, projectID)
 	if err != nil {
-		return domain.Decimal("0"), err
+		return "", err
 	}
 	defer rows.Close()
 	if cached > input {
 		cached = input
 	}
-	highest := domain.Decimal("0")
+	highest := domain.MustDecimal("0")
+	highestCurrency := ""
 	for rows.Next() {
-		var inputPrice, cachedPrice, outputPrice string
+		var inputPrice, cachedPrice, outputPrice, currency string
 		var unit int64
-		if err := rows.Scan(&inputPrice, &cachedPrice, &outputPrice, &unit); err != nil {
-			return domain.Decimal("0"), err
+		if err := rows.Scan(&inputPrice, &cachedPrice, &outputPrice, &unit, &currency); err != nil {
+			return "", err
 		}
+		if highestCurrency != "" && !strings.EqualFold(highestCurrency, currency) {
+			return "", fmt.Errorf("project reference cost spans currencies %s and %s without an approved FX conversion", highestCurrency, currency)
+		}
+		highestCurrency = currency
 		result, calculateErr := pricing.Calculate(
-			pricing.Rate{Input: inputPrice, Cached: cachedPrice, Output: outputPrice, Fixed: "0", Unit: unit, Currency: "USD"},
-			pricing.Rate{Input: "0", Cached: "0", Output: "0", Fixed: "0", Unit: unit, Currency: "USD"},
+			pricing.Rate{Input: inputPrice, Cached: cachedPrice, Output: outputPrice, Fixed: "0", Unit: unit, Currency: currency},
+			pricing.Rate{Input: "0", Cached: "0", Output: "0", Fixed: "0", Unit: unit, Currency: currency},
 			pricing.Tokens{Input: input, Cached: cached, Output: output}, "0", "0", "1",
 		)
 		if calculateErr != nil {
-			return domain.Decimal("0"), calculateErr
+			return "", calculateErr
 		}
 		cost, decimalErr := domain.ParseDecimal(result.ProviderCost)
 		if decimalErr != nil {
-			return domain.Decimal("0"), decimalErr
+			return "", decimalErr
 		}
 		comparison, decimalErr := cost.Compare(highest)
 		if decimalErr != nil {
-			return domain.Decimal("0"), decimalErr
+			return "", decimalErr
 		}
 		if comparison > 0 {
 			highest = cost
