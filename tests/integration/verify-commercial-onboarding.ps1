@@ -62,6 +62,18 @@ function Wait-ContainerCommand {
     throw "$Operation did not become ready before the timeout."
 }
 
+function Wait-RedisCounterCleared {
+    param([string]$Container, [string]$Key, [string]$Operation)
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $value = [string]::Join("", @(Invoke-Docker -Arguments @("exec", $Container, "redis-cli", "--raw", "GET", $Key) -Operation $Operation)).Trim()
+        $counter = 0L
+        if ([string]::IsNullOrWhiteSpace($value) -or ([int64]::TryParse($value, [ref]$counter) -and $counter -le 0)) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "$Operation did not reach zero before the timeout."
+}
+
 function Wait-PostgresFinalStartup {
     param([string]$Container)
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
@@ -725,6 +737,7 @@ SELECT concat_ws('|',
     $abortEvidence = Invoke-Psql -SQL "SELECT operation.status||'|'||operation.settled_amount::text||'|'||operation.released_amount::text||'|'||COALESCE(log.error_code,'') FROM funding_operation operation LEFT JOIN request_logs log ON log.request_id=operation.request_id WHERE operation.idempotency_key='client-abort-$runID';"
     Assert-True ($abortEvidence.EndsWith("|client_disconnected")) "The gateway did not classify the cancelled SSE request correctly: $abortEvidence"
     Assert-True ((Invoke-Psql -SQL "SELECT count(*) FROM wallets WHERE organization_id='$organizationID' AND reserved_balance=0;") -eq "1") "Client interruption left wallet funds reserved."
+    Wait-RedisCounterCleared -Container $redis -Key "rdk:subscription:active:$organizationID" -Operation "client-disconnect concurrency release"
 
     $gatewayJob = {
         param($URL, $Key, $Model, $Idempotency, $Stream)
