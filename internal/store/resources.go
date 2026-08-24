@@ -448,7 +448,7 @@ func (s *Store) RemoveGroupMember(ctx context.Context, groupID, credentialID str
 func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 	rows, err := s.pool.Query(ctx, `SELECT m.id,m.provider_id,p.name,m.provider_model_id,m.display_name,m.model_type,m.enabled,
 		m.capabilities,m.capability_source,m.context_window,m.latency_score::float8,m.quality_score::float8,
-		COALESCE(mp.input_price_exact,mp.input_price,0)::text,COALESCE(mp.output_price_exact,mp.output_price,0)::text,COALESCE(mp.currency,''),
+		COALESCE(mp.input_price_exact,mp.input_price,0)::text,COALESCE(mp.output_price_exact,mp.output_price,0)::text,COALESCE(NULLIF(mp.currency,''),p.settlement_currency),
 		m.metadata,m.created_at,m.updated_at,COALESCE(m.service_subject,''),COALESCE(m.filing_info,''),COALESCE(m.generated_content_label_capability,'UNKNOWN'),COALESCE(m.user_disclosure,'') FROM models m JOIN providers p ON p.id=m.provider_id
 		LEFT JOIN LATERAL (SELECT input_price,input_price_exact,output_price,output_price_exact,currency FROM model_prices
 			WHERE model_id=m.id AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
@@ -660,7 +660,7 @@ func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel str
 	var inputPrice, cachedPrice, outputPrice string
 	var currency string
 	var unit int64
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,mp.currency FROM model_prices mp JOIN models m ON m.id=mp.model_id WHERE m.provider_id=$1 AND m.provider_model_id=$2 AND mp.effective_from<=now() ORDER BY mp.effective_from DESC,mp.version DESC LIMIT 1`, providerID, upstreamModel).Scan(&inputPrice, &cachedPrice, &outputPrice, &unit, &currency)
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,COALESCE(NULLIF(mp.currency,''),p.settlement_currency) FROM model_prices mp JOIN models m ON m.id=mp.model_id JOIN providers p ON p.id=m.provider_id WHERE m.provider_id=$1 AND m.provider_model_id=$2 AND mp.effective_from<=now() ORDER BY mp.effective_from DESC,mp.version DESC LIMIT 1`, providerID, upstreamModel).Scan(&inputPrice, &cachedPrice, &outputPrice, &unit, &currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.MustDecimal("0"), nil
 	}
@@ -683,8 +683,9 @@ func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel str
 // explicit, reproducible baseline and are still estimates rather than invoices.
 func (s *Store) CalculateProjectReferenceCost(ctx context.Context, projectID string, input, cached, output int64) (domain.Decimal, error) {
 	rows, err := s.pool.Query(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,
-		COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,mp.currency FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
+		COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,COALESCE(NULLIF(mp.currency,''),p.settlement_currency) FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
 		JOIN models m ON m.provider_id=r.provider_id AND m.provider_model_id=r.upstream_model
+		JOIN providers p ON p.id=m.provider_id
 		JOIN LATERAL (SELECT input_price,input_price_exact,cached_input_price,cached_input_price_exact,
 			output_price,output_price_exact,unit,currency FROM model_prices WHERE model_id=m.id
 			AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
