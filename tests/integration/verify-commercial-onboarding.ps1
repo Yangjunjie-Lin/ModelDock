@@ -13,6 +13,10 @@ if (-not $ConfirmIsolatedTestDatabase) {
     throw "Pass -ConfirmIsolatedTestDatabase only for a disposable local Docker run."
 }
 
+$curl = Get-Command -Name @("curl.exe", "curl") -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $curl) { throw "A curl executable is required for the database outage readiness probe." }
+$nullDevice = if ($IsWindows) { "NUL" } else { "/dev/null" }
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $runID = [Guid]::NewGuid().ToString("N").Substring(0, 16)
 $network = "modeldock-onboarding-$runID"
@@ -842,7 +846,7 @@ SELECT concat_ws('|',
     $databaseStatus = ""
     try {
         [void](Invoke-Docker -Arguments @("pause", $postgres) -Operation "Pausing isolated PostgreSQL")
-        $databaseStatus = [string]::Join("", @(& curl.exe --silent --output NUL --write-out "%{http_code}" --max-time 4 "$controlURL/readyz" 2>$null))
+        $databaseStatus = [string]::Join("", @(& $curl.Source --silent --output $nullDevice --write-out "%{http_code}" --max-time 4 "$controlURL/readyz" 2>$null))
     } finally {
         [void](Invoke-Docker -Arguments @("unpause", $postgres) -Operation "Unpausing isolated PostgreSQL")
         Wait-ContainerCommand -Container $postgres -Command @("pg_isready", "--username", "relaydock", "--dbname", "relaydock") -Operation "PostgreSQL recovery"
