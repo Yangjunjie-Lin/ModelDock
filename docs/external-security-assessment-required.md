@@ -2,9 +2,11 @@
 
 Repository tests are regression evidence, not an independent assessment. The
 following gates remain **BLOCKED** until an authorized external reviewer or the
-responsible production owner records a controlled evidence reference, SHA-256,
-approver, approval/expiry time, and exact reviewed commit in
-`release/commercial-gates.json`.
+responsible production owner signs an Evidence Attestation V2 containing the
+controlled evidence reference, SHA-256, approval/expiry time, and exact reviewed
+Commit/Tree, then supplies it through the protected commercial Attestation Bundle
+Artifact. `release/commercial-gates.json` remains an immutable Gate catalog and
+never stores approvals or runtime claims.
 
 | Required assessment | Minimum evidence | Current state |
 | --- | --- | --- |
