@@ -195,6 +195,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Set up Buildx for reproducible OCI exports
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Verify server image reproducibility and source metadata
         shell: pwsh
         run: ./tests/integration/verify-release-metadata.ps1 -Commit $env:GITHUB_SHA -VerifyReproducible
