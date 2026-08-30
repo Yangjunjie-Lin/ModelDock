@@ -629,7 +629,7 @@ try {
 
     $keyResponse = Invoke-SessionJSON -Method POST -URL "$controlURL/api/console/api-keys" -Session $consoleSession -CSRF $consoleCSRF -Body @{
         project_id = $projectID; name = "Onboarding key $runID"; environment = "test"
-        rate_limit_rpm = 60; rate_limit_tpm = 100000; allowed_models = @($routeAlias)
+        rate_limit_rpm = 1000; rate_limit_tpm = 100000; allowed_models = @($routeAlias)
     }
     Assert-Status $keyResponse 201 "Creating the one-time project API key"
     $apiKey = [string]$keyResponse.JSON.key

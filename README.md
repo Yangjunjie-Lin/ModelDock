@@ -11,7 +11,7 @@
 
 Protected status: [ModelDock CI](https://github.com/Yangjunjie-Lin/ModelDock/actions/workflows/ci.yml) · [Release gate](https://github.com/Yangjunjie-Lin/ModelDock/actions/workflows/release.yml)
 
-Tracked metadata: VERSION `3.0.0-beta.2` · Migration `0027_openrouter_operating_model` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
+Tracked metadata: VERSION `3.0.0-beta.3` · Migration `0027_openrouter_operating_model` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
 <!-- commercial-status:end -->
 
 ModelDock is the commercial evolution of RelayDock: a self-hosted,

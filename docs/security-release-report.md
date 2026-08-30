@@ -4,7 +4,7 @@
 
 **Decision: NO-GO**
 
-**Candidate:** `3.0.0-beta.2`
+**Candidate:** `3.0.0-beta.3`
 
 **Latest migration:** `0027_openrouter_operating_model`
 
