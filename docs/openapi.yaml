@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ModelDock API
-  version: 3.0.0-beta.3
+  version: 3.0.0-beta.4
   summary: Authorized-credential AI gateway and control plane
   description: |
     RelayDock exposes an OpenAI-compatible data plane and a separate control

@@ -6,7 +6,7 @@
   "environment_id": "REPLACE_WITH_TARGET_ENVIRONMENT",
   "commit_sha": "REPLACE_WITH_FULL_COMMIT_SHA",
   "tree_sha": "REPLACE_WITH_FULL_TREE_SHA",
-  "version": "3.0.0-beta.3",
+  "version": "3.0.0-beta.4",
   "migration_version": "0027_openrouter_operating_model",
   "server_image_digest": "sha256:REPLACE",
   "admin_image_digest": "sha256:REPLACE",

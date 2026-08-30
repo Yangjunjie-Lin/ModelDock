@@ -3,7 +3,7 @@
 > **NOT RELEASE EVIDENCE.** Machine-generated tracked contract; do not edit. The exact-commit report is emitted to the ignored .cache directory and uploaded by CI.
 
 **Decision: NO-GO**
-**Candidate version:** `3.0.0-beta.3`
+**Candidate version:** `3.0.0-beta.4`
 **Latest migration:** `0027_openrouter_operating_model`
 **Exact commit:** generated and checked against HEAD only in the CI artifact
 **Release created:** no

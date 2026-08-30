@@ -6,6 +6,14 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0-beta.4] - 2026-08-30
+
+### Fixed
+
+- Bound the onboarding E2E concurrency batch to the selected subscription
+  plan's published concurrency entitlement and the test credential ceiling,
+  eliminating nondeterministic subscription-limit 429 responses.
+
 ## [3.0.0-beta.3] - 2026-08-30
 
 ### Fixed
@@ -115,7 +123,8 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Upgraded the pinned Go toolchain and reachable Go dependencies to remove the
   HIGH/CRITICAL findings detected by govulncheck and final-image scanning.
 
-[Unreleased]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.3...HEAD
+[Unreleased]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.4...HEAD
+[3.0.0-beta.4]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.3...v3.0.0-beta.4
 [3.0.0-beta.3]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.2...v3.0.0-beta.3
 [3.0.0-beta.2]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.1...v3.0.0-beta.2
 [3.0.0-beta.1]: https://github.com/Yangjunjie-Lin/ModelDock/releases/tag/v3.0.0-beta.1

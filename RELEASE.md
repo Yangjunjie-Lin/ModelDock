@@ -1,7 +1,7 @@
 # ModelDock release process
 
 Release workflows run only from an annotated Semantic Version 2.0 Tag such as
-`v3.0.0-beta.3`. A Tag push is always a source-only Engineering Preview;
+`v3.0.0-beta.4`. A Tag push is always a source-only Engineering Preview;
 commercial profiles require an explicit manual dispatch against that Tag.
 Manually created GitHub Releases and mutable `latest` image tags are not part of
 the supported process.
@@ -38,7 +38,7 @@ Update `CHANGELOG.md` using Keep a Changelog categories. Do not move an item
 out of `Unreleased` until its release commit is final. Run:
 
 ```powershell
-pwsh ./scripts/verify-release.ps1 -Version 3.0.0-beta.3
+pwsh ./scripts/verify-release.ps1 -Version 3.0.0-beta.4
 ```
 
 The workflow accepts `ENGINEERING_PREVIEW`, `COMMERCIAL_BETA`, and

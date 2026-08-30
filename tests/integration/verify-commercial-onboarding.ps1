@@ -495,9 +495,10 @@ try {
         provider_id = $providerID; name = "Onboarding Group $runID"; description = "Synthetic authorized credential group"
     }
     Assert-Status $group 201 "Creating the Provider credential group"
+    $credentialMaxConcurrency = 8
     $credential = Invoke-SessionJSON -Method POST -URL "$controlURL/api/admin/credentials" -Session $adminSession -CSRF $adminCSRF -Body @{
         provider_id = $providerID; name = "Onboarding Credential $runID"; secret = $mockAPIKey
-        group_id = [string]$group.JSON.id; validate = $true; priority = 100; weight = 100; max_concurrency = 8
+        group_id = [string]$group.JSON.id; validate = $true; priority = 100; weight = 100; max_concurrency = $credentialMaxConcurrency
     }
     Assert-Status $credential 201 "Creating the authorized Provider credential"
     $sync = Invoke-SessionJSON -Method POST -URL "$controlURL/api/admin/providers/$providerID/sync-models" -Session $adminSession -CSRF $adminCSRF -Body @{ credential_id = [string]$credential.JSON.id }
@@ -587,6 +588,8 @@ try {
 
     $developerPlan = @($publicPricing.JSON.subscription_plans | Where-Object slug -eq "developer") | Select-Object -First 1
     Assert-True ($null -ne $developerPlan) "The published Developer plan was not available for onboarding."
+    $concurrentRequestCount = [Math]::Min($credentialMaxConcurrency, [int]$developerPlan.entitlements.concurrency)
+    Assert-True ($concurrentRequestCount -gt 0) "The published Developer plan did not expose a usable concurrency entitlement."
     $subscriptionChange = Invoke-SessionJSON -Method POST -URL "$controlURL/api/console/organizations/$organizationID/subscription/change" -Session $consoleSession -CSRF $consoleCSRF -Body @{
         plan_version_id = [string]$developerPlan.plan_version_id; mode = "IMMEDIATE"; use_trial = $true
         idempotency_key = "subscription-$runID"; metadata = @{ source = "commercial-onboarding-integration" }
@@ -778,18 +781,18 @@ SELECT concat_ws('|',
         Assert-Status $scenario 200 "Configuring concurrent $kind requests"
         $jobs = @()
         try {
-            $jobs = @(0..7 | ForEach-Object { Start-Job -ScriptBlock $gatewayJob -ArgumentList $gatewayURL, $apiKey, $routeAlias, "concurrent-$kind-$runID-$_", $streamMode })
+            $jobs = @(0..($concurrentRequestCount - 1) | ForEach-Object { Start-Job -ScriptBlock $gatewayJob -ArgumentList $gatewayURL, $apiKey, $routeAlias, "concurrent-$kind-$runID-$_", $streamMode })
             $completed = @($jobs | Wait-Job -Timeout 40)
-            Assert-True ($completed.Count -eq 8) "Concurrent $kind requests did not finish."
+            Assert-True ($completed.Count -eq $concurrentRequestCount) "Concurrent $kind requests did not finish."
             $statuses = @($jobs | Receive-Job | ForEach-Object { [int]$_ })
-            Assert-True (@($statuses | Where-Object { $_ -eq 200 }).Count -eq 8) "A concurrent $kind request failed: $([string]::Join(',', $statuses))."
+            Assert-True (@($statuses | Where-Object { $_ -eq 200 }).Count -eq $concurrentRequestCount) "A concurrent $kind request failed: $([string]::Join(',', $statuses))."
         } finally {
             $jobs | Stop-Job -ErrorAction SilentlyContinue
             $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
         }
         $scenarioReset = Invoke-JSON -Method POST -URL "$mockURL/__test/scenario" -Headers @{ "X-RelayDock-Test-Token" = $mockTestToken } -Body @{}
         Assert-Status $scenarioReset 200 "Resetting the concurrent Provider scenario"
-        [void](Wait-PsqlValue -SQL "SELECT count(*) FROM funding_operation WHERE idempotency_key LIKE 'concurrent-$kind-$runID-%' AND status='SETTLED';" -Expected "8" -Operation "concurrent $kind settlements")
+        [void](Wait-PsqlValue -SQL "SELECT count(*) FROM funding_operation WHERE idempotency_key LIKE 'concurrent-$kind-$runID-%' AND status='SETTLED';" -Expected ([string]$concurrentRequestCount) -Operation "concurrent $kind settlements")
         Assert-True ((Invoke-Psql -SQL "SELECT count(*) FROM wallets WHERE organization_id='$organizationID' AND reserved_balance=0;") -eq "1") "Concurrent $kind requests left wallet funds reserved."
     }
 
