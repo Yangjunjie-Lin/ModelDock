@@ -412,6 +412,22 @@ try {
         Assert-True ($afterValue -eq $beforeValue) "Region confirmation changed organization policy $field."
     }
 
+    # Migration 27 intentionally defaults new Workspaces to deny Provider data
+    # collection. This end-to-end fixture declares non-zero synthetic retention,
+    # so opt in explicitly instead of weakening the production privacy default or
+    # falsely labelling the mock Provider as ZDR.
+    $workspaceSettings = Invoke-SessionJSON -Method PUT -URL "$controlURL/api/console/projects/$projectID/workspace-settings" -Session $consoleSession -CSRF $consoleCSRF -Body @{
+        default_provider_policy = @{}
+        privacy_policy = @{ data_collection = "allow"; zdr = $false }
+        observability_config = @{}
+        include_byok_in_budgets = $false
+        free_daily_request_limit = 0
+        free_daily_token_limit = 0
+        allowed_processing_regions = @()
+    }
+    Assert-Status $workspaceSettings 200 "Opting the isolated Workspace into synthetic Provider data collection"
+    Assert-True ([string]$workspaceSettings.JSON.privacy_policy.data_collection -eq "allow") "The isolated Workspace privacy policy was not persisted."
+
     $adminSession = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
     $adminLogin = Invoke-JSON -Method POST -URL "$controlURL/api/admin/auth/login" -Session $adminSession -Body @{ email = "admin@example.invalid"; password = "synthetic-admin-password-2026" }
     Assert-Status $adminLogin 200 "Signing in the administrator"
