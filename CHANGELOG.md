@@ -44,7 +44,7 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- Updated the server runtime OpenSSL packages to Alpine 3.22's fixed
+- Updated the server and Web runtime OpenSSL packages to Alpine's fixed
   `3.5.8-r0` release for CVE-2026-14456.
 - Added private-network-safe OIDC discovery, encrypted client-secret storage,
   display-once hashed SCIM tokens, organization-domain restrictions, last-owner
