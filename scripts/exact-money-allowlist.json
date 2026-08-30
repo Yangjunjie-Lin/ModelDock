@@ -2,6 +2,7 @@
   "schema_version": 1,
   "entries": [
     { "path": "internal/domain/domain.go", "line_pattern": "LatencyScore|QualityScore|QualityWeight|PriceWeight|LatencyWeight|\\bScore\\b|Uptime", "reason": "Routing quality, latency, and availability scores are non-monetary telemetry." },
+    { "path": "internal/domain/routing.go", "line_pattern": "\\bScore\\b", "reason": "Provider routing candidate score is non-monetary telemetry." },
     { "path": "internal/scheduler/scheduler.go", "line_pattern": "float64", "reason": "Scheduler weights and active-load ratios are non-monetary." },
     { "path": "internal/store/intelligent_router.go", "line_pattern": "float64|::float8", "reason": "Routing score weights, quality, latency, and multipliers are non-monetary." },
     { "path": "internal/store/gateway.go", "line_pattern": "avgLatency|p95Latency|success|errorRate|case float64|avg\\(latency_ms\\)|percentile_cont", "reason": "Latency and success/error rates are non-monetary telemetry; the type switch decodes counts." },

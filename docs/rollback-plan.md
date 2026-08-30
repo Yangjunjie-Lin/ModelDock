@@ -91,10 +91,22 @@ function. Do not delete verification audit rows. Correct readiness logic with a
 new migration and regenerate the exact-commit Runtime Attestation; never
 rewrite settled amounts or a signed Artifact.
 
+## Migrations 0026-0027 provisioning and routing rollback
+
+`0026_provider_account_provisioning.sql` and
+`0027_openrouter_operating_model.sql` are additive and forward-repair only.
+Before rolling an application binary back, stop Provider provisioning workers,
+disable automatic enterprise provisioning and SCIM, retain every binding/job,
+capability document, shadow-spend row, free-usage counter, and identity audit
+record, and confirm the older binary ignores the new columns/tables. Do not
+delete a Provider binding, funding policy snapshot, SCIM link, or superseded
+capability document to make an older UI appear consistent. Correct schema or
+policy behavior with a later migration.
+
 ## Database rollback and recovery
 
-The current forward schema includes migrations 1 through 25. Migrations
-0021–0025 are additive; before an application rollback disable Provider quality
+The current forward schema includes migrations 1 through 27. Migrations
+0021–0027 are additive; before an application rollback disable Provider quality
 policies and every supplier-linked Provider, then retain all quality,
 Marketplace, settlement, payout-readiness, lifecycle, and audit evidence.
 Routine application rollback retains every migration and never deletes
@@ -126,7 +138,7 @@ an `s3://` destination with server-side encryption. Managed continuous WAL/PITR
 must be operated and tested separately. A logical dump alone cannot prove a
 production RPO.
 
-Destructively reversing migrations 14-24 would remove or weaken commercial,
+Destructively reversing migrations 14-27 would remove or weaken commercial,
 pricing, funding, payment, reconciliation, governance, observability, and
 onboarding/Provider-quality evidence. It requires a separately reviewed data-migration plan,
 stopped writers, complete exports, dependency analysis, legal/finance approval,

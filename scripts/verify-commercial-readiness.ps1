@@ -110,7 +110,7 @@ function Add-Result([string]$Id, [string]$Title, [bool]$Passed, [string]$Detail)
 $exactOutput = & (Join-Path $PSHOME "pwsh") -NoProfile -File (Join-Path $repoRoot "scripts/verify-exact-money.ps1") -RepositoryRoot $repoRoot 2>&1 | Out-String
 Add-Result "exact_money" "Exact-money static gate" ($LASTEXITCODE -eq 0) $exactOutput.Trim()
 Add-Result "git_identity" "Clean exact Git commit and tree" ($status.Count -eq 0) "commit=$Commit; tree=$tree; clean=$($status.Count -eq 0)"
-Add-Result "latest_migration" "Latest migration identity" ($latestMigration -ceq "0025_commercial_attestation_and_decimal_hardening") "migration=$latestMigration"
+Add-Result "latest_migration" "Latest migration identity" ($latestMigration -ceq "0027_openrouter_operating_model") "migration=$latestMigration"
 Add-Result "version_source" "Single SemVer version source" ($version -match $semver) "VERSION=$version"
 
 $blocked = @($results | Where-Object result -eq "BLOCKED")

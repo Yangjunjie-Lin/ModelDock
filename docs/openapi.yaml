@@ -29,6 +29,10 @@ tags:
   - name: V2 Keys
   - name: Pricing
   - name: Payments
+  - name: Provider Provisioning
+  - name: Provider Routing
+  - name: Enterprise Identity
+  - name: SCIM
   - name: Subscriptions
   - name: Finance
   - name: Governance
@@ -65,7 +69,7 @@ paths:
       security: []
       parameters:
         - { name: region, in: query, required: false, schema: { type: string, pattern: '^[A-Z]{2}$', default: CN } }
-        - { name: currency, in: query, required: false, description: When omitted, the first currently published currency is selected; 422 is returned if none exists., schema: { type: string, pattern: '^[A-Z]{3}$' } }
+        - { name: currency, in: query, required: false, description: 'When omitted, the first currently published currency is selected; 422 is returned if none exists.', schema: { type: string, pattern: '^[A-Z]{3}$' } }
       responses:
         '200':
           description: Public-safe model catalog; unavailable or unpriced models remain explicit
@@ -97,7 +101,7 @@ paths:
       security: []
       parameters:
         - { name: region, in: query, required: false, schema: { type: string, pattern: '^[A-Z]{2}$', default: CN } }
-        - { name: currency, in: query, required: false, description: When omitted, the first currently published currency is selected; 422 is returned if none exists., schema: { type: string, pattern: '^[A-Z]{3}$' } }
+        - { name: currency, in: query, required: false, description: 'When omitted, the first currently published currency is selected; 422 is returned if none exists.', schema: { type: string, pattern: '^[A-Z]{3}$' } }
       responses:
         '200':
           description: Exact-decimal effective pricing; null commercial terms do not authorize checkout
@@ -113,7 +117,7 @@ paths:
       operationId: getPublicCommercialStatus
       security: []
       responses:
-        '200': { description: Gateway, Dashboard, Billing, Provider, and public incident status. Provider OPERATIONAL requires commercial/resale admission, pricing enabled, and at least one schedulable credential; it is not a continuous upstream availability probe. }
+        '200': { description: 'Gateway, Dashboard, Billing, Provider, and public incident status. Provider OPERATIONAL requires commercial/resale admission, pricing enabled, and at least one schedulable credential; it is not a continuous upstream availability probe.' }
   /api/public/funnel/events:
     post:
       tags: [Funnel]
@@ -149,8 +153,8 @@ paths:
       operationId: getConsoleOnboarding
       security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
       parameters:
-        - { name: organization_id, in: query, required: false, description: Organization scope; when omitted, it is derived from project_id or the caller's first active membership with owner membership preferred., schema: { type: string, format: uuid } }
-        - { name: project_id, in: query, required: false, description: Project scope for API Key, call, and usage evidence; when omitted, the first active project in the selected organization is used., schema: { type: string, format: uuid } }
+        - { name: organization_id, in: query, required: false, description: "Organization scope; when omitted, it is derived from project_id or the caller's first active membership with owner membership preferred.", schema: { type: string, format: uuid } }
+        - { name: project_id, in: query, required: false, description: 'Project scope for API Key, call, and usage evidence; when omitted, the first active project in the selected organization is used.', schema: { type: string, format: uuid } }
       responses:
         '200':
           description: Server-derived progress; there is no client-write completion endpoint
@@ -306,7 +310,7 @@ paths:
     put: { tags: [Governance, Console], summary: Update privacy settings, responses: { '200': { description: Settings } } }
   /api/console/privacy/{subjectType}/{subjectID}/jobs:
     get: { tags: [Governance, Console], summary: List privacy lifecycle requests, responses: { '200': { description: Lifecycle jobs } } }
-    post: { tags: [Governance, Console], summary: Request export, close, delete, or purge, responses: { '202': { description: Lifecycle job } } }
+    post: { tags: [Governance, Console], summary: 'Request export, close, delete, or purge', responses: { '202': { description: Lifecycle job } } }
   /api/console/privacy/jobs/{jobID}/export:
     get: { tags: [Governance, Console], summary: Download a completed user data export, responses: { '200': { description: Redacted subject export } } }
   /api/console/organizations/{organizationID}/finance/balance:
@@ -547,7 +551,7 @@ paths:
       summary: Export formula-neutralized double-entry accounting CSV
       operationId: exportFinanceAccounting
       responses:
-        '200': { description: Formula-neutralized UTF-8 CSV, bounded to 100000 rows; split high-volume exports into narrower half-open UTC date intervals. }
+        '200': { description: 'Formula-neutralized UTF-8 CSV, bounded to 100000 rows; split high-volume exports into narrower half-open UTC date intervals.' }
   /api/admin/finance/provider-statements:
     post:
       tags: [Finance, Admin]
@@ -600,7 +604,7 @@ paths:
       operationId: getPublicStatus
       security: []
       responses:
-        '200': { description: Gateway, Dashboard, Billing, Provider, and public incident status }
+        '200': { description: 'Gateway, Dashboard, Billing, Provider, and public incident status' }
   /api/status:
     get:
       tags: [Operations]
@@ -1882,6 +1886,11 @@ paths:
                 secret: { type: string, writeOnly: true }
                 terms_version: { type: string }
                 ownership_confirmed: { type: boolean, const: true }
+                byok_priority_section: { type: string, enum: [PRIORITIZED, FALLBACK], default: PRIORITIZED }
+                shared_capacity_fallback: { type: string, enum: [ALWAYS, OUTSIDE_FILTERS, NEVER], default: ALWAYS }
+                model_filters: { type: array, items: { type: string } }
+                api_key_filters: { type: array, items: { type: string } }
+                member_filters: { type: array, items: { type: string } }
       responses: { '201': { description: Redacted encrypted credential metadata } }
   /api/console/byok/credentials/{id}:
     parameters: [{ $ref: '#/components/parameters/ResourceId' }]
@@ -1892,6 +1901,22 @@ paths:
       security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
       parameters: [{ name: organization_id, in: query, required: true, schema: { type: string, format: uuid } }]
       responses: { '204': { description: Disabled } }
+  /api/console/byok/credentials/{id}/routing-policy:
+    parameters: [{ $ref: '#/components/parameters/ResourceId' }]
+    put:
+      tags: [Console, Provider Routing]
+      summary: Update BYOK priority, shared-capacity fallback, and actor/model filters
+      operationId: updateBYOKRoutingPolicy
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFToken' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BYOKRoutingPolicyWrite' }
+      responses:
+        '200': { description: Redacted credential with updated routing policy }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/admin/credentials:
     get:
       tags: [Admin]
@@ -2073,7 +2098,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ok, status]
+                required: [ok, status, provider_id, provider_name, provider_type, base_url, latency_ms, model_count, model_sample, tested_at]
                 properties:
                   ok:
                     type: boolean
@@ -2081,6 +2106,17 @@ paths:
                   status:
                     type: string
                     const: HEALTHY
+                  provider_id: { type: string, format: uuid }
+                  provider_name: { type: string }
+                  provider_type: { type: string }
+                  base_url: { type: string, format: uri }
+                  latency_ms: { type: integer, format: int64, minimum: 0 }
+                  model_count: { type: integer, minimum: 0 }
+                  model_sample:
+                    type: array
+                    maxItems: 12
+                    items: { type: string }
+                  tested_at: { type: string, format: date-time }
         '422':
           description: Provider validation failed
           content:
@@ -3323,6 +3359,102 @@ paths:
       security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
       responses:
         '200': { description: Enabled adapters }
+  /api/admin/provider-provisioning/capabilities:
+    get:
+      tags: [Provider Provisioning, Admin]
+      summary: List official, BYOK, manual, and local-test capabilities per Provider instance
+      operationId: listProviderProvisioningCapabilities
+      security: [{ adminSessionCookie: [] }, { controlBearer: [] }]
+      responses:
+        '200': { description: Capability matrix; automatic binding and upstream credit are independent flags }
+  /api/console/provider-provisioning/capabilities:
+    get:
+      tags: [Provider Provisioning, Console]
+      summary: List user-safe Provider binding and upstream credit capabilities
+      operationId: listConsoleProviderProvisioningCapabilities
+      security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
+      responses:
+        '200': { description: Capability matrix without credentials or administrator secrets }
+  /api/admin/provider-accounts:
+    get:
+      tags: [Provider Provisioning, Admin]
+      summary: List user-to-Provider account bindings
+      operationId: listAdminProviderAccounts
+      security: [{ adminSessionCookie: [] }, { controlBearer: [] }]
+      responses:
+        '200': { description: Provider account bindings without upstream secrets }
+    post:
+      tags: [Provider Provisioning, Admin]
+      summary: Create an official automatic, BYOK, or reviewed manual binding
+      operationId: createAdminProviderAccount
+      security: [{ adminSessionCookie: [] }, { controlBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderAccountBindingCreate' }
+      responses:
+        '201': { description: Binding created or automatic binding job queued }
+        '409': { description: Automatic operation is not supported or the existing binding uses another mode }
+  /api/admin/provider-provisioning/jobs:
+    get:
+      tags: [Provider Provisioning, Admin]
+      summary: List durable Provider binding and credit-allocation jobs
+      operationId: listAdminProviderProvisioningJobs
+      security: [{ adminSessionCookie: [] }, { controlBearer: [] }]
+      responses:
+        '200': { description: Provisioning jobs and non-secret external references }
+  /api/admin/provider-provisioning/jobs/{jobID}/retry:
+    post:
+      tags: [Provider Provisioning, Admin]
+      summary: Retry a failed or action-required Provider provisioning job
+      operationId: retryProviderProvisioningJob
+      security: [{ adminSessionCookie: [] }, { controlBearer: [] }]
+      parameters:
+        - { name: jobID, in: path, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Job queued for retry }
+        '409': { description: Job state does not allow retry }
+  /api/console/organizations/{organizationID}/provider-accounts:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Provider Provisioning, Console]
+      summary: List the current user's Provider bindings in an organization
+      operationId: listConsoleProviderAccounts
+      security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
+      responses:
+        '200': { description: Current-user bindings without upstream secrets }
+    post:
+      tags: [Provider Provisioning, Console]
+      summary: Create an automatic or organization-owned BYOK binding for the current user
+      operationId: createConsoleProviderAccount
+      security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderAccountBindingCreate' }
+      responses:
+        '201': { description: Current-user binding created or queued }
+        '403': { description: Reviewed manual and platform credential bindings require an administrator }
+  /api/console/organizations/{organizationID}/provider-provisioning/jobs:
+    get:
+      tags: [Provider Provisioning, Console]
+      summary: List the current user's Provider provisioning history
+      operationId: listConsoleProviderProvisioningJobs
+      security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
+      parameters:
+        - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Current-user scoped jobs }
   /api/console/organizations/{organizationID}/recharge-orders:
     parameters:
       - name: organizationID
@@ -3694,7 +3826,7 @@ paths:
       security: [{ consoleSessionCookie: [] }, { controlBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/SupplierID' }, { $ref: '#/components/parameters/EndpointID' }]
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [challenge_token], properties: { challenge_token: { type: string } } } } } }
-      responses: { '200': { description: Verified endpoint }, '422': { description: SSRF, isolation, or challenge failure } }
+      responses: { '200': { description: Verified endpoint }, '422': { description: 'SSRF, isolation, or challenge failure' } }
   /api/console/suppliers/{supplierID}/credentials:
     post:
       tags: [Console, Supplier Governance]
@@ -3898,7 +4030,7 @@ paths:
       security: [{ adminSessionCookie: [] }, { controlBearer: [] }]
       parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], properties: { provider_statement_id: { type: string, format: uuid }, reason: { type: string } } } } } }
-      responses: { '200': { description: Approved for the configured payout adapter }, '409': { description: Blocked by unsettled usage, unmatched statement, tax/invoice state, or dispute } }
+      responses: { '200': { description: Approved for the configured payout adapter }, '409': { description: 'Blocked by unsettled usage, unmatched statement, tax/invoice state, or dispute' } }
   /api/admin/supplier-settlements/{id}/retry:
     post:
       tags: [Admin, Supplier Settlement]
@@ -4040,6 +4172,229 @@ paths:
         '200': { description: Updated payout readiness, content: { application/json: { schema: { $ref: '#/components/schemas/SupplierPayoutReadiness' } } } }
         '409': { description: Stale version or independent review prerequisite missing }
 
+  /api/public/provider-quality:
+    get:
+      tags: [Public Commercial, Provider Routing]
+      summary: List region-available Provider quality metrics after the minimum sample threshold
+      operationId: listPublicProviderQuality
+      security: []
+      parameters:
+        - { name: region, in: query, required: false, schema: { type: string, pattern: '^[A-Z]{2}$', default: CN } }
+      responses:
+        '200': { description: Platform-measured Provider quality, content: { application/json: { schema: { $ref: '#/components/schemas/PublicProviderQualityList' } } } }
+  /api/public/catalog/provider-capabilities:
+    get:
+      tags: [Public Commercial, Provider Routing]
+      summary: List active Provider capability declarations available in a region
+      operationId: listPublicProviderCapabilities
+      security: []
+      parameters:
+        - { name: region, in: query, required: false, schema: { type: string, pattern: '^[A-Z]{2}$', default: CN } }
+        - { name: provider_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Public capability documents, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderCapabilityDocumentList' } } } }
+  /api/admin/provider-capabilities:
+    get:
+      tags: [Admin, Provider Routing]
+      summary: List active Provider capability documents
+      operationId: listAdminProviderCapabilities
+      security: [{ controlBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { name: provider_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Active capability documents, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderCapabilityDocumentList' } } } }
+    post:
+      tags: [Admin, Provider Routing]
+      summary: Publish an append-only Provider capability document
+      operationId: publishProviderCapabilityDocument
+      security: [{ controlBearer: [] }, { adminSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFToken' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderCapabilityDocumentWrite' } } } }
+      responses:
+        '201': { description: Published document with server-computed SHA-256, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderCapabilityDocument' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/console/provider-capabilities:
+    get:
+      tags: [Console, Provider Routing]
+      summary: List commercially approved active Provider capability documents
+      operationId: listConsoleProviderCapabilities
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      parameters:
+        - { name: provider_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Provider capability documents, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderCapabilityDocumentList' } } } }
+  /api/console/projects/{projectID}/workspace-settings:
+    parameters:
+      - { name: projectID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Console, Provider Routing]
+      summary: Read Workspace Provider policy, privacy, BYOK budget, and free-model settings
+      operationId: getConsoleWorkspaceSettings
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      responses:
+        '200': { description: Workspace settings, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceSettings' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Console, Provider Routing]
+      summary: Update Workspace routing defaults and guardrails
+      operationId: updateConsoleWorkspaceSettings
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFToken' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceSettingsWrite' } } } }
+      responses:
+        '200': { description: Updated Workspace settings, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceSettings' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/admin/projects/{projectID}/workspace-settings:
+    parameters:
+      - { name: projectID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Admin, Provider Routing]
+      summary: Read any Workspace settings
+      operationId: getAdminWorkspaceSettings
+      security: [{ controlBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200': { description: Workspace settings, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceSettings' } } } }
+    put:
+      tags: [Admin, Provider Routing]
+      summary: Update any Workspace settings
+      operationId: updateAdminWorkspaceSettings
+      security: [{ controlBearer: [] }, { adminSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFToken' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceSettingsWrite' } } } }
+      responses:
+        '200': { description: Updated Workspace settings, content: { application/json: { schema: { $ref: '#/components/schemas/WorkspaceSettings' } } } }
+  /api/console/organizations/{organizationID}/enterprise-identity:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Console, Enterprise Identity]
+      summary: Read redacted OIDC and SCIM configuration
+      operationId: getConsoleEnterpriseIdentity
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      responses:
+        '200': { description: Redacted identity connection, content: { application/json: { schema: { $ref: '#/components/schemas/EnterpriseIdentityConnection' } } } }
+    put:
+      tags: [Console, Enterprise Identity]
+      summary: Encrypt OIDC configuration and optionally rotate the display-once SCIM token
+      operationId: updateConsoleEnterpriseIdentity
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFToken' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EnterpriseIdentityWrite' } } } }
+      responses:
+        '200': { description: Redacted connection and optional one-time scim_token, content: { application/json: { schema: { $ref: '#/components/schemas/EnterpriseIdentityUpdateResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/console/organizations/{organizationID}/enterprise-identity/test:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Console, Enterprise Identity]
+      summary: Test the public HTTPS OIDC discovery document with private-network destinations blocked
+      operationId: testConsoleEnterpriseIdentity
+      security: [{ controlBearer: [] }, { consoleSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CSRFToken' }]
+      responses:
+        '200': { description: Valid issuer-matched OIDC discovery metadata }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /scim/v2/{organizationID}/Users:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [SCIM]
+      summary: List organization-scoped SCIM Users
+      operationId: listSCIMUsers
+      security: [{ scimBearer: [] }]
+      parameters:
+        - { name: filter, in: query, required: false, schema: { type: string }, description: 'Supports userName eq and externalId eq.' }
+        - { name: startIndex, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: count, in: query, required: false, schema: { type: integer, minimum: 0, maximum: 200, default: 100 } }
+      responses:
+        '200': { description: SCIM ListResponse, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMListResponse' } } } }
+        '401': { description: Invalid or disabled organization SCIM token }
+    post:
+      tags: [SCIM]
+      summary: Provision an organization member
+      operationId: createSCIMUser
+      security: [{ scimBearer: [] }]
+      requestBody: { required: true, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMUser' } } } }
+      responses:
+        '201': { description: Provisioned SCIM User, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMUser' } } } }
+  /scim/v2/{organizationID}/Users/{resourceID}:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: resourceID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [SCIM]
+      summary: Read an organization-scoped SCIM User
+      operationId: getSCIMUser
+      security: [{ scimBearer: [] }]
+      responses: { '200': { description: SCIM User, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMUser' } } } } }
+    put:
+      tags: [SCIM]
+      summary: Replace an organization-scoped SCIM User
+      operationId: replaceSCIMUser
+      security: [{ scimBearer: [] }]
+      requestBody: { required: true, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMUser' } } } }
+      responses: { '200': { description: Updated SCIM User } }
+    patch:
+      tags: [SCIM]
+      summary: Patch active, displayName, userName, or externalId
+      operationId: patchSCIMUser
+      security: [{ scimBearer: [] }]
+      requestBody: { required: true, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMPatchRequest' } } } }
+      responses: { '200': { description: Updated SCIM User } }
+    delete:
+      tags: [SCIM]
+      summary: Deactivate only this organization membership
+      operationId: deleteSCIMUser
+      security: [{ scimBearer: [] }]
+      responses: { '204': { description: Organization membership deactivated } }
+  /scim/v2/{organizationID}/Groups:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [SCIM]
+      summary: List SCIM-managed organization Teams
+      operationId: listSCIMGroups
+      security: [{ scimBearer: [] }]
+      responses: { '200': { description: SCIM ListResponse, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMListResponse' } } } } }
+    post:
+      tags: [SCIM]
+      summary: Create a SCIM-managed Team
+      operationId: createSCIMGroup
+      security: [{ scimBearer: [] }]
+      requestBody: { required: true, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMGroup' } } } }
+      responses: { '201': { description: Created SCIM Group } }
+  /scim/v2/{organizationID}/Groups/{resourceID}:
+    parameters:
+      - { name: organizationID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: resourceID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [SCIM]
+      summary: Read a SCIM-managed Team
+      operationId: getSCIMGroup
+      security: [{ scimBearer: [] }]
+      responses: { '200': { description: SCIM Group } }
+    put:
+      tags: [SCIM]
+      summary: Replace a SCIM-managed Team and membership
+      operationId: replaceSCIMGroup
+      security: [{ scimBearer: [] }]
+      requestBody: { required: true, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMGroup' } } } }
+      responses: { '200': { description: Updated SCIM Group } }
+    patch:
+      tags: [SCIM]
+      summary: Patch SCIM Group displayName, externalId, or members
+      operationId: patchSCIMGroup
+      security: [{ scimBearer: [] }]
+      requestBody: { required: true, content: { application/scim+json: { schema: { $ref: '#/components/schemas/SCIMPatchRequest' } } } }
+      responses: { '200': { description: Updated SCIM Group } }
+    delete:
+      tags: [SCIM]
+      summary: Archive a SCIM-managed Team
+      operationId: deleteSCIMGroup
+      security: [{ scimBearer: [] }]
+      responses: { '204': { description: Team archived } }
+
 components:
   securitySchemes:
     relaydockApiKey:
@@ -4051,6 +4406,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    scimBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Organization-scoped opaque SCIM token
+      description: Displayed once when rotated; only its keyed digest is stored.
     adminSessionCookie:
       type: apiKey
       in: cookie
@@ -5289,6 +5649,198 @@ components:
                 items:
                   $ref: '#/components/schemas/UsagePoint'
   schemas:
+    RequestProviderPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        order: { type: array, items: { type: string } }
+        only: { type: array, items: { type: string } }
+        ignore: { type: array, items: { type: string } }
+        allow_fallbacks: { type: boolean }
+        require_parameters: { type: boolean }
+        data_collection: { type: string, enum: [allow, deny] }
+        zdr: { type: boolean }
+        quantizations: { type: array, items: { type: string } }
+        sort: { type: string, enum: [price, latency, throughput] }
+        preferred_min_throughput: { $ref: '#/components/schemas/ExactDecimal' }
+        preferred_max_latency_ms: { type: integer, format: int64, minimum: 0 }
+        max_input_price: { $ref: '#/components/schemas/ExactDecimal' }
+        max_output_price: { $ref: '#/components/schemas/ExactDecimal' }
+        required_capabilities: { type: array, items: { type: string } }
+        processing_regions: { type: array, items: { type: string } }
+        use_shared_capacity: { type: boolean }
+    WorkspaceSettingsWrite:
+      type: object
+      required: [default_provider_policy, include_byok_in_budgets, free_daily_request_limit, free_daily_token_limit, allowed_processing_regions]
+      properties:
+        default_provider_policy: { $ref: '#/components/schemas/RequestProviderPolicy' }
+        privacy_policy: { type: object, additionalProperties: true }
+        observability_config: { type: object, additionalProperties: true }
+        include_byok_in_budgets: { type: boolean }
+        free_daily_request_limit: { type: integer, minimum: 0, maximum: 1000000 }
+        free_daily_token_limit: { type: integer, format: int64, minimum: 0, maximum: 1000000000000 }
+        allowed_processing_regions: { type: array, items: { type: string } }
+    WorkspaceSettings:
+      allOf:
+        - { $ref: '#/components/schemas/WorkspaceSettingsWrite' }
+        - type: object
+          required: [project_id, created_at, updated_at]
+          properties:
+            project_id: { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    BYOKRoutingPolicyWrite:
+      type: object
+      additionalProperties: false
+      required: [organization_id, byok_priority_section, shared_capacity_fallback]
+      properties:
+        organization_id: { type: string, format: uuid }
+        byok_priority_section: { type: string, enum: [PRIORITIZED, FALLBACK] }
+        shared_capacity_fallback: { type: string, enum: [ALWAYS, OUTSIDE_FILTERS, NEVER] }
+        model_filters: { type: array, items: { type: string } }
+        api_key_filters: { type: array, items: { type: string, format: uuid } }
+        member_filters: { type: array, items: { type: string, format: uuid } }
+    ProviderCapabilityDocumentWrite:
+      type: object
+      additionalProperties: false
+      required: [provider_id, schema_version, document]
+      properties:
+        provider_id: { type: string, format: uuid }
+        schema_version: { type: string, minLength: 1 }
+        document: { type: object, minProperties: 1, additionalProperties: true }
+        source_url: { type: string, format: uri, pattern: '^https://' }
+    ProviderCapabilityDocument:
+      allOf:
+        - { $ref: '#/components/schemas/ProviderCapabilityDocumentWrite' }
+        - type: object
+          required: [id, provider_name, source_sha256, status, fetched_at, created_at]
+          properties:
+            id: { type: string, format: uuid }
+            provider_name: { type: string }
+            source_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            status: { type: string, enum: [ACTIVE, SUPERSEDED, REJECTED] }
+            fetched_at: { type: string, format: date-time }
+            created_by: { type: string, format: uuid, nullable: true }
+            created_at: { type: string, format: date-time }
+    ProviderCapabilityDocumentList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ProviderCapabilityDocument' } }
+        region: { type: string }
+        updated_at: { type: string, format: date-time }
+    PublicProviderQuality:
+      type: object
+      required: [provider_id, provider_name, provider_slug, grade, quality_score, availability_pct, error_rate_pct, rate_limited_pct, measurement_count, region_coverage_pct, measurement_source]
+      properties:
+        provider_id: { type: string, format: uuid }
+        provider_name: { type: string }
+        provider_slug: { type: string }
+        grade: { type: string, enum: [A, B, C, D, F] }
+        quality_score: { $ref: '#/components/schemas/ExactDecimal' }
+        availability_pct: { $ref: '#/components/schemas/ExactDecimal' }
+        error_rate_pct: { $ref: '#/components/schemas/ExactDecimal' }
+        rate_limited_pct: { $ref: '#/components/schemas/ExactDecimal' }
+        p95_ttft_ms: { type: integer, format: int64, nullable: true }
+        p95_full_latency_ms: { type: integer, format: int64, nullable: true }
+        throughput_tps: { allOf: [{ $ref: '#/components/schemas/ExactDecimal' }], nullable: true }
+        measurement_count: { type: integer, format: int64, minimum: 0 }
+        region_coverage_pct: { $ref: '#/components/schemas/ExactDecimal' }
+        last_evaluated_at: { type: string, format: date-time, nullable: true }
+        measurement_source: { type: string, const: PLATFORM_MEASURED }
+    PublicProviderQualityList:
+      type: object
+      required: [items, region, updated_at]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PublicProviderQuality' } }
+        region: { type: string }
+        updated_at: { type: string, format: date-time }
+    EnterpriseIdentityConnection:
+      type: object
+      required: [organization_id, issuer_url, client_id, has_client_secret, has_scim_token, allowed_domains, sso_enabled, scim_enabled, enforce_sso, status, metadata]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        issuer_url: { type: string }
+        client_id: { type: string }
+        has_client_secret: { type: boolean, readOnly: true }
+        has_scim_token: { type: boolean, readOnly: true }
+        allowed_domains: { type: array, items: { type: string } }
+        sso_enabled: { type: boolean }
+        scim_enabled: { type: boolean }
+        enforce_sso: { type: boolean }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true }
+    EnterpriseIdentityWrite:
+      allOf:
+        - { $ref: '#/components/schemas/EnterpriseIdentityConnection' }
+        - type: object
+          properties:
+            client_secret: { type: string, writeOnly: true }
+            rotate_scim_token: { type: boolean, default: false }
+    EnterpriseIdentityUpdateResult:
+      type: object
+      required: [connection, scim_base_path]
+      properties:
+        connection: { $ref: '#/components/schemas/EnterpriseIdentityConnection' }
+        scim_base_path: { type: string }
+        scim_token: { type: string, writeOnly: true, description: Present only once after rotation. }
+    SCIMMeta:
+      type: object
+      required: [resourceType, created, lastModified, location]
+      properties:
+        resourceType: { type: string, enum: [User, Group] }
+        created: { type: string, format: date-time }
+        lastModified: { type: string, format: date-time }
+        location: { type: string }
+    SCIMUser:
+      type: object
+      required: [schemas, userName]
+      properties:
+        schemas: { type: array, items: { type: string }, contains: { const: 'urn:ietf:params:scim:schemas:core:2.0:User' } }
+        id: { type: string, format: uuid, readOnly: true }
+        externalId: { type: string, maxLength: 255 }
+        userName: { type: string, format: email }
+        displayName: { type: string }
+        active: { type: boolean }
+        emails: { type: array, items: { type: object, required: [value], properties: { value: { type: string, format: email }, type: { type: string }, primary: { type: boolean } } } }
+        meta: { $ref: '#/components/schemas/SCIMMeta' }
+    SCIMGroup:
+      type: object
+      required: [schemas, displayName]
+      properties:
+        schemas: { type: array, items: { type: string }, contains: { const: 'urn:ietf:params:scim:schemas:core:2.0:Group' } }
+        id: { type: string, format: uuid, readOnly: true }
+        externalId: { type: string, maxLength: 255 }
+        displayName: { type: string }
+        members: { type: array, items: { type: object, required: [value], properties: { value: { type: string, format: uuid }, display: { type: string } } } }
+        meta: { $ref: '#/components/schemas/SCIMMeta' }
+    SCIMPatchRequest:
+      type: object
+      required: [schemas, Operations]
+      properties:
+        schemas: { type: array, items: { type: string }, contains: { const: 'urn:ietf:params:scim:api:messages:2.0:PatchOp' } }
+        Operations:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [op]
+            properties:
+              op: { type: string, enum: [add, replace, remove] }
+              path: { type: string }
+              value: {}
+    SCIMListResponse:
+      type: object
+      required: [schemas, totalResults, startIndex, itemsPerPage, Resources]
+      properties:
+        schemas: { type: array, items: { type: string }, contains: { const: 'urn:ietf:params:scim:api:messages:2.0:ListResponse' } }
+        totalResults: { type: integer, minimum: 0 }
+        startIndex: { type: integer, minimum: 1 }
+        itemsPerPage: { type: integer, minimum: 0 }
+        Resources: { type: array, items: { oneOf: [{ $ref: '#/components/schemas/SCIMUser' }, { $ref: '#/components/schemas/SCIMGroup' }] } }
     SupplierApplicationCreate:
       type: object
       required: [legal_name, display_name, registration_number, incorporation_country, contact]
@@ -5381,7 +5933,7 @@ components:
         available: { type: boolean }
         region: { type: string, pattern: '^[A-Z]{2}$' }
         status: { type: string, enum: [AVAILABLE, UNAVAILABLE] }
-        reason_code: { type: string, description: Public-safe reason without contract, credential, margin, or capacity details. }
+        reason_code: { type: string, description: 'Public-safe reason without contract, credential, margin, or capacity details.' }
     PublicTokenPrice:
       type: object
       additionalProperties: false
@@ -5551,7 +6103,7 @@ components:
             - type: 'null'
         terms_configured: { type: boolean }
         payment_fees_configured: { type: boolean }
-        payment_region_supported: { type: boolean, description: True only when the requested region is in RELAYDOCK_PAYMENT_ALLOWED_REGIONS and at least one runtime-enabled, contract-admitted payment adapter for that region has a current APPROVED PAYMENT_CHANNEL fee disclosure. }
+        payment_region_supported: { type: boolean, description: 'True only when the requested region is in RELAYDOCK_PAYMENT_ALLOWED_REGIONS and at least one runtime-enabled, contract-admitted payment adapter for that region has a current APPROVED PAYMENT_CHANNEL fee disclosure.' }
         updated_at: { type: string, format: date-time }
     PublicCommercialTermsList:
       type: object
@@ -6059,7 +6611,7 @@ components:
           type: string
         provider_type:
           type: string
-          enum: [openai, anthropic, gemini, deepseek, qwen, kimi, glm, openrouter]
+          enum: [openai, openai_compatible, anthropic, gemini, deepseek, qwen, kimi, glm, openrouter]
         base_url:
           type: string
           format: uri
@@ -6200,7 +6752,7 @@ components:
           description: Optional stable slug; derived from the name when omitted.
         provider_type:
           type: string
-          enum: [openai, anthropic, gemini, deepseek, qwen, kimi, glm, openrouter]
+          enum: [openai, openai_compatible, anthropic, gemini, deepseek, qwen, kimi, glm, openrouter]
           default: openai
         base_url:
           type: string
@@ -8005,7 +8557,7 @@ components:
       properties:
         date: { type: string, format: date }
         currency: { type: string, pattern: '^[A-Z]{3}$' }
-        provider: { type: string, description: Provider display dimension, Subscription, or Unassigned. }
+        provider: { type: string, description: 'Provider display dimension, Subscription, or Unassigned.' }
         amount: { $ref: '#/components/schemas/ExactDecimal' }
         requests: { type: integer, format: int64, minimum: 0 }
         report: { type: string, enum: [provider_cost, user_revenue, gross_margin] }
@@ -8222,6 +8774,19 @@ components:
         payment_provider: { type: string, description: Contracted payment evidence source; no secret belongs here. }
         provider_payment_reference: { type: string }
         idempotency_key: { type: string, minLength: 1, maxLength: 200 }
+    ProviderAccountBindingCreate:
+      type: object
+      required: [provider_id]
+      properties:
+        organization_id: { type: string, format: uuid, description: Required on the admin route; derived from the path on the console route. }
+        user_id: { type: string, format: uuid, description: Required on the admin route; always the authenticated user on the console route. }
+        provider_id: { type: string, format: uuid }
+        provisioning_mode: { type: string, enum: [OFFICIAL_ENTERPRISE, BYOK, MANUAL, MOCK_ENTERPRISE], description: Console non-automatic requests are restricted to BYOK; MANUAL is administrator-reviewed. }
+        automatic: { type: boolean, description: Accepted only when the Provider advertises official automatic binding. }
+        external_account_id: { type: string, description: Non-secret existing upstream reference for reviewed manual binding. }
+        external_project_id: { type: string, description: Non-secret existing upstream project reference. }
+        credential_id: { type: string, format: uuid, description: Existing authorized credential; BYOK ownership and Provider match are enforced. }
+        idempotency_key: { type: string, maxLength: 200, description: Required here or in Idempotency-Key. }
     RechargeOrderCreate:
       type: object
       required: [amount, currency, region, payment_provider]
@@ -8230,6 +8795,7 @@ components:
         currency: { type: string, pattern: '^[A-Z]{3}$' }
         region: { type: string, pattern: '^[A-Z]{2}$' }
         payment_provider: { type: string, enum: [sandbox, manual_transfer] }
+        target_provider_id: { type: string, format: uuid, description: Optional payment-linked upstream allocation target; rejected before payment creation unless automatic binding and official upstream credit are both enabled and the user's existing binding mode is compatible. }
         idempotency_key: { type: string, maxLength: 200, description: Required here or in Idempotency-Key. }
     RechargeOrder:
       type: object
@@ -8241,6 +8807,8 @@ components:
         organization_id: { type: string, format: uuid }
         wallet_id: { type: string, format: uuid }
         payment_provider: { type: string }
+        target_provider_id: { type: string, format: uuid }
+        target_provisioning_mode: { type: string, enum: [OFFICIAL_ENTERPRISE, BYOK, MANUAL, MOCK_ENTERPRISE] }
         status: { type: string, enum: [CREATED, PENDING, PAID, CREDITED, FAILED, EXPIRED, REFUND_PENDING, REFUNDED, CHARGEBACK] }
         amount: { $ref: '#/components/schemas/ExactDecimal' }
         currency: { type: string, pattern: '^[A-Z]{3}$' }
@@ -8468,7 +9036,7 @@ components:
         supplier_name: { type: string }
         revision: { type: integer, minimum: 1 }
         policy_version: { type: string }
-        listing_fingerprint_sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: Binds the approval to Provider, endpoint, model, and listing-price content. }
+        listing_fingerprint_sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: 'Binds the approval to Provider, endpoint, model, and listing-price content.' }
         status: { type: string, enum: [DRAFT, IN_REVIEW, APPROVED, REJECTED, REVOKED] }
         reason: { type: string }
         created_by: { type: string, format: uuid }

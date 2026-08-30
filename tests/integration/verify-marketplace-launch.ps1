@@ -72,11 +72,11 @@ try {
     $env:DATABASE_URL = $builder.Uri.AbsoluteUri
     $env:TEST_DATABASE_URL = $builder.Uri.AbsoluteUri
     & $GoExecutable run ./cmd/relayedock migrate
-    if ($LASTEXITCODE -ne 0) { throw "The V22 through V25 application migration failed." }
+    if ($LASTEXITCODE -ne 0) { throw "The V22 through V27 application migration failed." }
 
     $upgrade = (Invoke-Psql "SELECT (SELECT max(version) FROM schema_migrations)||'|'||(SELECT count(*) FROM schema_migrations WHERE version=23 AND name='marketplace_launch_acceptance')||'|'||(SELECT status FROM provider_marketplace_listings WHERE id='23000000-0000-4000-8000-000000000004')||'|'||(SELECT contract_status||':'||tax_status||':'||payment_status||':'||security_status||':'||production_payout_enabled FROM supplier_payout_readiness_review WHERE supplier_id='23000000-0000-4000-8000-000000000003')||'|'||(SELECT count(*) FROM marketplace_launch_review);").Trim()
-    if ($upgrade -ne "25|1|ACTIVE|PENDING:PENDING:PENDING:PENDING:false|0") { throw "The V22 fixture was not upgraded through V25, upgraded additively, and kept fail-closed." }
-    Write-Host "PASS populated V22 Marketplace upgraded through V25; declarations preserved and payout readiness defaults blocked"
+    if ($upgrade -ne "27|1|ACTIVE|PENDING:PENDING:PENDING:PENDING:false|0") { throw "The V22 fixture was not upgraded through V27, upgraded additively, and kept fail-closed." }
+    Write-Host "PASS populated V22 Marketplace upgraded through V27; declarations preserved and payout readiness defaults blocked"
 
     & $GoExecutable test ./internal/store -run TestSupplierOnboardingIntegration -count=1 -v
     if ($LASTEXITCODE -ne 0) { throw "Supplier registration and qualification integration test failed." }

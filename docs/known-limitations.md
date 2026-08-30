@@ -83,6 +83,14 @@ does not change the commercial `NO-GO` decision.
 - Database migrations are forward-only. Routine application rollback keeps the
   upgraded schema; destructive schema rollback is an exceptional restore
   procedure with potential loss of post-backup evidence.
+- Migration 0027 implements encrypted OIDC connection storage,
+  private-network-safe discovery testing, allowed-domain policy, display-once
+  hashed SCIM tokens, and organization-scoped SCIM 2.0 Users/Groups. The
+  generic OIDC authorization-code callback and IdP-specific claim mapping are
+  not yet a supported login surface. Do not treat `sso_enabled` or
+  `enforce_sso` configuration as evidence that users are redirected to an IdP;
+  complete and test the selected IdP integration and recovery runbook before
+  enforcing SSO in production.
 
 The authoritative blocker disposition and retest requirements are in
 [go-live-checklist.md](go-live-checklist.md).

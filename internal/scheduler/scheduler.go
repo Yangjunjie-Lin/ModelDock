@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -112,8 +113,12 @@ type Selection struct {
 }
 
 type CredentialConstraints struct {
-	RequiredTags []string `json:"required_credential_tags"`
-	ExcludedTags []string `json:"excluded_credential_tags"`
+	RequiredTags      []string `json:"required_credential_tags"`
+	ExcludedTags      []string `json:"excluded_credential_tags"`
+	Model             string   `json:"model,omitempty"`
+	APIKeyID          string   `json:"api_key_id,omitempty"`
+	MemberID          string   `json:"member_id,omitempty"`
+	UseSharedCapacity *bool    `json:"use_shared_capacity,omitempty"`
 }
 
 func (s *Selection) Release() {
@@ -158,10 +163,35 @@ func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupI
 		c      domain.Credential
 		active int64
 		score  float64
+		tier   int
+	}
+	blockShared := constraints.UseSharedCapacity != nil && !*constraints.UseSharedCapacity
+	for _, candidate := range candidates {
+		if candidate.CredentialOwner != domain.CredentialOwnerCustomer || candidate.OwnerOrganizationID == nil ||
+			*candidate.OwnerOrganizationID != organizationID || !credentialActorFiltersMatch(candidate, constraints) {
+			continue
+		}
+		switch candidate.SharedCapacityFallback {
+		case "NEVER":
+			blockShared = true
+		case "OUTSIDE_FILTERS":
+			if stringFilterMatches(candidate.ModelFilters, constraints.Model) {
+				blockShared = true
+			}
+		}
 	}
 	list := make([]ranked, 0, len(candidates))
 	for _, c := range candidates {
+		if c.OrganizationID != nil && *c.OrganizationID != organizationID {
+			continue
+		}
 		if c.CredentialOwner == domain.CredentialOwnerCustomer && (c.OwnerOrganizationID == nil || *c.OwnerOrganizationID != organizationID) {
+			continue
+		}
+		if c.CredentialOwner == domain.CredentialOwnerPlatform && blockShared {
+			continue
+		}
+		if !credentialFiltersMatch(c, constraints) {
 			continue
 		}
 		if !matchesCredentialTags(c.Tags, constraints) {
@@ -186,10 +216,20 @@ func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupI
 		c.ActiveRequests = active
 		c.EffectiveWeight = weight
 		c.EffectivePriority = priority
-		list = append(list, ranked{c: c, active: active, score: score})
+		tier := 2
+		if c.CredentialOwner == domain.CredentialOwnerCustomer {
+			tier = 3
+			if c.BYOKPrioritySection == "FALLBACK" {
+				tier = 1
+			}
+		}
+		list = append(list, ranked{c: c, active: active, score: score, tier: tier})
 	}
 	if policy == "least_loaded" {
 		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].tier != list[j].tier {
+				return list[i].tier > list[j].tier
+			}
 			iLoad := float64(list[i].active) / float64(max(list[i].c.MaxConcurrency, 1))
 			jLoad := float64(list[j].active) / float64(max(list[j].c.MaxConcurrency, 1))
 			if iLoad != jLoad {
@@ -202,6 +242,9 @@ func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupI
 		})
 	} else {
 		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].tier != list[j].tier {
+				return list[i].tier > list[j].tier
+			}
 			if list[i].c.EffectivePriority != list[j].c.EffectivePriority {
 				return list[i].c.EffectivePriority > list[j].c.EffectivePriority
 			}
@@ -213,9 +256,10 @@ func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupI
 	}
 	if policy == "weighted_round_robin" && len(list) > 1 {
 		topPriority := list[0].c.EffectivePriority
+		topTier := list[0].tier
 		weighted := make([]WeightedCandidate, 0, len(list))
 		for _, item := range list {
-			if item.c.EffectivePriority != topPriority {
+			if item.tier != topTier || item.c.EffectivePriority != topPriority {
 				break
 			}
 			weighted = append(weighted, WeightedCandidate{ID: item.c.ID, Weight: item.c.EffectiveWeight})
@@ -243,7 +287,7 @@ func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupI
 		}
 		selected := r.c
 		selected.ActiveRequests = active
-		selection := &Selection{Credential: selected, Reason: map[string]any{"healthy": selected.CurrentHealth != "UNHEALTHY", "cooldown": false, "active_requests": active, "max_concurrency": selected.MaxConcurrency, "weight": selected.EffectiveWeight, "priority": selected.EffectivePriority, "score": r.score, "policy": policy, "credential_tags": selected.Tags, "required_credential_tags": constraints.RequiredTags, "excluded_credential_tags": constraints.ExcludedTags}}
+		selection := &Selection{Credential: selected, Reason: map[string]any{"healthy": selected.CurrentHealth != "UNHEALTHY", "cooldown": false, "active_requests": active, "max_concurrency": selected.MaxConcurrency, "weight": selected.EffectiveWeight, "priority": selected.EffectivePriority, "score": r.score, "policy": policy, "credential_tags": selected.Tags, "required_credential_tags": constraints.RequiredTags, "excluded_credential_tags": constraints.ExcludedTags, "credential_owner": selected.CredentialOwner, "byok_priority_section": selected.BYOKPrioritySection, "shared_capacity_fallback": selected.SharedCapacityFallback, "shared_capacity_blocked": blockShared}}
 		selection.release = func() {
 			releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -252,6 +296,28 @@ func (s *Scheduler) SelectConstrainedForOrganization(ctx context.Context, groupI
 		return selection, nil
 	}
 	return nil, ErrNoCredential
+}
+
+func credentialActorFiltersMatch(credential domain.Credential, constraints CredentialConstraints) bool {
+	return stringFilterMatches(credential.APIKeyFilters, constraints.APIKeyID) &&
+		stringFilterMatches(credential.MemberFilters, constraints.MemberID)
+}
+
+func credentialFiltersMatch(credential domain.Credential, constraints CredentialConstraints) bool {
+	return credentialActorFiltersMatch(credential, constraints) && stringFilterMatches(credential.ModelFilters, constraints.Model)
+}
+
+func stringFilterMatches(filters []string, value string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, filter := range filters {
+		if strings.ToLower(strings.TrimSpace(filter)) == value {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesCredentialTags(tags []string, constraints CredentialConstraints) bool {

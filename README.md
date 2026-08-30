@@ -11,7 +11,7 @@
 
 Protected status: [ModelDock CI](https://github.com/Yangjunjie-Lin/ModelDock/actions/workflows/ci.yml) · [Release gate](https://github.com/Yangjunjie-Lin/ModelDock/actions/workflows/release.yml)
 
-Tracked metadata: VERSION `3.0.0-beta.1` · Migration `0025_commercial_attestation_and_decimal_hardening` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
+Tracked metadata: VERSION `3.0.0-beta.1` · Migration `0027_openrouter_operating_model` · Gate schema V2. Exact Commit/Tree/Image evidence exists only in clean-worktree CI artifacts.
 <!-- commercial-status:end -->
 
 ModelDock is the commercial evolution of RelayDock: a self-hosted,
@@ -23,7 +23,9 @@ retained for in-place upgrades.
 > 中文定位：面向 AI 模型调用的统一 API 中转、授权凭据池、模型路由、用量统计与管理平台。
 
 ModelDock V3 seeds OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Kimi, GLM, and
-OpenRouter provider records. Every provider still requires an
+OpenRouter provider records, and accepts explicitly allowlisted custom
+OpenAI-compatible gateways. See the [gptGrok2api bridge](docs/gptgrok2api-bridge.md)
+for one bounded integration example. Every provider still requires an
 administrator-owned official API credential. ModelDock does not create provider
 accounts, automate verification/CAPTCHA, pool consumer web sessions, claim
 trials/promotions, or rotate proxies/identities to evade limits.
@@ -39,6 +41,14 @@ trials/promotions, or rotate proxies/identities to evade limits.
   availability, output sampling, price truth, region coverage, SLA events,
   quality grades, supplier ramp-up, automatic downweighting, and circuit breaking
 - manual, cost-optimized, quality-optimized, and balanced cross-model routing
+- request-level Provider allow/deny/order, price/latency/throughput sorting,
+  privacy/region/capability gates, ordered model fallback, and explainable
+  routing headers compatible with multi-Provider aggregator workflows
+- prioritized/fallback organization BYOK, shared-capacity controls, actor/model
+  filters, service-fee or catalog-price shadow budgets, and atomic `auto:free`
+  daily request/Token allowances
+- append-only Provider capability declarations, public minimum-sample quality
+  metrics, encrypted OIDC configuration, and organization-scoped SCIM 2.0
 - runtime Provider registry with OpenAI, Anthropic, Gemini, and DeepSeek adapter
   types plus OpenAI-compatible Chinese provider integrations
 - Provider Marketplace listings plus versioned platform-evidence launch gates,
@@ -110,6 +120,7 @@ Read [the ModelDock V3 guide](docs/modeldock.md),
 [the public Beta production operations guide](docs/public-beta-operations.md),
 [the architecture guide](docs/architecture.md), and
 [the financial-close runbook](docs/financial-close.md),
+[the OpenRouter-inspired operating model](docs/openrouter-operating-model.md),
 [architecture decisions](docs/architecture-decisions.md) for request flow,
 scheduler semantics, failure handling, and secret boundaries. V2 operators and
 integrators should also read the [V2.0 contract](docs/v2.md), the
@@ -334,6 +345,9 @@ All secrets are injected through the environment. The main variables are:
 | `RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL` | Probe/evaluation worker polling interval |
 | `RELAYDOCK_PROVIDER_QUALITY_LEASE` | Cross-replica database probe lease |
 | `RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE` | Maximum claims handled per worker cycle |
+| `RELAYDOCK_PROVIDER_PROVISIONING_POLL_INTERVAL`, `RELAYDOCK_PROVIDER_PROVISIONING_LEASE`, `RELAYDOCK_PROVIDER_PROVISIONING_BATCH_SIZE` | Durable enterprise project/account binding worker cadence, lease, and batch limit |
+| `RELAYDOCK_OPENAI_PROVISIONING_ENABLED`, `OPENAI_ADMIN_KEY` | Disabled-by-default official OpenAI API Platform project/service-account provisioning; does not enable project credit transfer |
+| `RELAYDOCK_PROVIDER_PROVISIONING_MOCK_ENABLED` | Local acceptance-only automatic binding and free-model credit simulator; production Compose forces it off |
 | `RELAYDOCK_SUPPLIER_SETTLEMENT_POLL_INTERVAL`, `RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE` | Platform-measured payable accrual, reserve release, cycle, and payout recovery cadence |
 | `RELAYDOCK_PAYOUT_ALLOWED_REGIONS` | Explicit payout-adapter region allowlist |
 | `RELAYDOCK_PAYOUT_SANDBOX_ENABLED`, `RELAYDOCK_PAYOUT_SANDBOX_SECRET` | Disabled-by-default test-only idempotent payout adapter; never enable for production settlement |
@@ -352,6 +366,13 @@ All secrets are injected through the environment. The main variables are:
 
 See [.env.example](.env.example) for the complete development template. Never
 commit `.env`, provider credentials, downstream keys, database dumps, or logs.
+
+Provider account onboarding and payment-linked allocation are documented in
+[docs/provider-account-provisioning.md](docs/provider-account-provisioning.md).
+Only official enterprise project/sub-account APIs, BYOK, and reviewed manual
+bindings are supported. Consumer-account signup automation, CAPTCHA bypass,
+temporary-email workflows, proxy rotation, and trial-credit farming are outside
+the product contract.
 
 ## Local development
 

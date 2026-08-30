@@ -273,13 +273,16 @@ func (s *Store) DeleteProvider(ctx context.Context, providerID string) error {
 
 func scanCredential(row pgx.Row) (domain.Credential, error) {
 	var c domain.Credential
-	var tags []byte
-	err := row.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion)
+	var tags, modelFilters, apiKeyFilters, memberFilters []byte
+	err := row.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.BYOKPrioritySection, &c.SharedCapacityFallback, &modelFilters, &apiKeyFilters, &memberFilters)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}
 	c.HasSecret = len(c.EncryptedSecret) > 0
 	_ = json.Unmarshal(tags, &c.Tags)
+	_ = json.Unmarshal(modelFilters, &c.ModelFilters)
+	_ = json.Unmarshal(apiKeyFilters, &c.APIKeyFilters)
+	_ = json.Unmarshal(memberFilters, &c.MemberFilters)
 	if c.Tags == nil {
 		c.Tags = []string{}
 	}
@@ -287,7 +290,7 @@ func scanCredential(row pgx.Row) (domain.Credential, error) {
 }
 
 // #nosec G101 -- SQL projection names encrypted credential columns but contains no credential value.
-const credentialColumns = `c.id,c.provider_id,p.name,COALESCE((SELECT string_agg(g.name,', ' ORDER BY g.name) FROM credential_group_members gm JOIN credential_groups g ON g.id=gm.group_id WHERE gm.credential_id=c.id),''),c.name,c.credential_type,c.encrypted_secret,c.secret_last4,c.organization_id,c.project_id,c.status,c.priority,c.weight,c.max_concurrency,c.current_health,c.last_success_at,c.last_failure_at,c.cooldown_until,c.created_at,c.updated_at,COALESCE((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM credential_tags t WHERE t.credential_id=c.id),'[]'::jsonb),c.credential_owner,c.owner_organization_id,c.ownership_confirmed_at,c.ownership_confirmed_by,c.ownership_terms_version`
+const credentialColumns = `c.id,c.provider_id,p.name,COALESCE((SELECT string_agg(g.name,', ' ORDER BY g.name) FROM credential_group_members gm JOIN credential_groups g ON g.id=gm.group_id WHERE gm.credential_id=c.id),''),c.name,c.credential_type,c.encrypted_secret,c.secret_last4,c.organization_id,c.project_id,c.status,c.priority,c.weight,c.max_concurrency,c.current_health,c.last_success_at,c.last_failure_at,c.cooldown_until,c.created_at,c.updated_at,COALESCE((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM credential_tags t WHERE t.credential_id=c.id),'[]'::jsonb),c.credential_owner,c.owner_organization_id,c.ownership_confirmed_at,c.ownership_confirmed_by,c.ownership_terms_version,c.byok_priority_section,c.shared_capacity_fallback,c.model_filters,c.api_key_filters,c.member_filters`
 
 func (s *Store) ListCredentials(ctx context.Context, limit, offset int) ([]domain.Credential, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`, clamp(limit), max(offset, 0))
@@ -304,6 +307,56 @@ func (s *Store) ListCredentials(ctx context.Context, limit, offset int) ([]domai
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ListCredentialsFiltered powers the multi-provider credential management UI.
+// Filters are applied in PostgreSQL so pagination cannot hide matching records.
+func (s *Store) ListCredentialsFiltered(ctx context.Context, search, status, group string, limit, offset int) ([]domain.Credential, int64, error) {
+	conditions := make([]string, 0, 3)
+	args := make([]any, 0, 5)
+	if search = strings.TrimSpace(search); search != "" {
+		args = append(args, "%"+search+"%")
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, `(c.name ILIKE `+placeholder+` OR p.name ILIKE `+placeholder+` OR
+			COALESCE(c.project_id,'') ILIKE `+placeholder+` OR EXISTS(
+				SELECT 1 FROM credential_tags search_tag WHERE search_tag.credential_id=c.id AND search_tag.tag ILIKE `+placeholder+`
+			))`)
+	}
+	if status = strings.ToUpper(strings.TrimSpace(status)); status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("c.status=$%d", len(args)))
+	}
+	if group = strings.TrimSpace(group); group != "" {
+		args = append(args, group)
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, `EXISTS(SELECT 1 FROM credential_group_members filter_member
+			JOIN credential_groups filter_group ON filter_group.id=filter_member.group_id
+			WHERE filter_member.credential_id=c.id AND (filter_group.id::text=`+placeholder+` OR filter_group.name=`+placeholder+`))`)
+	}
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+	var total int64
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM provider_credentials c JOIN providers p ON p.id=c.provider_id`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any(nil), args...), clamp(limit), max(offset, 0))
+	rows, err := s.pool.Query(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id`+
+		where+fmt.Sprintf(" ORDER BY c.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2), queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]domain.Credential, 0)
+	for rows.Next() {
+		credential, scanErr := scanCredential(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		out = append(out, credential)
+	}
+	return out, total, rows.Err()
 }
 func (s *Store) CredentialByID(ctx context.Context, credentialID string) (domain.Credential, error) {
 	return scanCredential(s.pool.QueryRow(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id WHERE c.id=$1`, credentialID))
@@ -868,11 +921,14 @@ func (s *Store) Candidates(ctx context.Context, groupID string) ([]domain.Creden
 	var out []domain.Credential
 	for rows.Next() {
 		var c domain.Credential
-		var tags []byte
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.EffectiveWeight, &c.EffectivePriority); err != nil {
+		var tags, modelFilters, apiKeyFilters, memberFilters []byte
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.BYOKPrioritySection, &c.SharedCapacityFallback, &modelFilters, &apiKeyFilters, &memberFilters, &c.EffectiveWeight, &c.EffectivePriority); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &c.Tags)
+		_ = json.Unmarshal(modelFilters, &c.ModelFilters)
+		_ = json.Unmarshal(apiKeyFilters, &c.APIKeyFilters)
+		_ = json.Unmarshal(memberFilters, &c.MemberFilters)
 		if c.Tags == nil {
 			c.Tags = []string{}
 		}

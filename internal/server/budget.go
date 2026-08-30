@@ -34,6 +34,20 @@ func mergeCredentialConstraints(values ...scheduler.CredentialConstraints) sched
 		RequiredTags: make([]string, 0, len(required)),
 		ExcludedTags: make([]string, 0, len(excluded)),
 	}
+	for _, value := range values {
+		if value.Model != "" {
+			out.Model = value.Model
+		}
+		if value.APIKeyID != "" {
+			out.APIKeyID = value.APIKeyID
+		}
+		if value.MemberID != "" {
+			out.MemberID = value.MemberID
+		}
+		if value.UseSharedCapacity != nil {
+			out.UseSharedCapacity = value.UseSharedCapacity
+		}
+	}
 	for tag := range required {
 		out.RequiredTags = append(out.RequiredTags, tag)
 	}

@@ -55,6 +55,8 @@ $expectedLedger = @(
 	"23:marketplace_launch_acceptance",
 	"24:exact_money_and_release_evidence",
 	"25:commercial_attestation_and_decimal_hardening"
+	"26:provider_account_provisioning"
+	"27:openrouter_operating_model"
 )
 $expectedProviderSeeds = @(
     "anthropic|anthropic|https://api.anthropic.com/v1",
@@ -871,7 +873,7 @@ try {
     Wait-ForSuccessfulStartup -Name $firstContainer
     $firstSnapshot = Get-LedgerSnapshot
     Remove-TestContainer -Name $firstContainer
-    Write-Host "PASS empty database applied migrations 1:core through 25:commercial_attestation_and_decimal_hardening"
+    Write-Host "PASS empty database applied migrations 1:core through 27:openrouter_operating_model"
 
     $exactWrite = Invoke-PsqlChecked -Database $testDatabase `
         -Sql "WITH target AS (UPDATE users SET monthly_cost_limit_exact=0.100000000001 WHERE id=(SELECT id FROM users ORDER BY id LIMIT 1) RETURNING monthly_cost_limit,monthly_cost_limit_exact) SELECT monthly_cost_limit::text||'|'||monthly_cost_limit_exact::text FROM target" `
@@ -957,7 +959,7 @@ try {
     Wait-ForSuccessfulStartup -Name $upgradeContainer
     Assert-PopulatedV1Upgrade
     Remove-TestContainer -Name $upgradeContainer
-    Write-Host "PASS populated V1 database upgraded through 25:commercial_attestation_and_decimal_hardening without losing legacy data"
+    Write-Host "PASS populated V1 database upgraded through 27:openrouter_operating_model without losing legacy data"
 
     Recreate-TestDatabase
     Initialize-PopulatedV12FinancialDatabase
@@ -966,7 +968,7 @@ try {
     Wait-ForSuccessfulStartup -Name $v12UpgradeContainer
     Assert-PopulatedV12FinancialUpgrade
     Remove-TestContainer -Name $v12UpgradeContainer
-    Write-Host "PASS populated V12 funding and refund holds upgraded through 25 without becoming refundable"
+    Write-Host "PASS populated V12 funding and refund holds upgraded through 27 without becoming refundable"
 
     Write-Host "Migration contract verification passed for empty and populated-upgrade databases. Cleanup will now remove only this run's containers and random database."
 } finally {

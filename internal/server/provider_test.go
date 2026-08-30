@@ -4,10 +4,12 @@ import "testing"
 
 func TestNormalizeProviderType(t *testing.T) {
 	tests := map[string]string{
-		"":           "openai",
-		"OpenAI":     "openai",
-		" deepseek ": "deepseek",
-		"OPENROUTER": "openrouter",
+		"":                  "openai",
+		"OpenAI":            "openai",
+		" deepseek ":        "deepseek",
+		"OPENROUTER":        "openrouter",
+		"openai-compatible": "openai_compatible",
+		"custom":            "openai_compatible",
 	}
 	for input, expected := range tests {
 		actual, ok := normalizeProviderType(input)

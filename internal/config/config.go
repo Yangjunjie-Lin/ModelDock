@@ -103,6 +103,12 @@ type Config struct {
 	ProviderQualityPoll         time.Duration
 	ProviderQualityLease        time.Duration
 	ProviderQualityBatchSize    int
+	ProviderProvisioningPoll    time.Duration
+	ProviderProvisioningLease   time.Duration
+	ProviderProvisioningBatch   int
+	ProviderProvisioningMock    bool
+	OpenAIProvisioningEnabled   bool
+	OpenAIAdminKey              string
 	SupplierSettlementPoll      time.Duration
 	SupplierSettlementBatchSize int
 	PayoutAllowedRegions        []string
@@ -151,7 +157,7 @@ func Load() (Config, error) {
 		JWTLifetime:                 durationAny(15*time.Minute, "RELAYDOCK_JWT_LIFETIME", "JWT_LIFETIME"),
 		JWTRefreshLifetime:          durationAny(7*24*time.Hour, "RELAYDOCK_JWT_REFRESH_LIFETIME", "JWT_REFRESH_LIFETIME"),
 		MigrationMode:               strings.ToLower(env("RELAYDOCK_MIGRATION_MODE", "startup")),
-		ProviderAllowedHosts:        csv(env("RELAYDOCK_PROVIDER_ALLOWED_HOSTS", "api.openai.com,api.deepseek.com,openrouter.ai,api.anthropic.com,generativelanguage.googleapis.com,open.bigmodel.cn,api.moonshot.cn,dashscope.aliyuncs.com")),
+		ProviderAllowedHosts:        csv(env("RELAYDOCK_PROVIDER_ALLOWED_HOSTS", "api.openai.com,api.deepseek.com,openrouter.ai,api.anthropic.com,generativelanguage.googleapis.com,open.bigmodel.cn,api.moonshot.cn,dashscope.aliyuncs.com,pro.muyuai.top")),
 		ProviderAllowPrivate:        boolean("RELAYDOCK_PROVIDER_ALLOW_PRIVATE_NETWORK", false),
 		ProviderAllowHTTP:           boolean("RELAYDOCK_PROVIDER_ALLOW_HTTP", false),
 		StreamMaxBytes:              int64(integer("RELAYDOCK_STREAM_MAX_BYTES", 64<<20)),
@@ -159,6 +165,12 @@ func Load() (Config, error) {
 		ProviderQualityPoll:         duration("RELAYDOCK_PROVIDER_QUALITY_POLL_INTERVAL", 30*time.Second),
 		ProviderQualityLease:        duration("RELAYDOCK_PROVIDER_QUALITY_LEASE", 2*time.Minute),
 		ProviderQualityBatchSize:    integer("RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE", 20),
+		ProviderProvisioningPoll:    duration("RELAYDOCK_PROVIDER_PROVISIONING_POLL_INTERVAL", 5*time.Second),
+		ProviderProvisioningLease:   duration("RELAYDOCK_PROVIDER_PROVISIONING_LEASE", 2*time.Minute),
+		ProviderProvisioningBatch:   integer("RELAYDOCK_PROVIDER_PROVISIONING_BATCH_SIZE", 20),
+		ProviderProvisioningMock:    boolean("RELAYDOCK_PROVIDER_PROVISIONING_MOCK_ENABLED", false),
+		OpenAIProvisioningEnabled:   boolean("RELAYDOCK_OPENAI_PROVISIONING_ENABLED", false),
+		OpenAIAdminKey:              strings.TrimSpace(os.Getenv("OPENAI_ADMIN_KEY")),
 		SupplierSettlementPoll:      duration("RELAYDOCK_SUPPLIER_SETTLEMENT_POLL_INTERVAL", time.Minute),
 		SupplierSettlementBatchSize: integer("RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE", 100),
 		PayoutAllowedRegions:        upperCSV(env("RELAYDOCK_PAYOUT_ALLOWED_REGIONS", "US,CN")),
@@ -268,6 +280,15 @@ func Load() (Config, error) {
 	}
 	if c.ProviderQualityBatchSize > 100 {
 		return Config{}, errors.New("RELAYDOCK_PROVIDER_QUALITY_BATCH_SIZE must not exceed 100")
+	}
+	if c.ProviderProvisioningBatch <= 0 || c.ProviderProvisioningBatch > 100 {
+		return Config{}, errors.New("RELAYDOCK_PROVIDER_PROVISIONING_BATCH_SIZE must be between 1 and 100")
+	}
+	if c.ProviderProvisioningLease <= c.ProviderProvisioningPoll {
+		return Config{}, errors.New("RELAYDOCK_PROVIDER_PROVISIONING_LEASE must be longer than RELAYDOCK_PROVIDER_PROVISIONING_POLL_INTERVAL")
+	}
+	if c.OpenAIProvisioningEnabled && c.OpenAIAdminKey == "" {
+		return Config{}, errors.New("OPENAI_ADMIN_KEY is required when RELAYDOCK_OPENAI_PROVISIONING_ENABLED=true")
 	}
 	if c.SupplierSettlementBatchSize <= 0 || c.SupplierSettlementBatchSize > 500 {
 		return Config{}, errors.New("RELAYDOCK_SUPPLIER_SETTLEMENT_BATCH_SIZE must be between 1 and 500")

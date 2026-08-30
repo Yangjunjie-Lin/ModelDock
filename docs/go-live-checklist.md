@@ -4,7 +4,7 @@
 
 **Decision: NO-GO**
 **Candidate version:** `3.0.0-beta.1`
-**Latest migration:** `0025_commercial_attestation_and_decimal_hardening`
+**Latest migration:** `0027_openrouter_operating_model`
 **Exact commit:** generated and checked against HEAD only in the CI artifact
 **Release created:** no
 

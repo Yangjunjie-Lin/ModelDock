@@ -28,6 +28,12 @@ type routeCandidate struct {
 	latency           float64
 	routingMultiplier float64
 	trafficCapBPS     int
+	providerSlug      string
+	providerConfig    map[string]any
+	dataRetention     string
+	processingRegions []string
+	throughput        string
+	p95LatencyMS      *int64
 	score             float64
 }
 
@@ -38,7 +44,9 @@ const routeCandidateSelect = `SELECT pmr.id,p.organization_id,pmr.project_id,pmr
 	CASE WHEN COALESCE(qp.enabled,false) THEN qs.quality_score::float8 ELSE 50::float8 END,
 	CASE WHEN COALESCE(qp.enabled,false) THEN LEAST(100,COALESCE(qs.p95_full_latency_ms,5000)::float8/100) ELSE 50::float8 END,
 	CASE WHEN COALESCE(qp.enabled,false) THEN qs.routing_multiplier::float8 ELSE 1::float8 END,
-	CASE WHEN COALESCE(qp.enabled,false) THEN qs.traffic_cap_bps ELSE 10000 END
+	CASE WHEN COALESCE(qp.enabled,false) THEN qs.traffic_cap_bps ELSE 10000 END,
+	pr.slug,pr.config,pr.data_retention_policy,pr.data_processing_regions,
+	COALESCE(qs.throughput_tps,0)::text,qs.p95_full_latency_ms
 	FROM project_model_routes pmr JOIN projects p ON p.id=pmr.project_id
 	JOIN model_routes r ON r.id=pmr.model_route_id JOIN providers pr ON pr.id=r.provider_id
 	JOIN models m ON m.provider_id=r.provider_id AND m.provider_model_id=r.upstream_model
@@ -49,25 +57,31 @@ const routeCandidateSelect = `SELECT pmr.id,p.organization_id,pmr.project_id,pmr
 
 func scanRouteCandidate(row pgx.Row) (routeCandidate, error) {
 	var candidate routeCandidate
-	var routeConfig, fallbackConfig, capabilities []byte
+	var routeConfig, fallbackConfig, capabilities, providerConfig, processingRegions []byte
 	err := row.Scan(&candidate.route.ID, &candidate.route.OrganizationID, &candidate.route.ProjectID,
 		&candidate.route.ModelRouteID, &candidate.route.Alias, &candidate.route.Enabled, &routeConfig,
 		&candidate.route.ProviderID, &candidate.route.ProviderType, &candidate.route.ProviderBaseURL,
 		&candidate.route.UpstreamModel, &candidate.route.CredentialGroupID, &candidate.route.FallbackGroupID,
 		&candidate.route.RoutingPolicy, &fallbackConfig, &candidate.route.CreatedAt, &candidate.route.UpdatedAt,
 		&candidate.modelType, &capabilities, &candidate.inputPrice, &candidate.outputPrice, &candidate.hasPrice,
-		&candidate.quality, &candidate.latency, &candidate.routingMultiplier, &candidate.trafficCapBPS)
+		&candidate.quality, &candidate.latency, &candidate.routingMultiplier, &candidate.trafficCapBPS,
+		&candidate.providerSlug, &providerConfig, &candidate.dataRetention, &processingRegions, &candidate.throughput, &candidate.p95LatencyMS)
 	if err != nil {
 		return candidate, err
 	}
 	decodeJSONNumbers(routeConfig, &candidate.route.RoutingConfig)
 	decodeJSONNumbers(fallbackConfig, &candidate.route.FallbackConfig)
 	_ = json.Unmarshal(capabilities, &candidate.capabilities)
+	_ = json.Unmarshal(providerConfig, &candidate.providerConfig)
+	_ = json.Unmarshal(processingRegions, &candidate.processingRegions)
 	if candidate.route.RoutingConfig == nil {
 		candidate.route.RoutingConfig = map[string]any{}
 	}
 	if candidate.route.FallbackConfig == nil {
 		candidate.route.FallbackConfig = map[string]any{}
+	}
+	if candidate.providerConfig == nil {
+		candidate.providerConfig = map[string]any{}
 	}
 	return candidate, nil
 }
@@ -87,19 +101,42 @@ func (s *Store) ResolveProjectRouteForEndpointActor(ctx context.Context, project
 }
 
 func (s *Store) ResolveProjectRouteForEndpointActorRequest(ctx context.Context, projectID, userID, requestedModel, endpoint, requestID string) (domain.RoutingDecision, error) {
-	route, err := s.ProjectRouteByAlias(ctx, projectID, requestedModel)
+	return s.ResolveProjectRouteForEndpointActorRequestPolicy(ctx, projectID, userID, requestedModel, endpoint, requestID, domain.RequestProviderPolicy{})
+}
+
+func (s *Store) ResolveProjectRouteForEndpointActorRequestPolicy(ctx context.Context, projectID, userID, requestedModel, endpoint, requestID string, policy domain.RequestProviderPolicy) (domain.RoutingDecision, error) {
+	manual, err := scanRouteCandidate(s.pool.QueryRow(ctx, routeCandidateSelect+` WHERE pmr.project_id=$1 AND lower(pmr.alias)=lower($2)
+		AND pmr.deleted_at IS NULL AND pmr.enabled AND r.enabled AND pr.enabled AND m.enabled`, projectID, requestedModel))
 	if err == nil {
-		if _, admissionErr := s.CheckProviderAdmission(ctx, route.OrganizationID, userID, route.ProviderID, route.UpstreamModel); admissionErr != nil {
+		config := map[string]any{}
+		switch endpoint {
+		case "/embeddings":
+			config["model_type"] = "embedding"
+		case "/responses", "/chat/completions":
+			config["model_type"] = "text"
+		}
+		if strings.EqualFold(strings.TrimSpace(requestedModel), "auto:free") {
+			config["free_only"] = true
+		}
+		applyProviderPolicyConfig(config, policy)
+		if !candidateMatches(manual, config) {
+			return domain.RoutingDecision{}, ErrNotFound
+		}
+		if _, admissionErr := s.CheckProviderAdmission(ctx, manual.route.OrganizationID, userID, manual.route.ProviderID, manual.route.UpstreamModel); admissionErr != nil {
 			return domain.RoutingDecision{}, admissionErr
 		}
-		if admitted, rampErr := s.providerQualityTrafficAdmitted(ctx, route.ProviderID, route.ModelRouteID, requestID); rampErr != nil {
+		if admitted, rampErr := s.providerQualityTrafficAdmitted(ctx, manual.route.ProviderID, manual.route.ModelRouteID, requestID); rampErr != nil {
 			return domain.RoutingDecision{}, rampErr
 		} else if !admitted {
 			return domain.RoutingDecision{}, ErrProviderQualityRampLimited
 		}
-		return domain.RoutingDecision{Route: route, Strategy: "manual", Score: 1, Candidates: 1}, nil
+		return domain.RoutingDecision{Route: manual.route, Strategy: "manual", Score: 1, Candidates: 1, Policy: policy,
+			CandidateTrace: []domain.RoutingCandidateTrace{{ProviderID: manual.route.ProviderID, ProviderSlug: manual.providerSlug,
+				Model: manual.route.UpstreamModel, Eligible: true, Reason: "manual project route eligible after policy gates", Score: 1,
+				InputPrice: manual.inputPrice, OutputPrice: manual.outputPrice, LatencyMS: manual.p95LatencyMS,
+				ThroughputTPS: manual.throughput}}}, nil
 	}
-	if !errors.Is(err, ErrNotFound) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.RoutingDecision{}, err
 	}
 
@@ -122,6 +159,21 @@ func (s *Store) ResolveProjectRouteForEndpointActorRequest(ctx context.Context, 
 			config["model_type"] = "text"
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(requestedModel), "auto:free") {
+		config["free_only"] = true
+	}
+	applyProviderPolicyConfig(config, policy)
+	if policy.Sort != "" {
+		switch policy.Sort {
+		case "price":
+			rule.Strategy = "cost_optimized"
+		case "latency":
+			rule.Strategy = "latency_optimized"
+		case "throughput":
+			rule.Strategy = "throughput_optimized"
+		}
+	}
+	rule.Config = config
 	candidates, rampLimited, err := s.routingCandidates(ctx, projectID, userID, config, requestID)
 	if err != nil {
 		return domain.RoutingDecision{}, err
@@ -133,7 +185,14 @@ func (s *Store) ResolveProjectRouteForEndpointActorRequest(ctx context.Context, 
 	if err != nil {
 		return domain.RoutingDecision{}, err
 	}
-	return domain.RoutingDecision{Route: selected.route, Strategy: rule.Strategy, Score: selected.score, Candidates: len(candidates)}, nil
+	traces := make([]domain.RoutingCandidateTrace, 0, len(candidates))
+	for _, candidate := range candidates {
+		traces = append(traces, domain.RoutingCandidateTrace{ProviderID: candidate.route.ProviderID, ProviderSlug: candidate.providerSlug,
+			Model: candidate.route.UpstreamModel, Eligible: true, Reason: "eligible after commercial, privacy, capability, and price gates",
+			Score: candidate.score, InputPrice: candidate.inputPrice, OutputPrice: candidate.outputPrice,
+			LatencyMS: candidate.p95LatencyMS, ThroughputTPS: candidate.throughput})
+	}
+	return domain.RoutingDecision{Route: selected.route, Strategy: rule.Strategy, Score: selected.score, Candidates: len(candidates), Policy: policy, CandidateTrace: traces}, nil
 }
 
 func (s *Store) providerQualityTrafficAdmitted(ctx context.Context, providerID, routeID, requestID string) (bool, error) {
@@ -167,6 +226,8 @@ func builtinRoutingRule(projectID, alias string) (domain.RoutingRule, error) {
 		strategy = "cost_optimized"
 	case "auto:quality":
 		strategy = "quality_optimized"
+	case "auto:free":
+		strategy = "cost_optimized"
 	default:
 		return domain.RoutingRule{}, ErrNotFound
 	}
@@ -218,7 +279,10 @@ func candidateMatches(candidate routeCandidate, config map[string]any) bool {
 	if modelType, _ := config["model_type"].(string); modelType != "" && !strings.EqualFold(modelType, candidate.modelType) {
 		return false
 	}
-	if providers := configStrings(config["providers"]); len(providers) > 0 && !containsFold(providers, candidate.route.ProviderID) && !containsFold(providers, candidate.route.ProviderType) {
+	if ignored := configStrings(config["ignore_providers"]); containsFold(ignored, candidate.route.ProviderID) || containsFold(ignored, candidate.route.ProviderType) || containsFold(ignored, candidate.providerSlug) {
+		return false
+	}
+	if providers := configStrings(config["providers"]); len(providers) > 0 && !containsFold(providers, candidate.providerSlug) && !containsFold(providers, candidate.route.ProviderID) && !containsFold(providers, candidate.route.ProviderType) {
 		return false
 	}
 	for _, capability := range configStrings(config["required_capabilities"]) {
@@ -232,7 +296,128 @@ func candidateMatches(candidate routeCandidate, config map[string]any) bool {
 	if maxPrice, ok := configDecimal(config["max_output_price"]); ok && (!candidate.hasPrice || decimalRat(candidate.outputPrice).Cmp(maxPrice) > 0) {
 		return false
 	}
+	if required, _ := config["zdr"].(bool); required && !providerConfigBool(candidate.providerConfig, "zdr") {
+		return false
+	}
+	if collection, _ := config["data_collection"].(string); strings.EqualFold(collection, "deny") && providerMayRetain(candidate.dataRetention, candidate.providerConfig) {
+		return false
+	}
+	if quantizations := configStrings(config["quantizations"]); len(quantizations) > 0 && !containsFold(quantizations, providerConfigString(candidate.providerConfig, "quantization")) {
+		return false
+	}
+	if regions := configStrings(config["processing_regions"]); len(regions) > 0 && !intersectsFold(regions, candidate.processingRegions) {
+		return false
+	}
+	if minimum, ok := configDecimal(config["preferred_min_throughput"]); ok && decimalRat(candidate.throughput).Cmp(minimum) < 0 {
+		return false
+	}
+	if maximum, ok := configInt64(config["preferred_max_latency_ms"]); ok && (candidate.p95LatencyMS == nil || *candidate.p95LatencyMS > maximum) {
+		return false
+	}
+	if freeOnly, _ := config["free_only"].(bool); freeOnly && (!candidate.hasPrice || decimalRat(candidate.inputPrice).Sign() != 0 || decimalRat(candidate.outputPrice).Sign() != 0) {
+		return false
+	}
 	return true
+}
+
+func applyProviderPolicyConfig(config map[string]any, policy domain.RequestProviderPolicy) {
+	if len(policy.Only) > 0 {
+		config["providers"] = policy.Only
+	}
+	if len(policy.Ignore) > 0 {
+		config["ignore_providers"] = policy.Ignore
+	}
+	if len(policy.Order) > 0 {
+		config["provider_order"] = policy.Order
+	}
+	if len(policy.RequiredCapabilities) > 0 {
+		existing := configStrings(config["required_capabilities"])
+		config["required_capabilities"] = append(existing, policy.RequiredCapabilities...)
+	}
+	if policy.MaxInputPrice != nil {
+		config["max_input_price"] = policy.MaxInputPrice.String()
+	}
+	if policy.MaxOutputPrice != nil {
+		config["max_output_price"] = policy.MaxOutputPrice.String()
+	}
+	if policy.ZDR {
+		config["zdr"] = true
+	}
+	if policy.DataCollection != "" {
+		config["data_collection"] = policy.DataCollection
+	}
+	if len(policy.Quantizations) > 0 {
+		config["quantizations"] = policy.Quantizations
+	}
+	if len(policy.ProcessingRegions) > 0 {
+		config["processing_regions"] = policy.ProcessingRegions
+	}
+	if policy.PreferredMinThroughput != nil {
+		config["preferred_min_throughput"] = policy.PreferredMinThroughput.String()
+	}
+	if policy.PreferredMaxLatencyMS != nil {
+		config["preferred_max_latency_ms"] = *policy.PreferredMaxLatencyMS
+	}
+	if free, _ := config["free_only"].(bool); !free {
+		// auto:free sets this below after policy application.
+	}
+}
+
+func providerConfigBool(config map[string]any, key string) bool {
+	if value, ok := config[key].(bool); ok {
+		return value
+	}
+	if compliance, ok := config["compliance"].(map[string]any); ok {
+		value, _ := compliance[key].(bool)
+		return value
+	}
+	return false
+}
+
+func providerConfigString(config map[string]any, key string) string {
+	value, _ := config[key].(string)
+	return value
+}
+
+func providerMayRetain(retention string, config map[string]any) bool {
+	if providerConfigBool(config, "zdr") {
+		return false
+	}
+	retention = strings.ToLower(strings.TrimSpace(retention))
+	return retention != "zero" && retention != "zdr" && retention != "none" && retention != "0"
+}
+
+func intersectsFold(left, right []string) bool {
+	for _, a := range left {
+		for _, b := range right {
+			if strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func configInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		parsed, err := v.Int64()
+		return parsed, err == nil
+	case string:
+		parsed, ok := new(big.Int).SetString(v, 10)
+		if !ok || !parsed.IsInt64() {
+			return 0, false
+		}
+		return parsed.Int64(), true
+	default:
+		return 0, false
+	}
 }
 
 func chooseCandidate(candidates []routeCandidate, rule domain.RoutingRule) (routeCandidate, error) {
@@ -283,13 +468,36 @@ func chooseCandidate(candidates []routeCandidate, rule domain.RoutingRule) (rout
 			eligible[index].score = -pricePenalty
 		case "quality_optimized":
 			eligible[index].score = (eligible[index].quality/100 - pricePenalty/1000 - eligible[index].latency/100000) * routingMultiplier
+		case "latency_optimized":
+			if eligible[index].p95LatencyMS == nil {
+				eligible[index].score = -math.MaxFloat64
+			} else {
+				eligible[index].score = -float64(*eligible[index].p95LatencyMS)
+			}
+		case "throughput_optimized":
+			throughput, _ := new(big.Rat).SetString(eligible[index].throughput)
+			if throughput != nil {
+				eligible[index].score, _ = throughput.Float64()
+			}
 		default:
 			eligible[index].score = rule.QualityWeight*(eligible[index].quality/100) -
 				rule.PriceWeight*pricePenalty - rule.LatencyWeight*(eligible[index].latency/100)
 			eligible[index].score *= routingMultiplier
 		}
 	}
+	providerOrder := configStrings(rule.Config["provider_order"])
+	orderRank := func(candidate routeCandidate) int {
+		for index, provider := range providerOrder {
+			if strings.EqualFold(provider, candidate.providerSlug) || strings.EqualFold(provider, candidate.route.ProviderID) || strings.EqualFold(provider, candidate.route.ProviderType) {
+				return index
+			}
+		}
+		return len(providerOrder) + 1
+	}
 	sort.SliceStable(eligible, func(i, j int) bool {
+		if len(providerOrder) > 0 && orderRank(eligible[i]) != orderRank(eligible[j]) {
+			return orderRank(eligible[i]) < orderRank(eligible[j])
+		}
 		if rule.Strategy == "cost_optimized" {
 			if comparison := candidateCombinedPrice(eligible[i]).Cmp(candidateCombinedPrice(eligible[j])); comparison != 0 {
 				return comparison < 0

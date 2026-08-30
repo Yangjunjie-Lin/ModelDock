@@ -8,6 +8,23 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Added Migration 0026 for official enterprise/BYOK/manual Provider account
+  bindings and replay-safe provisioning/allocation jobs; consumer signup,
+  CAPTCHA, trial farming, and shared consumer sessions remain unsupported.
+- Added Migration 0027 with Workspace Provider policy, request-level routing,
+  ordered BYOK/shared capacity, free-model daily admission, BYOK shadow spend,
+  append-only Provider capability documents, encrypted OIDC configuration, and
+  organization-scoped SCIM resource links.
+- Added ordered cross-model/Provider fallback, `auto:free`, price/privacy/
+  region/capability routing gates, routing explanation headers and funding
+  snapshots, plus Console/Admin management surfaces.
+- Isolated provisioned platform-managed credentials to their owning
+  organization/member and made `auto:free` require an exact zero total quote
+  while remaining usable by active zero-balance prepaid wallets.
+- Added public minimum-sample Provider quality metrics and region-filtered
+  capability declarations while preserving the boundary between Provider
+  declarations and platform measurements.
+
 - Replaced self-declared commercial and runtime fields with signed Evidence
   Attestation V2 and target-environment Runtime Attestation V2.
 - Added repository-locked Draft 2020-12 schema validation, mandatory Gate ID /
@@ -26,6 +43,12 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   database scans and funding settlement fail on invalid values.
 
 ### Security
+
+- Added private-network-safe OIDC discovery, encrypted client-secret storage,
+  display-once hashed SCIM tokens, organization-domain restrictions, last-owner
+  protection, and tenant-scoped SCIM User/Team deprovisioning.
+- Added request and Workspace controls that may tighten but cannot relax ZDR,
+  data-collection, processing-region, fallback, shared-capacity, or price limits.
 
 - Added Ed25519 signature verification, trusted issuer/role allowlists anchored
   by an out-of-repository policy hash, controlled evidence SHA verification,

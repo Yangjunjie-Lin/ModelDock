@@ -41,6 +41,8 @@ func ControlEngine(d Dependencies) *gin.Engine {
 	r.POST("/api/console/auth/refresh", func(c *gin.Context) { refreshHandler(c, d, "console") })
 	registerPublicAccountRoutes(r, d)
 	registerPublicCommercialRoutes(r, d)
+	registerPublicOperatingRoutes(r, d)
+	registerSCIMRoutes(r, d)
 	registerPaymentWebhookRoutes(r, d)
 	r.GET("/status", func(c *gin.Context) { publicStatusHandler(c, d) })
 	r.GET("/api/status", func(c *gin.Context) { publicStatusHandler(c, d) })
@@ -62,6 +64,7 @@ func ControlEngine(d Dependencies) *gin.Engine {
 	registerGovernanceRoutes(admin, d, true)
 	registerSupplierAdminRoutes(admin, d)
 	registerProviderQualityAdminRoutes(admin, d)
+	registerAdminOperatingRoutes(admin, d)
 	registerMarketplaceLaunchAdminRoutes(admin, d)
 	admin.POST("/api-keys/leak-check", func(c *gin.Context) {
 		var in struct {
@@ -92,6 +95,7 @@ func ControlEngine(d Dependencies) *gin.Engine {
 	registerObservabilityRoutes(console, d, false)
 	registerSupportRoutes(console, d, false)
 	registerGovernanceRoutes(console, d, false)
+	registerConsoleOperatingRoutes(console, d)
 	return r
 }
 
@@ -334,6 +338,7 @@ func logoutHandler(c *gin.Context, d Dependencies, realm string) {
 
 func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 	registerAdminV2(g, d)
+	registerAdminProviderAccountRoutes(g, d)
 	registerAdminPaymentRoutes(g, d)
 	registerAdminSubscriptionRoutes(g, d)
 	registerAdminFinanceRoutes(g, d)
@@ -399,8 +404,12 @@ func registerAdmin(g *gin.RouterGroup, d Dependencies) {
 
 	g.GET("/credentials", func(c *gin.Context) {
 		limit, offset := page(c)
-		v, err := d.Store.ListCredentials(c.Request.Context(), limit, offset)
-		respondList(c, v, err)
+		v, total, err := d.Store.ListCredentialsFiltered(c.Request.Context(), c.Query("search"), c.Query("status"), c.Query("group"), limit, offset)
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": v, "total": total, "limit": limit, "offset": offset})
 	})
 	g.POST("/credentials", func(c *gin.Context) { createCredential(c, d) })
 	g.POST("/credentials/import", func(c *gin.Context) { importCredentials(c, d) })
@@ -1188,6 +1197,7 @@ func cockpitTest(c *gin.Context, d Dependencies) {
 
 func registerConsole(g *gin.RouterGroup, d Dependencies) {
 	registerConsoleV2(g, d)
+	registerConsoleProviderAccountRoutes(g, d)
 	registerConsolePaymentRoutes(g, d)
 	registerConsoleSubscriptionRoutes(g, d)
 	registerConsoleFinanceRoutes(g, d)
@@ -1206,12 +1216,17 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 	})
 	g.POST("/byok/credentials", func(c *gin.Context) {
 		var in struct {
-			ProviderID         string `json:"provider_id"`
-			ProjectID          string `json:"project_id"`
-			Name               string `json:"name"`
-			Secret             string `json:"secret"`
-			TermsVersion       string `json:"terms_version"`
-			OwnershipConfirmed bool   `json:"ownership_confirmed"`
+			ProviderID             string   `json:"provider_id"`
+			ProjectID              string   `json:"project_id"`
+			Name                   string   `json:"name"`
+			Secret                 string   `json:"secret"`
+			TermsVersion           string   `json:"terms_version"`
+			OwnershipConfirmed     bool     `json:"ownership_confirmed"`
+			BYOKPrioritySection    string   `json:"byok_priority_section"`
+			SharedCapacityFallback string   `json:"shared_capacity_fallback"`
+			ModelFilters           []string `json:"model_filters"`
+			APIKeyFilters          []string `json:"api_key_filters"`
+			MemberFilters          []string `json:"member_filters"`
 		}
 		if c.ShouldBindJSON(&in) != nil || in.ProviderID == "" || in.ProjectID == "" || in.Name == "" || strings.TrimSpace(in.Secret) == "" || !in.OwnershipConfirmed || in.TermsVersion == "" {
 			openAIError(c, 400, "invalid_request", "provider_id, project_id, name, secret, terms_version, and ownership confirmation are required.")
@@ -1230,9 +1245,31 @@ func registerConsole(g *gin.RouterGroup, d Dependencies) {
 		now := time.Now().UTC()
 		actor := claimsFrom(c).Subject
 		owner := project.OrganizationID
-		credential := domain.Credential{ID: credentialID, ProviderID: in.ProviderID, Name: in.Name, CredentialType: "api_key", EncryptedSecret: encrypted, SecretLast4: secretcrypto.Last4(strings.TrimSpace(in.Secret)), Status: "ACTIVE", Weight: 100, MaxConcurrency: 10, CredentialOwner: domain.CredentialOwnerCustomer, OwnerOrganizationID: &owner, OwnershipConfirmedAt: &now, OwnershipConfirmedBy: &actor, OwnershipTermsVersion: in.TermsVersion}
+		credential := domain.Credential{ID: credentialID, ProviderID: in.ProviderID, Name: in.Name, CredentialType: "api_key", EncryptedSecret: encrypted, SecretLast4: secretcrypto.Last4(strings.TrimSpace(in.Secret)), Status: "ACTIVE", Weight: 100, MaxConcurrency: 10, CredentialOwner: domain.CredentialOwnerCustomer, OwnerOrganizationID: &owner, OwnershipConfirmedAt: &now, OwnershipConfirmedBy: &actor, OwnershipTermsVersion: in.TermsVersion, BYOKPrioritySection: strings.ToUpper(strings.TrimSpace(in.BYOKPrioritySection)), SharedCapacityFallback: strings.ToUpper(strings.TrimSpace(in.SharedCapacityFallback)), ModelFilters: in.ModelFilters, APIKeyFilters: in.APIKeyFilters, MemberFilters: in.MemberFilters}
 		out, err := d.Store.CreateBYOKCredential(c.Request.Context(), credential, in.ProjectID)
 		respondCreated(c, out, err)
+	})
+	g.PUT("/byok/credentials/:id/routing-policy", func(c *gin.Context) {
+		var in struct {
+			OrganizationID         string   `json:"organization_id"`
+			BYOKPrioritySection    string   `json:"byok_priority_section"`
+			SharedCapacityFallback string   `json:"shared_capacity_fallback"`
+			ModelFilters           []string `json:"model_filters"`
+			APIKeyFilters          []string `json:"api_key_filters"`
+			MemberFilters          []string `json:"member_filters"`
+		}
+		if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.OrganizationID) == "" {
+			openAIError(c, http.StatusBadRequest, "invalid_request", "organization_id and a valid BYOK routing policy are required.")
+			return
+		}
+		if err := d.Store.CheckOrganizationPricingAccess(c.Request.Context(), claimsFrom(c).Subject, in.OrganizationID); err != nil {
+			respond(c, nil, err)
+			return
+		}
+		out, err := d.Store.UpdateBYOKRoutingPolicy(c.Request.Context(), c.Param("id"), in.OrganizationID,
+			in.BYOKPrioritySection, in.SharedCapacityFallback, in.ModelFilters, in.APIKeyFilters, in.MemberFilters,
+			stringPtr(claimsFrom(c).Subject))
+		respond(c, out, err)
 	})
 	g.DELETE("/byok/credentials/:id", func(c *gin.Context) {
 		organizationID := strings.TrimSpace(c.Query("organization_id"))
@@ -1660,7 +1697,14 @@ func testCredential(c *gin.Context, d Dependencies, credentialID string) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
-	err = healthCheckProvider(ctx, d, provider, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
+	started := time.Now()
+	adapter, adapterErr := providerAdapter(d, provider.ProviderType)
+	if adapterErr != nil {
+		openAIError(c, http.StatusUnprocessableEntity, "provider_adapter_unavailable", "The configured provider adapter is unavailable.")
+		return
+	}
+	models, err := adapter.ListModels(ctx, provider.BaseURL, providers.Credential{Secret: secret, OrganizationID: deref(cred.OrganizationID), ProjectID: deref(cred.ProjectID)})
+	latency := time.Since(started).Milliseconds()
 	if err != nil {
 		var upstreamHTTP *provideropenai.HTTPError
 		if errors.As(err, &upstreamHTTP) && upstreamHTTP.StatusCode == http.StatusUnauthorized {
@@ -1672,7 +1716,27 @@ func testCredential(c *gin.Context, d Dependencies, credentialID string) {
 		return
 	}
 	d.Store.MarkCredentialSuccess(c.Request.Context(), cred.ID)
-	c.JSON(200, gin.H{"ok": true, "status": "HEALTHY"})
+	modelSample := make([]string, 0, min(len(models), 12))
+	for _, model := range models {
+		if len(modelSample) == 12 {
+			break
+		}
+		if strings.TrimSpace(model.ID) != "" {
+			modelSample = append(modelSample, model.ID)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":            true,
+		"status":        "HEALTHY",
+		"provider_id":   provider.ID,
+		"provider_name": provider.Name,
+		"provider_type": provider.ProviderType,
+		"base_url":      provider.BaseURL,
+		"latency_ms":    latency,
+		"model_count":   len(models),
+		"model_sample":  modelSample,
+		"tested_at":     time.Now().UTC(),
+	})
 }
 
 func syncModels(c *gin.Context, d Dependencies) {
@@ -1861,6 +1925,14 @@ func respond(c *gin.Context, v any, err error) {
 	}
 	if errors.Is(err, store.ErrPaymentState) {
 		openAIError(c, http.StatusConflict, "payment_state_conflict", "The payment order does not allow this state transition.")
+		return
+	}
+	if errors.Is(err, store.ErrInvalidProvisioning) {
+		openAIError(c, http.StatusBadRequest, "invalid_provider_provisioning", "A valid automatic request or a reviewed manual/BYOK reference is required.")
+		return
+	}
+	if errors.Is(err, store.ErrProvisioningState) || errors.Is(err, store.ErrBindingMode) {
+		openAIError(c, http.StatusConflict, "provider_provisioning_state_conflict", "The Provider binding or job does not allow this operation.")
 		return
 	}
 	if errors.Is(err, store.ErrPaymentMismatch) {
@@ -2207,8 +2279,10 @@ func normalizeProviderType(value string) (string, bool) {
 		return "openai", true
 	}
 	switch value {
-	case "openai", "anthropic", "gemini", "deepseek", "qwen", "kimi", "glm", "openrouter":
+	case "openai", "openai_compatible", "anthropic", "gemini", "deepseek", "qwen", "kimi", "glm", "openrouter", "grok", "xai", "mock_enterprise":
 		return value, true
+	case "openai-compatible", "custom", "custom_openai":
+		return "openai_compatible", true
 	default:
 		return "", false
 	}

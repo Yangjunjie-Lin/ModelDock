@@ -299,11 +299,12 @@ func registerAdminPaymentRoutes(g *gin.RouterGroup, d Dependencies) {
 
 func createRechargeOrder(c *gin.Context, d Dependencies, organizationID string) {
 	var input struct {
-		Amount          domain.Decimal `json:"amount"`
-		Currency        string         `json:"currency"`
-		Region          string         `json:"region"`
-		PaymentProvider string         `json:"payment_provider"`
-		IdempotencyKey  string         `json:"idempotency_key"`
+		Amount           domain.Decimal `json:"amount"`
+		Currency         string         `json:"currency"`
+		Region           string         `json:"region"`
+		PaymentProvider  string         `json:"payment_provider"`
+		TargetProviderID string         `json:"target_provider_id"`
+		IdempotencyKey   string         `json:"idempotency_key"`
 	}
 	if c.ShouldBindJSON(&input) != nil || !validPositiveDecimal(input.Amount) {
 		openAIError(c, http.StatusBadRequest, "invalid_request", "A positive exact amount is required.")
@@ -324,11 +325,26 @@ func createRechargeOrder(c *gin.Context, d Dependencies, organizationID string) 
 		respond(c, nil, err)
 		return
 	}
+	targetMode := ""
+	if strings.TrimSpace(input.TargetProviderID) != "" {
+		target, loadErr := d.Store.ProviderByID(c.Request.Context(), strings.TrimSpace(input.TargetProviderID))
+		if loadErr != nil {
+			respond(c, nil, loadErr)
+			return
+		}
+		capability := capabilityFor(d, target.ProviderType)
+		if !target.Enabled || !capability.Enabled || !capability.SupportsAutomaticBinding || !capability.SupportsAutomaticCredit {
+			openAIError(c, http.StatusConflict, "automatic_provider_credit_unavailable", capability.Reason)
+			return
+		}
+		targetMode = capability.Mode
+	}
 	actor := stringPtr(claimsFrom(c).Subject)
 	order, replayed, err := d.Store.CreateRechargeOrder(c.Request.Context(), store.CreateRechargeOrderRequest{
 		PlatformOrderNo: newPaymentNumber("RO"), OrganizationID: organizationID, PaymentProvider: input.PaymentProvider,
 		Amount: input.Amount, Currency: input.Currency, Region: input.Region, IdempotencyKey: input.IdempotencyKey,
 		ExpiresAt: time.Now().UTC().Add(d.Config.PaymentOrderTTL), CreatedBy: actor,
+		TargetProviderID: strings.TrimSpace(input.TargetProviderID), TargetProvisioningMode: targetMode,
 	})
 	if err != nil {
 		respond(c, nil, err)

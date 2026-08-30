@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -20,21 +21,22 @@ var (
 )
 
 type FundingReservationRequest struct {
-	OrganizationID     string
-	ProjectID          string
-	APIKeyID           string
-	RequestID          string
-	IdempotencyKey     string
-	RequestFingerprint string
-	PricingVersionID   string
-	Currency           string
-	MaximumAmount      string
-	PromotionAmount    string
-	TaxRate            string
-	ExchangeRate       string
-	EstimatedInput     int64
-	MaxOutput          int64
-	CreatedBy          *string
+	OrganizationID        string
+	ProjectID             string
+	APIKeyID              string
+	RequestID             string
+	IdempotencyKey        string
+	RequestFingerprint    string
+	PricingVersionID      string
+	Currency              string
+	MaximumAmount         string
+	PromotionAmount       string
+	TaxRate               string
+	ExchangeRate          string
+	EstimatedInput        int64
+	MaxOutput             int64
+	CreatedBy             *string
+	RoutingPolicySnapshot map[string]any
 }
 
 type FundingSettlementRequest struct {
@@ -154,10 +156,10 @@ func (s *Store) ReserveFunding(ctx context.Context, request FundingReservationRe
 		pricingVersion = request.PricingVersionID
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO funding_operation(id,wallet_id,organization_id,project_id,api_key_id,request_id,
-		idempotency_key,request_fingerprint,pricing_version_id,status,currency,maximum_amount,promotion_amount,tax_rate,exchange_rate,estimated_input_tokens,max_output_tokens)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10,$11,$12,$13,$14,$15,$16)`, operationID, walletID, request.OrganizationID,
+		idempotency_key,request_fingerprint,pricing_version_id,status,currency,maximum_amount,promotion_amount,tax_rate,exchange_rate,estimated_input_tokens,max_output_tokens,routing_policy_snapshot)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10,$11,$12,$13,$14,$15,$16,$17)`, operationID, walletID, request.OrganizationID,
 		request.ProjectID, nullString(request.APIKeyID), request.RequestID, request.IdempotencyKey, request.RequestFingerprint,
-		pricingVersion, currency, formatRat(maximum), formatRat(promotionRequested), zeroIfEmpty(request.TaxRate), oneIfEmpty(request.ExchangeRate), request.EstimatedInput, request.MaxOutput)
+		pricingVersion, currency, formatRat(maximum), formatRat(promotionRequested), zeroIfEmpty(request.TaxRate), oneIfEmpty(request.ExchangeRate), request.EstimatedInput, request.MaxOutput, jsonBytes(request.RoutingPolicySnapshot))
 	if err != nil {
 		return domain.FundingOperation{}, false, err
 	}
@@ -238,6 +240,7 @@ func (s *Store) SettleFunding(ctx context.Context, request FundingSettlementRequ
 		}
 	}
 	platformServiceFee := "0"
+	byokShadowAmount := "0"
 	if operation.CredentialOwner == domain.CredentialOwnerCustomer && !request.Waive {
 		actualPromotion = "0"
 		var fixedFee, inputFee, cachedFee, outputFee string
@@ -255,6 +258,51 @@ func (s *Store) SettleFunding(ctx context.Context, request FundingSettlementRequ
 			return domain.FundingOperation{}, feeErr
 		}
 		platformServiceFee = feeResult.FinalAmount
+		if operation.PricingVersionID != nil && operation.ProviderCredentialID != nil {
+			byokShadowAmount, _, err = fundingAmountsForVersion(ctx, tx, *operation.PricingVersionID, request.InputTokens,
+				request.CachedInput, request.OutputTokens, "0", "0", "1")
+			if err != nil {
+				return domain.FundingOperation{}, err
+			}
+			var feeBPS int
+			var freeAllowance string
+			if err = tx.QueryRow(ctx, `SELECT byok_service_fee_bps,byok_monthly_free_allowance::text FROM funding_operation WHERE id=$1`, operation.ID).
+				Scan(&feeBPS, &freeAllowance); err != nil {
+				return domain.FundingOperation{}, err
+			}
+			month := providerBudgetMonth(time.Now())
+			if _, err = tx.Exec(ctx, `INSERT INTO byok_shadow_spend_monthly(project_id,credential_id,period_month,currency)
+				VALUES($1,$2,$3,$4) ON CONFLICT(project_id,credential_id,period_month) DO NOTHING`, operation.ProjectID,
+				*operation.ProviderCredentialID, month, operation.Currency); err != nil {
+				return domain.FundingOperation{}, err
+			}
+			var currentShadow string
+			if err = tx.QueryRow(ctx, `SELECT shadow_amount::text FROM byok_shadow_spend_monthly
+				WHERE project_id=$1 AND credential_id=$2 AND period_month=$3 FOR UPDATE`, operation.ProjectID,
+				*operation.ProviderCredentialID, month).Scan(&currentShadow); err != nil {
+				return domain.FundingOperation{}, err
+			}
+			current := mustFundingRat(currentShadow)
+			shadow := mustFundingRat(byokShadowAmount)
+			allowance := mustFundingRat(freeAllowance)
+			previousBillable := new(big.Rat).Sub(new(big.Rat).Set(current), allowance)
+			if previousBillable.Sign() < 0 {
+				previousBillable.SetInt64(0)
+			}
+			newBillable := new(big.Rat).Sub(new(big.Rat).Add(new(big.Rat).Set(current), shadow), allowance)
+			if newBillable.Sign() < 0 {
+				newBillable.SetInt64(0)
+			}
+			incrementalBillable := new(big.Rat).Sub(newBillable, previousBillable)
+			basisPointFee := new(big.Rat).Mul(incrementalBillable, big.NewRat(int64(feeBPS), 10000))
+			platformServiceFee = formatRat(new(big.Rat).Add(mustFundingRat(platformServiceFee), basisPointFee))
+			if _, err = tx.Exec(ctx, `UPDATE byok_shadow_spend_monthly SET shadow_amount=shadow_amount+$4::numeric,
+				service_fee_amount=service_fee_amount+$5::numeric,request_count=request_count+1,updated_at=now()
+				WHERE project_id=$1 AND credential_id=$2 AND period_month=$3`, operation.ProjectID, *operation.ProviderCredentialID,
+				month, byokShadowAmount, platformServiceFee); err != nil {
+				return domain.FundingOperation{}, err
+			}
+		}
 		actualAmount = platformServiceFee
 	}
 	consumedPromotion, err := settlePromotionTx(ctx, tx, operation.ID, actualPromotion)
@@ -351,11 +399,11 @@ func (s *Store) SettleFunding(ctx context.Context, request FundingSettlementRequ
 	if release.Sign() > 0 || actual.Sign() == 0 {
 		releasedAt = time.Now().UTC()
 	}
-	_, err = tx.Exec(ctx, `UPDATE funding_operation SET status=$2,settled_amount=$3,released_amount=$4,consumed_promotion_amount=$13,platform_service_fee=$14,
+	_, err = tx.Exec(ctx, `UPDATE funding_operation SET status=$2,settled_amount=$3,released_amount=$4,consumed_promotion_amount=$13,platform_service_fee=$14,byok_shadow_amount=$15,
 		actual_input_tokens=$5,actual_cached_input_tokens=$6,actual_output_tokens=$7,usage_source=$8,
 		observed_output_bytes=$9,failure_code=$10,settled_at=$11,released_at=$12,heartbeat_at=now(),updated_at=now() WHERE id=$1`,
 		operation.ID, status, actualAmount, formatRat(release), request.InputTokens, request.CachedInput, request.OutputTokens,
-		request.UsageSource, request.ObservedBytes, nullString(request.FailureCode), settledAt, releasedAt, consumedPromotion, platformServiceFee)
+		request.UsageSource, request.ObservedBytes, nullString(request.FailureCode), settledAt, releasedAt, consumedPromotion, platformServiceFee, byokShadowAmount)
 	if err != nil {
 		return domain.FundingOperation{}, err
 	}
@@ -472,13 +520,15 @@ func (s *Store) BeginFundingAttempt(ctx context.Context, operationID, providerID
 		return domain.FundingProviderAttempt{}, err
 	}
 	if credentialOwner == domain.CredentialOwnerCustomer {
-		var policyID, fixedFee, inputFee, cachedFee, outputFee, policyCurrency string
+		var policyID, fixedFee, inputFee, cachedFee, outputFee, policyCurrency, freeAllowance string
+		var feeBPS int
 		var unit int64
-		err = tx.QueryRow(ctx, `SELECT id,fixed_fee::text,input_token_fee::text,cached_input_token_fee::text,output_token_fee::text,unit,currency
+		err = tx.QueryRow(ctx, `SELECT id,fixed_fee::text,input_token_fee::text,cached_input_token_fee::text,output_token_fee::text,unit,currency,
+			service_fee_bps,monthly_free_allowance::text
 			FROM byok_service_fee_policies WHERE enabled=true AND (organization_id=$1 OR organization_id IS NULL)
 			AND (provider_id=$2 OR provider_id IS NULL) AND effective_at<=now() AND (expires_at IS NULL OR expires_at>now())
 			ORDER BY (organization_id IS NOT NULL) DESC,(provider_id IS NOT NULL) DESC,effective_at DESC,id DESC LIMIT 1 FOR SHARE`,
-			organizationID, providerID).Scan(&policyID, &fixedFee, &inputFee, &cachedFee, &outputFee, &unit, &policyCurrency)
+			organizationID, providerID).Scan(&policyID, &fixedFee, &inputFee, &cachedFee, &outputFee, &unit, &policyCurrency, &feeBPS, &freeAllowance)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.FundingProviderAttempt{}, ErrPricingUnavailable
 		}
@@ -489,7 +539,8 @@ func (s *Store) BeginFundingAttempt(ctx context.Context, operationID, providerID
 			return domain.FundingProviderAttempt{}, ErrPricingCurrencyMismatch
 		}
 		if _, err = tx.Exec(ctx, `UPDATE funding_operation SET byok_service_fee_policy_id=$2,byok_fixed_fee=$3,byok_input_token_fee=$4,
-			byok_cached_input_token_fee=$5,byok_output_token_fee=$6,byok_fee_unit=$7 WHERE id=$1`, operationID, policyID, fixedFee, inputFee, cachedFee, outputFee, unit); err != nil {
+			byok_cached_input_token_fee=$5,byok_output_token_fee=$6,byok_fee_unit=$7,byok_service_fee_bps=$8,
+			byok_monthly_free_allowance=$9 WHERE id=$1`, operationID, policyID, fixedFee, inputFee, cachedFee, outputFee, unit, feeBPS, freeAllowance); err != nil {
 			return domain.FundingProviderAttempt{}, err
 		}
 	}
@@ -843,27 +894,31 @@ const fundingOperationSelect = `SELECT id,wallet_id,organization_id,project_id,a
 	request_fingerprint,pricing_version_id,status,currency,maximum_amount::text,promotion_amount::text,consumed_promotion_amount::text,tax_rate::text,exchange_rate::text,settled_amount::text,released_amount::text,
 	estimated_input_tokens,max_output_tokens,actual_input_tokens,actual_cached_input_tokens,actual_output_tokens,
 	COALESCE(usage_source,''),observed_output_bytes,COALESCE(failure_code,''),reserved_at,settled_at,released_at,
-	heartbeat_at,created_at,updated_at,credential_owner,provider_credential_id,platform_service_fee::text FROM funding_operation`
+	heartbeat_at,created_at,updated_at,credential_owner,provider_credential_id,platform_service_fee::text,
+	byok_shadow_amount::text,routing_policy_snapshot FROM funding_operation`
 
 func scanFundingOperation(row pgx.Row, operation *domain.FundingOperation) error {
-	var maximum, promotion, consumedPromotion, taxRate, exchangeRate, settled, released string
+	var maximum, promotion, consumedPromotion, taxRate, exchangeRate, settled, released, byokShadow string
+	var routingPolicy []byte
 	err := row.Scan(&operation.ID, &operation.WalletID, &operation.OrganizationID, &operation.ProjectID, &operation.APIKeyID,
 		&operation.RequestID, &operation.IdempotencyKey, &operation.RequestFingerprint, &operation.PricingVersionID, &operation.Status,
 		&operation.Currency, &maximum, &promotion, &consumedPromotion, &taxRate, &exchangeRate, &settled, &released, &operation.EstimatedInputTokens, &operation.MaxOutputTokens,
 		&operation.ActualInputTokens, &operation.ActualCachedInputTokens, &operation.ActualOutputTokens, &operation.UsageSource,
 		&operation.ObservedOutputBytes, &operation.FailureCode, &operation.ReservedAt, &operation.SettledAt, &operation.ReleasedAt,
-		&operation.HeartbeatAt, &operation.CreatedAt, &operation.UpdatedAt, &operation.CredentialOwner, &operation.ProviderCredentialID, &operation.PlatformServiceFee)
+		&operation.HeartbeatAt, &operation.CreatedAt, &operation.UpdatedAt, &operation.CredentialOwner, &operation.ProviderCredentialID, &operation.PlatformServiceFee,
+		&byokShadow, &routingPolicy)
 	if err != nil {
 		return err
 	}
-	fields := []*domain.Decimal{&operation.MaximumAmount, &operation.PromotionAmount, &operation.ConsumedPromotionAmount, &operation.TaxRate, &operation.ExchangeRate, &operation.SettledAmount, &operation.ReleasedAmount}
-	for index, raw := range []string{maximum, promotion, consumedPromotion, taxRate, exchangeRate, settled, released} {
+	fields := []*domain.Decimal{&operation.MaximumAmount, &operation.PromotionAmount, &operation.ConsumedPromotionAmount, &operation.TaxRate, &operation.ExchangeRate, &operation.SettledAmount, &operation.ReleasedAmount, &operation.BYOKShadowAmount}
+	for index, raw := range []string{maximum, promotion, consumedPromotion, taxRate, exchangeRate, settled, released, byokShadow} {
 		parsed, parseErr := domain.ParseDecimal(raw)
 		if parseErr != nil {
 			return parseErr
 		}
 		*fields[index] = parsed
 	}
+	_ = json.Unmarshal(routingPolicy, &operation.RoutingPolicySnapshot)
 	return nil
 }
 
