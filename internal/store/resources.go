@@ -681,6 +681,7 @@ func (s *Store) ListModelPrices(ctx context.Context, modelID string) ([]domain.M
 	return out, rows.Err()
 }
 func (s *Store) CreateModelPrice(ctx context.Context, p domain.ModelPrice) (domain.ModelPrice, error) {
+	p = normalizeModelPriceDefaults(p)
 	for label, value := range map[string]domain.Decimal{"input": p.InputPrice, "cached input": p.CachedInputPrice, "output": p.OutputPrice} {
 		negative, err := value.IsNegative()
 		if err != nil {
@@ -709,6 +710,14 @@ func (s *Store) CreateModelPrice(ctx context.Context, p domain.ModelPrice) (doma
 	err := s.pool.QueryRow(ctx, `INSERT INTO model_prices(id,model_id,version,effective_from,input_price,cached_input_price,output_price,input_price_exact,cached_input_price_exact,output_price_exact,currency,unit,source) VALUES($1,$2,$3,$4,round($5::numeric,10),round($6::numeric,10),round($7::numeric,10),$5,$6,$7,$8,$9,$10) RETURNING created_at`, p.ID, p.ModelID, p.Version, p.EffectiveFrom, p.InputPrice.String(), p.CachedInputPrice.String(), p.OutputPrice.String(), p.Currency, p.Unit, p.Source).Scan(&p.CreatedAt)
 	return p, err
 }
+
+func normalizeModelPriceDefaults(p domain.ModelPrice) domain.ModelPrice {
+	if strings.TrimSpace(p.CachedInputPrice.String()) == "" {
+		p.CachedInputPrice = domain.MustDecimal("0")
+	}
+	return p
+}
+
 func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel string, input, cached, output int64) (domain.Decimal, error) {
 	var inputPrice, cachedPrice, outputPrice string
 	var currency string
