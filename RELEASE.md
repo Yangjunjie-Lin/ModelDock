@@ -1,12 +1,14 @@
 # ModelDock release process
 
-Formal releases are created only by `.github/workflows/release.yml` from an
-annotated Semantic Version 2.0 tag such as `v3.0.0-beta.1`. Manually created GitHub
-Releases and mutable `latest` image tags are not part of the supported process.
+Release workflows run only from an annotated Semantic Version 2.0 Tag such as
+`v3.0.0-beta.2`. A Tag push is always a source-only Engineering Preview;
+commercial profiles require an explicit manual dispatch against that Tag.
+Manually created GitHub Releases and mutable `latest` image tags are not part of
+the supported process.
 
-## Release blockers
+## Commercial release blockers
 
-All of the following must be resolved before tagging:
+All of the following must be resolved before dispatching a commercial profile:
 
 1. The target commit is on the protected default branch and its required CI
    checks pass.
@@ -36,7 +38,7 @@ Update `CHANGELOG.md` using Keep a Changelog categories. Do not move an item
 out of `Unreleased` until its release commit is final. Run:
 
 ```powershell
-pwsh ./scripts/verify-release.ps1 -Version 3.0.0-beta.1
+pwsh ./scripts/verify-release.ps1 -Version 3.0.0-beta.2
 ```
 
 The workflow accepts `ENGINEERING_PREVIEW`, `COMMERCIAL_BETA`, and

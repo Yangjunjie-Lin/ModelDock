@@ -6,8 +6,13 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0-beta.2] - 2026-08-30
+
 ### Changed
 
+- Restored the exact remote annotated Tag object before release identity
+  validation, made Tag pushes default to source-only Engineering Preview, and
+  added negative coverage for lightweight and wrong-commit Tags.
 - Added Migration 0026 for official enterprise/BYOK/manual Provider account
   bindings and replay-safe provisioning/allocation jobs; consumer signup,
   CAPTCHA, trial farming, and shared consumer sessions remain unsupported.
@@ -103,6 +108,7 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Upgraded the pinned Go toolchain and reachable Go dependencies to remove the
   HIGH/CRITICAL findings detected by govulncheck and final-image scanning.
 
-[Unreleased]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.1...HEAD
+[Unreleased]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.2...HEAD
+[3.0.0-beta.2]: https://github.com/Yangjunjie-Lin/ModelDock/compare/v3.0.0-beta.1...v3.0.0-beta.2
 [3.0.0-beta.1]: https://github.com/Yangjunjie-Lin/ModelDock/releases/tag/v3.0.0-beta.1
 [2.0.0]: https://github.com/Yangjunjie-Lin/ModelDock/releases/tag/v2.0.0

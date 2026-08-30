@@ -20,6 +20,17 @@ foreach ($file in Get-ChildItem -LiteralPath $workflowRoot -File -Filter "*.yml"
         if ($uses -notmatch '@[0-9a-f]{40}$') { $failures.Add("$($file.Name): external Action is not pinned to a full commit: $uses") }
     }
 }
+$releaseWorkflow = Get-Content -LiteralPath (Join-Path $workflowRoot "release.yml") -Raw
+$safePushProfile = 'RELEASE_PROFILE: ${{ github.event_name == ''workflow_dispatch'' && inputs.release_profile || ''ENGINEERING_PREVIEW'' }}'
+if (-not $releaseWorkflow.Contains($safePushProfile, [System.StringComparison]::Ordinal)) {
+    $failures.Add("release.yml: Tag pushes must default to ENGINEERING_PREVIEW and commercial profiles must require workflow_dispatch")
+}
+if ($releaseWorkflow.Contains("MODELDOCK_RELEASE_PROFILE", [System.StringComparison]::Ordinal)) {
+    $failures.Add("release.yml: mutable repository variables must not select a Tag-push release profile")
+}
+if (-not $releaseWorkflow.Contains("./scripts/verify-release-tag.ps1 -Ref `$env:GITHUB_REF -RefType `$env:GITHUB_REF_TYPE -Commit `$env:GITHUB_SHA", [System.StringComparison]::Ordinal)) {
+    $failures.Add("release.yml: exact remote annotated Tag verification is missing")
+}
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Error $_ }
     throw "$($failures.Count) workflow permission/pinning issue(s)."

@@ -1,6 +1,6 @@
 # Known limitations for the commercial beta candidate
 
-**Release disposition:** `NO-GO` as of 2026-08-21.
+**Release disposition:** `NO-GO` as of 2026-08-30.
 
 This list distinguishes tested product behavior from unresolved production
 readiness. A limitation described here is not an approval to accept it.
@@ -26,7 +26,7 @@ readiness. A limitation described here is not an approval to accept it.
 
 The former engineering blockers for legacy monetary floats and conflicting
 version identities are closed by migration 0024, the exact-money scanner, and
-the `VERSION` source (`3.0.0-beta.1`). This is engineering evidence only and
+the `VERSION` source (`3.0.0-beta.2`). This is engineering evidence only and
 does not change the commercial `NO-GO` decision.
 
 ## Environment and integration limits

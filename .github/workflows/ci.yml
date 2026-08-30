@@ -168,6 +168,9 @@ jobs:
       - name: Audit Action pins and permission scopes
         shell: pwsh
         run: ./scripts/verify-workflow-security.ps1
+      - name: Test exact annotated release Tag contract
+        shell: pwsh
+        run: ./tests/release/verify-release-tag.ps1
 
   compose:
     name: Docker Compose validation

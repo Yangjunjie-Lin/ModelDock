@@ -2,10 +2,10 @@
 
 Supplier settlement migration 0022 is forward-only. Disable every supplier settlement policy and payout adapter, resolve all `PROCESSING` attempts by the stable payout idempotency key, and retain all posted journals and append-only subledger evidence. The guarded empty-install-only schema reversal and its evidence preconditions are specified in [supplier-settlement.md](supplier-settlement.md#migration-and-rollback); a non-empty production system requires a new compensating forward migration.
 
-**Current decision:** `NO-GO`; no `3.0.0-beta.1` deployment or Release exists to
-roll back. This document defines the required procedure for a later approved
-candidate and the safe reversal of the validation-only code changes in this
-step.
+**Current decision:** `NO-GO`; no `3.0.0-beta.2` commercial deployment or formal
+GitHub Release exists to roll back. This document defines the required procedure
+for a later approved candidate and the safe reversal of the validation-only code
+changes in this step.
 
 ## Principles
 
