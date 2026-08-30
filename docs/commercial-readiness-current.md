@@ -1,6 +1,6 @@
 # Current commercial-readiness revalidation
 
-**Candidate version:** `3.0.0-beta.3`
+**Candidate version:** `3.0.0-beta.4`
 
 **Latest migration:** `0027_openrouter_operating_model`
 
