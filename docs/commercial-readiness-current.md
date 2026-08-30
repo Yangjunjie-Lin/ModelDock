@@ -1,6 +1,6 @@
 # Current commercial-readiness revalidation
 
-**Candidate version:** `3.0.0-beta.1`
+**Candidate version:** `3.0.0-beta.2`
 
 **Latest migration:** `0027_openrouter_operating_model`
 
@@ -22,7 +22,7 @@ for hand edits.
 
 | Prompt | Latest status | Engineering evidence | Remaining real blocker |
 | ---: | --- | --- | --- |
-| 1 | PASS (engineering) | Protected CI definition includes Go, web, dependency, secret, Compose, image, workflow and commercial jobs | The new PR's Required Checks must complete green. |
+| 1 | PASS (engineering) | Protected CI definition includes Go, web, dependency, secret, Compose, image, workflow and commercial jobs | The release commit's Required Checks must complete green. |
 | 2 | PASS (engineering) | Account lifecycle and isolation suites remain in full commercial integration | None beyond exact-commit CI evidence. |
 | 3 | PASS (engineering) / BLOCKED (production) | MFA, invitation, verification/reset, secret and dependency controls | Signed production SMTP/runtime evidence. |
 | 4 | PASS (engineering) | Strict NUMERIC(30,12) `ParseDecimal`; error-return Add/Subtract/Multiply/Compare; scan and settlement fail-closed tests | None beyond exact-commit CI evidence. |

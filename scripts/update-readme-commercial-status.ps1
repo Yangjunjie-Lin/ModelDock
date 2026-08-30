@@ -58,7 +58,7 @@ $goLive.Add("**Release created:** no")
 $goLive.Add("")
 $goLive.Add("The Decision above is output-only. `scripts/verify-commercial-readiness.ps1` never reads this file. It evaluates Schema → exact-commit test evidence → Runtime Attestation → external signed Attestations → same-digest scans/SBOM/provenance → finance/authority gates, then writes the exact report.")
 $goLive.Add("")
-$goLive.Add("Current external and runtime Attestations are absent, so COMMERCIAL_BETA and MARKETPLACE_PRODUCTION are machine-blocked. No Tag, Release, image promotion, or production deployment is authorized.")
+$goLive.Add("Current external and runtime Attestations are absent, so COMMERCIAL_BETA and MARKETPLACE_PRODUCTION are machine-blocked. No commercial image promotion, GitHub Release, or production deployment is authorized.")
 
 function Set-OrCheck([string]$Path, [string]$Expected, [string]$Label) {
     $expectedNormalized = $Expected.TrimEnd("`r", "`n") + "`n"

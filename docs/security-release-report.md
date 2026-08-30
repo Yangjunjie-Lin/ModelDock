@@ -4,11 +4,11 @@
 
 **Decision: NO-GO**
 
-**Candidate:** `3.0.0-beta.1`
+**Candidate:** `3.0.0-beta.2`
 
 **Latest migration:** `0027_openrouter_operating_model`
 
-**Release/Tag/production promotion created:** no
+**Formal GitHub Release/production promotion created:** no
 
 This tracked document records engineering observations and stop conditions; it
 is not exact-commit release evidence. Protected CI must regenerate the signed

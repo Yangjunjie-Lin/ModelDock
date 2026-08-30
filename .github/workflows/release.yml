@@ -65,10 +65,10 @@ jobs:
         shell: pwsh
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          RELEASE_PROFILE: ${{ github.event.inputs.release_profile || vars.MODELDOCK_RELEASE_PROFILE || 'COMMERCIAL_BETA' }}
+          RELEASE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_profile || 'ENGINEERING_PREVIEW' }}
         run: |
           if ((git status --porcelain).Count -ne 0) { throw 'Release checkout is not clean.' }
-          if ($env:GITHUB_REF_TYPE -cne 'tag' -or (git cat-file -t $env:GITHUB_REF).Trim() -ne 'tag') { throw 'Formal releases require a pre-existing annotated Git tag.' }
+          ./scripts/verify-release-tag.ps1 -Ref $env:GITHUB_REF -RefType $env:GITHUB_REF_TYPE -Commit $env:GITHUB_SHA
           git fetch origin $env:DEFAULT_BRANCH --quiet
           git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
           if ($LASTEXITCODE -ne 0) { throw 'Release commit is not on the default branch.' }
