@@ -155,11 +155,15 @@ func (s *Store) ReserveFunding(ctx context.Context, request FundingReservationRe
 	if request.PricingVersionID != "" {
 		pricingVersion = request.PricingVersionID
 	}
+	routingPolicySnapshot := request.RoutingPolicySnapshot
+	if routingPolicySnapshot == nil {
+		routingPolicySnapshot = map[string]any{}
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO funding_operation(id,wallet_id,organization_id,project_id,api_key_id,request_id,
 		idempotency_key,request_fingerprint,pricing_version_id,status,currency,maximum_amount,promotion_amount,tax_rate,exchange_rate,estimated_input_tokens,max_output_tokens,routing_policy_snapshot)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'RESERVED',$10,$11,$12,$13,$14,$15,$16,$17)`, operationID, walletID, request.OrganizationID,
 		request.ProjectID, nullString(request.APIKeyID), request.RequestID, request.IdempotencyKey, request.RequestFingerprint,
-		pricingVersion, currency, formatRat(maximum), formatRat(promotionRequested), zeroIfEmpty(request.TaxRate), oneIfEmpty(request.ExchangeRate), request.EstimatedInput, request.MaxOutput, jsonBytes(request.RoutingPolicySnapshot))
+		pricingVersion, currency, formatRat(maximum), formatRat(promotionRequested), zeroIfEmpty(request.TaxRate), oneIfEmpty(request.ExchangeRate), request.EstimatedInput, request.MaxOutput, jsonBytes(routingPolicySnapshot))
 	if err != nil {
 		return domain.FundingOperation{}, false, err
 	}
