@@ -16,6 +16,7 @@ import (
 	"github.com/relayedock/relayedock/internal/payout"
 	"github.com/relayedock/relayedock/internal/providers"
 	"github.com/relayedock/relayedock/internal/providers/openai"
+	"github.com/relayedock/relayedock/internal/provisioning"
 	"github.com/relayedock/relayedock/internal/ratelimit"
 	"github.com/relayedock/relayedock/internal/scheduler"
 	"github.com/relayedock/relayedock/internal/secrets"
@@ -32,6 +33,7 @@ type Dependencies struct {
 	Auth            *auth.Manager
 	OpenAI          *openai.Adapter
 	Providers       *providers.Registry
+	Provisioners    *provisioning.Registry
 	Scheduler       *scheduler.Scheduler
 	Limiter         *ratelimit.Limiter
 	Metrics         *observability.Metrics

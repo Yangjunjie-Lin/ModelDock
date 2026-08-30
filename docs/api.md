@@ -350,7 +350,7 @@ All paths require an authenticated `SUPER_ADMIN` or `ADMIN` principal.
 | `POST /api/admin/credentials/import` | Import 1–25 already-issued official API credentials from JSON; each is encrypted and validation failures are stored disabled |
 | `POST /api/admin/credentials/bulk` | Enable, disable, delete, move, or health-check selected stored credentials |
 | `PUT/DELETE /api/admin/credentials/{id}` | Update/delete a credential; omitted `secret` preserves the existing secret |
-| `POST /api/admin/credentials/{id}/test` | Validate through the provider's public Models API |
+| `POST /api/admin/credentials/{id}/test` | Validate through the provider's public Models API and return Provider identity, model count/sample, and probe latency |
 | `PATCH /api/admin/credentials/{id}/status` | Set `ACTIVE` or `DISABLED` |
 | `GET/POST /api/admin/credential-groups` | List/create groups |
 | `DELETE /api/admin/credential-groups/{id}` | Delete a group when not protected by route references |
@@ -683,7 +683,70 @@ The public `POST /api/payments/webhooks/{provider}` endpoint accepts only a
 provider-specific signed event within the configured timestamp window. Admin
 endpoints list orders, approve manual-transfer evidence, issue full refunds,
 and persist immutable reconciliation records. See [payments.md](payments.md)
+
+An optional `target_provider_id` requests payment-linked upstream allocation.
+The request is rejected unless that Provider's configured Provisioner declares
+both official automatic binding and official automatic credit support. Wallet
+credit, Provider binding, and upstream allocation are separate durable states;
+the compatible binding mode is reserved before payment creation so a conflict
+cannot first surface after verified funds arrive. Console users may self-bind
+only organization-owned BYOK credentials; reviewed manual/platform bindings
+are administrator-only.
+OpenAI project/service-account creation is supported when configured, while
+OpenAI project credit transfer remains unsupported because no such operation is
+documented by the official Admin API. See
+[provider-account-provisioning.md](provider-account-provisioning.md).
+
+### Provider account provisioning
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/admin/provider-provisioning/capabilities` | Per Provider-instance official/BYOK/manual capability matrix |
+| `GET /api/console/provider-provisioning/capabilities` | Authenticated user-safe capability matrix used by recharge/account UI |
+| `GET/POST /api/admin/provider-accounts` | List or create user-to-Provider bindings |
+| `GET /api/admin/provider-provisioning/jobs` | Inspect binding/allocation jobs and external references |
+| `POST /api/admin/provider-provisioning/jobs/{jobID}/retry` | Audited retry of a failed/action-required job |
+| `GET/POST /api/console/organizations/{organizationID}/provider-accounts` | Current user's organization-scoped automatic or organization-owned BYOK bindings |
+| `GET /api/console/organizations/{organizationID}/provider-provisioning/jobs` | Current user's scoped provisioning history |
 and [openapi.yaml](openapi.yaml) for the request schemas and signature contract.
+
+### Multi-Provider Workspace routing and identity
+
+| Route | Purpose |
+| --- | --- |
+| `GET/PUT /api/{admin\|console}/projects/{projectID}/workspace-settings` | Workspace default Provider policy, privacy/region guardrails, BYOK budget treatment, and free-model daily limits |
+| `PUT /api/console/byok/credentials/{id}/routing-policy` | BYOK prioritized/fallback section, shared-capacity mode, and model/API Key/member filters |
+| `GET /api/public/provider-quality` | Region-available, platform-measured quality after the configured minimum sample threshold |
+| `GET /api/public/catalog/provider-capabilities` | Region-available active Provider declarations |
+| `GET/POST /api/admin/provider-capabilities` | List or publish append-only SHA-256-bound Provider capability documents |
+| `GET /api/console/provider-capabilities` | Authenticated public-safe active declarations |
+| `GET/PUT /api/{admin\|console}/organizations/{organizationID}/enterprise-identity` | Redacted OIDC/SCIM configuration and display-once SCIM token rotation |
+| `POST /api/{admin\|console}/organizations/{organizationID}/enterprise-identity/test` | Public-HTTPS OIDC discovery test with private/special network destinations blocked |
+| `/scim/v2/{organizationID}/Users` | SCIM 2.0 organization membership provisioning |
+| `/scim/v2/{organizationID}/Groups` | SCIM 2.0 Team and Team-membership provisioning |
+
+Inference requests may include a `provider` object with `only`, `ignore`,
+`order`, `sort`, price ceilings, ZDR/data-collection rules, quantizations,
+processing regions, capability requirements, fallback permission, and
+`use_shared_capacity`. An ordered `models` array supplies pre-dispatch model
+fallbacks. Workspace defaults are merged first; a request may tighten but never
+relax privacy, region, fallback, shared-capacity, or price constraints. These
+control fields are removed before forwarding upstream.
+
+`auto:free` selects only zero-input/zero-output-price routes, verifies that the
+complete request quote is zero, and requires both per-API-Key daily limits to
+be non-zero. An active wallet is still required, but a zero-balance prepaid
+wallet may use the zero-cost route. Successful inference responses expose
+the selected Provider/model/strategy/candidate count/capacity source in
+`X-RelayDock-*` headers, while the normalized policy and candidate explanation
+are snapshotted with funding evidence. See
+[openrouter-operating-model.md](openrouter-operating-model.md).
+
+OIDC client secrets are encrypted and never returned. SCIM tokens are shown
+only on rotation and stored as keyed digests. SCIM deprovisioning is
+organization-scoped: it disables organization/project/Team access, cannot
+remove the final organization owner, and does not delete the global user or
+grant platform roles.
 | `POST /funding-operations/{id}/late-usage` | Idempotently post authoritative late usage as a difference journal |
 | `POST /funding-operations/{id}/reversals` | Reverse a settlement with a new audited journal |
 

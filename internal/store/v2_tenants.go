@@ -532,16 +532,26 @@ func (s *Store) RemoveProjectRoute(ctx context.Context, projectID, routeID strin
 
 func scanBudgetPolicy(row pgx.Row) (domain.ProjectBudgetPolicy, error) {
 	var out domain.ProjectBudgetPolicy
+	var costLimit *string
+	var alertThreshold string
 	err := row.Scan(&out.ID, &out.OrganizationID, &out.ProjectID, &out.Name, &out.Period, &out.TokenLimit,
-		&out.CostLimit, &out.AlertThreshold, &out.EnforceHardLimit, &out.Status, &out.CreatedAt, &out.UpdatedAt)
+		&costLimit, &alertThreshold, &out.EnforceHardLimit, &out.Status, &out.CreatedAt, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}
+	if err != nil {
+		return out, err
+	}
+	out.CostLimit, err = decimalFromStringPointer(costLimit)
+	if err != nil {
+		return out, err
+	}
+	out.AlertThreshold, err = domain.ParseDecimal(alertThreshold)
 	return out, err
 }
 
-const budgetPolicySelect = `SELECT b.id,p.organization_id,b.project_id,b.name,b.period,b.token_limit,b.cost_limit::float8,
-	b.alert_threshold::float8,b.enforce_hard_limit,b.status,b.created_at,b.updated_at
+const budgetPolicySelect = `SELECT b.id,p.organization_id,b.project_id,b.name,b.period,b.token_limit,COALESCE(b.cost_limit_exact,b.cost_limit)::text,
+	b.alert_threshold::text,b.enforce_hard_limit,b.status,b.created_at,b.updated_at
 	FROM project_budget_policies b JOIN projects p ON p.id=b.project_id`
 
 func (s *Store) ListProjectBudgetPolicies(ctx context.Context, projectID string) ([]domain.ProjectBudgetPolicy, error) {
@@ -571,15 +581,19 @@ func (s *Store) UpsertProjectBudgetPolicy(ctx context.Context, policy domain.Pro
 	if policy.Status == "" {
 		policy.Status = "ACTIVE"
 	}
-	if policy.AlertThreshold == 0 {
-		policy.AlertThreshold = 0.8
+	if strings.TrimSpace(policy.AlertThreshold.String()) == "" {
+		policy.AlertThreshold = domain.MustDecimal("0.8")
+	} else if zero, err := policy.AlertThreshold.IsZero(); err != nil {
+		return domain.ProjectBudgetPolicy{}, err
+	} else if zero {
+		policy.AlertThreshold = domain.MustDecimal("0.8")
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO project_budget_policies(id,project_id,name,period,token_limit,cost_limit,alert_threshold,enforce_hard_limit,status)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(project_id,name) DO UPDATE SET
-		period=EXCLUDED.period,token_limit=EXCLUDED.token_limit,cost_limit=EXCLUDED.cost_limit,
+	_, err := s.pool.Exec(ctx, `INSERT INTO project_budget_policies(id,project_id,name,period,token_limit,cost_limit,cost_limit_exact,alert_threshold,enforce_hard_limit,status)
+		VALUES($1,$2,$3,$4,$5,round($6::numeric,8),$6,$7,$8,$9) ON CONFLICT(project_id,name) DO UPDATE SET
+		period=EXCLUDED.period,token_limit=EXCLUDED.token_limit,cost_limit=EXCLUDED.cost_limit,cost_limit_exact=EXCLUDED.cost_limit_exact,
 		alert_threshold=EXCLUDED.alert_threshold,enforce_hard_limit=EXCLUDED.enforce_hard_limit,status=EXCLUDED.status,updated_at=now()`,
-		policy.ID, policy.ProjectID, policy.Name, policy.Period, policy.TokenLimit, policy.CostLimit,
-		policy.AlertThreshold, policy.EnforceHardLimit, policy.Status)
+		policy.ID, policy.ProjectID, policy.Name, policy.Period, policy.TokenLimit, decimalPointer(policy.CostLimit),
+		policy.AlertThreshold.String(), policy.EnforceHardLimit, policy.Status)
 	if err != nil {
 		return domain.ProjectBudgetPolicy{}, err
 	}
@@ -599,15 +613,19 @@ func (s *Store) ProjectUsage(ctx context.Context, projectID string, from, to tim
 	out.ProjectID = projectID
 	out.From = from.UTC()
 	out.To = to.UTC()
+	var cost string
 	err := s.pool.QueryRow(ctx, `SELECT p.organization_id,COALESCE(sum(u.requests),0),COALESCE(sum(u.input_tokens),0),
-		COALESCE(sum(u.cached_input_tokens),0),COALESCE(sum(u.output_tokens),0),COALESCE(sum(u.cost),0)::float8,COALESCE(sum(u.errors),0)
+		COALESCE(sum(u.cached_input_tokens),0),COALESCE(sum(u.output_tokens),0),COALESCE(sum(u.cost_exact),0)::text,COALESCE(sum(u.errors),0)
 		FROM projects p LEFT JOIN usage_daily u ON u.project_id=p.id
 			AND u.date >= ($2::timestamptz AT TIME ZONE 'UTC')::date
 			AND u.date < ($3::timestamptz AT TIME ZONE 'UTC')::date
 		WHERE p.id=$1 GROUP BY p.organization_id`, projectID, out.From, out.To).
-		Scan(&out.OrganizationID, &out.Requests, &out.InputTokens, &out.CachedTokens, &out.OutputTokens, &out.Cost, &out.Errors)
+		Scan(&out.OrganizationID, &out.Requests, &out.InputTokens, &out.CachedTokens, &out.OutputTokens, &cost, &out.Errors)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectBudgetUsage{}, ErrNotFound
+	}
+	if err == nil {
+		out.Cost, err = parseStoredDecimal(cost, "request_logs.estimated_cost.budget_sum")
 	}
 	out.TotalTokens = out.InputTokens + out.OutputTokens
 	return out, err
@@ -635,11 +653,16 @@ func (s *Store) ProjectBudgetUsage(ctx context.Context, projectID, period string
 func scanBudgetEvent(row pgx.Row) (domain.BudgetEvent, error) {
 	var out domain.BudgetEvent
 	var metadata []byte
+	var cost string
 	err := row.Scan(&out.ID, &out.OrganizationID, &out.ProjectID, &out.PolicyID, &out.UserID, &out.APIKeyID,
-		&out.RequestID, &out.EventType, &out.Tokens, &out.Cost, &out.IdempotencyKey, &metadata, &out.CreatedAt)
+		&out.RequestID, &out.EventType, &out.Tokens, &cost, &out.IdempotencyKey, &metadata, &out.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}
+	if err != nil {
+		return out, err
+	}
+	out.Cost, err = parseStoredDecimal(cost, "budget_events.cost")
 	if err != nil {
 		return out, err
 	}
@@ -650,7 +673,7 @@ func scanBudgetEvent(row pgx.Row) (domain.BudgetEvent, error) {
 	return out, nil
 }
 
-const budgetEventColumns = `id,organization_id,project_id,policy_id,user_id,api_key_id,COALESCE(request_id,''),event_type,tokens,cost::float8,COALESCE(idempotency_key,''),metadata,created_at`
+const budgetEventColumns = `id,organization_id,project_id,policy_id,user_id,api_key_id,COALESCE(request_id,''),event_type,tokens,cost_exact::text,COALESCE(idempotency_key,''),metadata,created_at`
 
 func (s *Store) CreateBudgetEvent(ctx context.Context, event domain.BudgetEvent) (domain.BudgetEvent, error) {
 	if event.ID == "" {
@@ -666,10 +689,10 @@ func (s *Store) CreateBudgetEvent(ctx context.Context, event domain.BudgetEvent)
 			return domain.BudgetEvent{}, err
 		}
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO budget_events(id,organization_id,project_id,policy_id,user_id,api_key_id,request_id,event_type,tokens,cost,idempotency_key,metadata)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, event.ID, event.OrganizationID,
+	tag, err := s.pool.Exec(ctx, `INSERT INTO budget_events(id,organization_id,project_id,policy_id,user_id,api_key_id,request_id,event_type,tokens,cost,cost_exact,idempotency_key,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,round($10::numeric,8),$10,$11,$12) ON CONFLICT DO NOTHING`, event.ID, event.OrganizationID,
 		event.ProjectID, event.PolicyID, event.UserID, event.APIKeyID, nullString(event.RequestID), event.EventType,
-		event.Tokens, event.Cost, nullString(event.IdempotencyKey), jsonBytes(event.Metadata))
+		event.Tokens, event.Cost.String(), nullString(event.IdempotencyKey), jsonBytes(event.Metadata))
 	if err != nil {
 		return domain.BudgetEvent{}, err
 	}

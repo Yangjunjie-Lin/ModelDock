@@ -2,7 +2,7 @@
 
 Supplier settlement migration 0022 is forward-only. Disable every supplier settlement policy and payout adapter, resolve all `PROCESSING` attempts by the stable payout idempotency key, and retain all posted journals and append-only subledger evidence. The guarded empty-install-only schema reversal and its evidence preconditions are specified in [supplier-settlement.md](supplier-settlement.md#migration-and-rollback); a non-empty production system requires a new compensating forward migration.
 
-**Current decision:** `NO-GO`; no `v0.9.0-beta` deployment or Release exists to
+**Current decision:** `NO-GO`; no `3.0.0-beta.1` deployment or Release exists to
 roll back. This document defines the required procedure for a later approved
 candidate and the safe reversal of the validation-only code changes in this
 step.
@@ -82,10 +82,31 @@ If the previous binary cannot read the forward schema, do not improvise DDL.
 Return to the candidate, keep paid traffic disabled, and proceed to database
 recovery review.
 
+## Migration 0025 Attestation and Decimal hardening rollback
+
+`0025_commercial_attestation_and_decimal_hardening.sql` is additive and
+forward-repair only. Older application binaries ignore its append-only
+Attestation verification audit, Runtime readiness views, and Decimal integrity
+function. Do not delete verification audit rows. Correct readiness logic with a
+new migration and regenerate the exact-commit Runtime Attestation; never
+rewrite settled amounts or a signed Artifact.
+
+## Migrations 0026-0027 provisioning and routing rollback
+
+`0026_provider_account_provisioning.sql` and
+`0027_openrouter_operating_model.sql` are additive and forward-repair only.
+Before rolling an application binary back, stop Provider provisioning workers,
+disable automatic enterprise provisioning and SCIM, retain every binding/job,
+capability document, shadow-spend row, free-usage counter, and identity audit
+record, and confirm the older binary ignores the new columns/tables. Do not
+delete a Provider binding, funding policy snapshot, SCIM link, or superseded
+capability document to make an older UI appear consistent. Correct schema or
+policy behavior with a later migration.
+
 ## Database rollback and recovery
 
-The current forward schema includes migrations 1 through 23. Migrations
-0021–0023 are additive; before an application rollback disable Provider quality
+The current forward schema includes migrations 1 through 27. Migrations
+0021–0027 are additive; before an application rollback disable Provider quality
 policies and every supplier-linked Provider, then retain all quality,
 Marketplace, settlement, payout-readiness, lifecycle, and audit evidence.
 Routine application rollback retains every migration and never deletes
@@ -117,7 +138,7 @@ an `s3://` destination with server-side encryption. Managed continuous WAL/PITR
 must be operated and tested separately. A logical dump alone cannot prove a
 production RPO.
 
-Destructively reversing migrations 14-21 would remove or weaken commercial,
+Destructively reversing migrations 14-27 would remove or weaken commercial,
 pricing, funding, payment, reconciliation, governance, observability, and
 onboarding/Provider-quality evidence. It requires a separately reviewed data-migration plan,
 stopped writers, complete exports, dependency analysis, legal/finance approval,
@@ -189,3 +210,19 @@ no payout is processing, lifecycle and gate evidence has been exported under
 retention policy, and finance/security/legal owners approve removal. It would
 drop the two protection triggers first and the V23 tables last; this repository
 intentionally does not ship an automatic destructive rollback.
+
+## Migration 0024 exact-money rollback
+
+`0024_exact_money_and_release_evidence.sql` is forward-only. Application
+rollback is compatible because every historical money column remains present
+and bidirectional triggers deterministically mirror legacy-only writes into the
+new `NUMERIC(30,12)` columns. During this dual-write phase, explicit upper
+bounds keep exact values within the range that the legacy `NUMERIC(20,8/10)`
+columns can mirror without overflow or a rounding carry. A later removal of
+legacy columns requires a separate forward migration and compatibility review.
+Before deploying an older binary, run
+`SELECT * FROM exact_money_migration_differences WHERE differences <> 0`; any
+row is a stop condition requiring forward repair. Do not drop the exact columns
+or triggers on a database containing post-0024 writes. If forward repair is
+impossible, restore a verified pre-migration backup and separately preserve all
+post-backup ledger, request, payout, and audit evidence for reconciliation.

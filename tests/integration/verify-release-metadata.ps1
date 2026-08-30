@@ -91,11 +91,10 @@ function Get-OCIManifestDigest {
 
 function Read-Label {
     param([string]$Tag, [string]$Name)
-    $raw = @(& docker image inspect $Tag)
+    $raw = @(& docker image inspect --format "{{ index .Config.Labels `"$Name`" }}" $Tag)
     if ($LASTEXITCODE -ne 0) { throw "Inspecting release metadata test image failed." }
-    $items = @(([string]::Join([Environment]::NewLine, $raw)) | ConvertFrom-Json)
-    if ($items.Count -ne 1) { throw "Image inspection returned an unexpected result count." }
-    return [string]$items[0].Config.Labels.$Name
+    if ($raw.Count -ne 1) { throw "Image inspection returned an unexpected result count." }
+    return [string]$raw[0]
 }
 
 $rebuildImage = "$Image-rebuild"
@@ -121,7 +120,7 @@ try {
         "org.opencontainers.image.version" = $Version
         "org.opencontainers.image.revision" = $Commit
         "org.opencontainers.image.created" = $BuildTime
-        "org.opencontainers.image.source" = "https://github.com/Yangjunjie-Lin/RelayDock"
+        "org.opencontainers.image.source" = "https://github.com/Yangjunjie-Lin/ModelDock"
     }
     foreach ($entry in $expectedLabels.GetEnumerator()) {
         $actual = Read-Label -Tag $Image -Name $entry.Key

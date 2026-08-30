@@ -105,7 +105,7 @@ func scanPlanVersion(row pgx.Row) (domain.PlanVersion, error) {
 		return out, ErrNotFound
 	}
 	if err == nil {
-		out.SubscriptionFee = domain.Decimal(fee)
+		out.SubscriptionFee, err = parseStoredDecimal(fee, "plan_version.subscription_fee")
 		_ = json.Unmarshal(metadata, &out.Metadata)
 	}
 	return out, err
@@ -529,7 +529,10 @@ func (s *Store) ChangeSubscription(ctx context.Context, request SubscriptionChan
 	if err != nil {
 		return domain.OrganizationSubscription{}, nil, err
 	}
-	target.SubscriptionFee = domain.Decimal(fee)
+	target.SubscriptionFee, err = parseStoredDecimal(fee, "organization_subscription.subscription_fee")
+	if err != nil {
+		return domain.OrganizationSubscription{}, nil, err
+	}
 	if target.Status != "FROZEN" || target.TokenBillingMode != "METERED_SEPARATE" {
 		return domain.OrganizationSubscription{}, nil, ErrSubscriptionState
 	}
@@ -788,7 +791,16 @@ func scanSubscriptionInvoice(row pgx.Row) (domain.SubscriptionInvoice, error) {
 		return out, ErrNotFound
 	}
 	if err == nil {
-		out.Subtotal, out.DiscountAmount, out.TaxAmount, out.TotalAmount = domain.Decimal(subtotal), domain.Decimal(discount), domain.Decimal(tax), domain.Decimal(total)
+		out.Subtotal, err = parseStoredDecimal(subtotal, "subscription_invoice.subtotal")
+		if err == nil {
+			out.DiscountAmount, err = parseStoredDecimal(discount, "subscription_invoice.discount_amount")
+		}
+		if err == nil {
+			out.TaxAmount, err = parseStoredDecimal(tax, "subscription_invoice.tax_amount")
+		}
+		if err == nil {
+			out.TotalAmount, err = parseStoredDecimal(total, "subscription_invoice.total_amount")
+		}
 		_ = json.Unmarshal(snapshot, &out.PlanSnapshot)
 	}
 	return out, err
@@ -1002,7 +1014,10 @@ func (s *Store) ProcessSubscriptionLifecycle(ctx context.Context, now time.Time,
 			if err != nil {
 				break
 			}
-			version.SubscriptionFee = domain.Decimal(fee)
+			version.SubscriptionFee, err = parseStoredDecimal(fee, "plan_version.subscription_fee")
+			if err != nil {
+				break
+			}
 			nextEnd, periodErr := subscriptionPeriod(item.periodEnd, version.BillingInterval, nil)
 			if periodErr != nil {
 				err = periodErr
@@ -1114,7 +1129,10 @@ func scanCoupon(row pgx.Row) (domain.Coupon, error) {
 	}
 	if err == nil {
 		if fixed != nil {
-			value := domain.Decimal(*fixed)
+			value, parseErr := parseStoredDecimal(*fixed, "promotion_rule.fixed_amount")
+			if parseErr != nil {
+				return out, parseErr
+			}
 			out.FixedAmount = &value
 		}
 		_ = json.Unmarshal(metadata, &out.Metadata)
@@ -1256,7 +1274,10 @@ func createPendingSubscriptionTx(ctx context.Context, tx pgx.Tx, organizationID,
 	if err != nil {
 		return "", err
 	}
-	version.SubscriptionFee = domain.Decimal(fee)
+	version.SubscriptionFee, err = parseStoredDecimal(fee, "plan_version.subscription_fee")
+	if err != nil {
+		return "", err
+	}
 	start := time.Now().UTC()
 	end, err := subscriptionPeriod(start, version.BillingInterval, nil)
 	if err != nil {

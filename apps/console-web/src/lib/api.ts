@@ -126,6 +126,46 @@ export function formatMoney(value: unknown, currency = 'USD') {
   return `${code} ${visibleSign}${grouped}.${fraction}`
 }
 
+/** Adds signed decimal strings exactly; no monetary value is converted to Number. */
+export function addDecimalStrings(values: unknown[]) {
+  const parsed = values.map((value) => String(value ?? '0').trim()).map((value) => {
+    const match = value.match(/^([+-]?)(\d+)(?:\.(\d+))?$/)
+    if (!match) return null
+    return { negative: match[1] === '-', integer: match[2], fraction: match[3] || '' }
+  })
+  if (parsed.some((value) => !value)) return '—'
+  const scale = parsed.reduce((maximum, value) => Math.max(maximum, value?.fraction.length || 0), 0)
+  const total = parsed.reduce((sum, value) => {
+    if (!value) return sum
+    const magnitude = BigInt(`${value.integer}${value.fraction.padEnd(scale, '0')}`)
+    return sum + (value.negative ? -magnitude : magnitude)
+  }, 0n)
+  const negative = total < 0n
+  const digits = (negative ? -total : total).toString().padStart(scale + 1, '0')
+  const integer = scale ? digits.slice(0, -scale) : digits
+  const fraction = scale ? digits.slice(-scale).replace(/0+$/, '') : ''
+  return `${negative ? '-' : ''}${integer}${fraction ? `.${fraction}` : ''}`
+}
+
+/**
+ * Computes an exact BigInt ratio and converts only the final percentage used
+ * for a CSS progress bar. This result is display-only and never posted back.
+ */
+export function decimalRatioPercent(value: unknown, limit: unknown): number | null {
+  const parse = (input: unknown) => {
+    const match = String(input ?? '0').trim().match(/^(\d+)(?:\.(\d+))?$/)
+    return match ? { integer: match[1], fraction: match[2] || '' } : null
+  }
+  const left = parse(value), right = parse(limit)
+  if (!left || !right) return null
+  const scale = Math.max(left.fraction.length, right.fraction.length)
+  const numerator = BigInt(`${left.integer}${left.fraction.padEnd(scale, '0')}`)
+  const denominator = BigInt(`${right.integer}${right.fraction.padEnd(scale, '0')}`)
+  if (denominator <= 0n) return null
+  const tenths = numerator * 1000n / denominator
+  return Math.min(100, Number(tenths) / 10)
+}
+
 export function formatDate(value: unknown) {
   if (!value) return 'Never'
   const date = new Date(String(value))

@@ -27,11 +27,20 @@ func (s *Store) CreateBYOKCredential(ctx context.Context, credential domain.Cred
 	if projectOrganizationID != *credential.OwnerOrganizationID {
 		return credential, ErrBYOKOrganizationMismatch
 	}
+	if credential.BYOKPrioritySection == "" {
+		credential.BYOKPrioritySection = "PRIORITIZED"
+	}
+	if credential.SharedCapacityFallback == "" {
+		credential.SharedCapacityFallback = "ALWAYS"
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO provider_credentials(id,provider_id,name,credential_type,encrypted_secret,secret_last4,status,priority,weight,max_concurrency,current_health,
-		credential_owner,owner_organization_id,ownership_confirmed_at,ownership_confirmed_by,ownership_terms_version)
-		VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,'UNKNOWN','CUSTOMER',$10,$11,$12,$13)`, credential.ID, credential.ProviderID, credential.Name,
+		credential_owner,owner_organization_id,ownership_confirmed_at,ownership_confirmed_by,ownership_terms_version,
+		byok_priority_section,shared_capacity_fallback,model_filters,api_key_filters,member_filters)
+		VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,'UNKNOWN','CUSTOMER',$10,$11,$12,$13,$14,$15,$16,$17,$18)`, credential.ID, credential.ProviderID, credential.Name,
 		credential.CredentialType, credential.EncryptedSecret, credential.SecretLast4, credential.Priority, credential.Weight, credential.MaxConcurrency,
-		credential.OwnerOrganizationID, credential.OwnershipConfirmedAt, credential.OwnershipConfirmedBy, credential.OwnershipTermsVersion)
+		credential.OwnerOrganizationID, credential.OwnershipConfirmedAt, credential.OwnershipConfirmedBy, credential.OwnershipTermsVersion,
+		credential.BYOKPrioritySection, credential.SharedCapacityFallback, jsonBytes(normalizeStrings(credential.ModelFilters)),
+		jsonBytes(normalizeStrings(credential.APIKeyFilters)), jsonBytes(normalizeStrings(credential.MemberFilters)))
 	if err != nil {
 		return credential, err
 	}

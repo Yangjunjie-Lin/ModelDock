@@ -4,7 +4,7 @@
 
 Do not open a public issue for a suspected vulnerability and do not include
 secrets, customer data, or exploit data in normal logs. Use the repository's
-[private security advisory form](https://github.com/Yangjunjie-Lin/RelayDock/security/advisories/new).
+[private security advisory form](https://github.com/Yangjunjie-Lin/ModelDock/security/advisories/new).
 If that channel is unavailable, contact the repository owner through the
 private contact method shown on the GitHub profile and request an encrypted
 reporting channel before sending sensitive details.

@@ -1,12 +1,22 @@
 # Repository-wide default and higher-risk ownership.
 *                                      @Yangjunjie-Lin
 /.github/                              @Yangjunjie-Lin
+/.github/workflows/                    @Yangjunjie-Lin
 /migrations/                           @Yangjunjie-Lin
 /internal/auth/                        @Yangjunjie-Lin
 /internal/apikey/                      @Yangjunjie-Lin
 /internal/crypto/                      @Yangjunjie-Lin
 /internal/store/                       @Yangjunjie-Lin
+/internal/funding/                     @Yangjunjie-Lin
+/internal/payment/                     @Yangjunjie-Lin
+/internal/payout/                      @Yangjunjie-Lin
+/internal/pricing/                     @Yangjunjie-Lin
 /deploy/                               @Yangjunjie-Lin
+/release/                              @Yangjunjie-Lin
+/scripts/verify-*                      @Yangjunjie-Lin
+/scripts/verify-commercial-evidence.mjs @Yangjunjie-Lin
+/scripts/verify-commercial-readiness.ps1 @Yangjunjie-Lin
+/tests/release/                        @Yangjunjie-Lin
 /SECURITY.md                           @Yangjunjie-Lin
 /RELEASE.md                            @Yangjunjie-Lin
 /docs/licensing-decision.md            @Yangjunjie-Lin

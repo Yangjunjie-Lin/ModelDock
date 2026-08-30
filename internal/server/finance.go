@@ -337,10 +337,15 @@ func processApprovedRefundApplication(c *gin.Context, d Dependencies) {
 		openAIError(c, http.StatusConflict, "payment_provider_evidence_required", "This payment provider requires its own verified refund result before wallet completion.")
 		return
 	}
+	requestedAmount, parseErr := domain.ParseDecimal(application.RequestedAmount)
+	if parseErr != nil {
+		openAIError(c, http.StatusUnprocessableEntity, "invalid_stored_decimal", "Refund processing stopped because the stored requested amount is invalid.")
+		return
+	}
 	actor := stringPtr(claimsFrom(c).Subject)
 	refund, replayed, err := d.Store.CreateRefundOrder(c.Request.Context(), store.CreateRefundOrderRequest{
 		PlatformRefundNo: newPaymentNumber("RF"), RechargeOrderID: order.ID, RefundApplicationID: application.ID,
-		Amount: domain.Decimal(application.RequestedAmount), Reason: application.Reason, IdempotencyKey: input.IdempotencyKey, CreatedBy: actor,
+		Amount: requestedAmount, Reason: application.Reason, IdempotencyKey: input.IdempotencyKey, CreatedBy: actor,
 	})
 	if err != nil {
 		respond(c, nil, err)
@@ -750,14 +755,18 @@ func validFinanceIdempotency(value string) bool {
 
 func validPositiveFinanceDecimal(value string) bool {
 	value = strings.TrimSpace(value)
-	decimal := domain.Decimal(value)
-	return financeDecimalPattern.MatchString(value) && decimal.IsPositive()
+	decimal, err := domain.ParseDecimal(value)
+	return err == nil && financeDecimalPattern.MatchString(value) && validPositiveDecimal(decimal)
 }
 
 func validNonNegativeFinanceDecimal(value string) bool {
 	value = strings.TrimSpace(value)
-	decimal := domain.Decimal(value)
-	return financeDecimalPattern.MatchString(value) && !decimal.IsNegative() && (decimal.IsZero() || decimal.IsPositive())
+	decimal, err := domain.ParseDecimal(value)
+	if err != nil || !financeDecimalPattern.MatchString(value) || invalidOrNegativeDecimal(decimal) {
+		return false
+	}
+	zero, err := decimal.IsZero()
+	return err == nil && (zero || validPositiveDecimal(decimal))
 }
 
 func negativeOptionalInt64(value *int64) bool {

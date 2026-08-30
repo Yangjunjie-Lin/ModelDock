@@ -34,6 +34,7 @@ import (
 	providerdeepseek "github.com/relayedock/relayedock/internal/providers/deepseek"
 	providergemini "github.com/relayedock/relayedock/internal/providers/gemini"
 	"github.com/relayedock/relayedock/internal/providers/openai"
+	"github.com/relayedock/relayedock/internal/provisioning"
 	"github.com/relayedock/relayedock/internal/ratelimit"
 	"github.com/relayedock/relayedock/internal/reconciliation"
 	"github.com/relayedock/relayedock/internal/scheduler"
@@ -173,10 +174,14 @@ func run() error {
 	openAI := openai.NewWithPolicy(nil, providerPolicy)
 	providerRegistry := providers.NewRegistry()
 	providerRegistry.Register("openai", openAI)
+	providerRegistry.Register("openai_compatible", openAI)
 	providerRegistry.Register("openrouter", openAI)
 	providerRegistry.Register("qwen", openAI)
 	providerRegistry.Register("kimi", openAI)
 	providerRegistry.Register("glm", openAI)
+	providerRegistry.Register("grok", openAI)
+	providerRegistry.Register("xai", openAI)
+	providerRegistry.Register("mock_enterprise", openAI)
 	providerRegistry.Register("deepseek", providerdeepseek.NewWithPolicy(nil, providerPolicy))
 	providerRegistry.Register("anthropic", provideranthropic.NewWithPolicy(nil, providerPolicy))
 	providerRegistry.Register("gemini", providergemini.NewWithPolicy(nil, providerPolicy))
@@ -189,6 +194,13 @@ func run() error {
 		Secret: cfg.PayoutSandboxSecret, AllowedRegions: cfg.PayoutAllowedRegions}))
 	webhookDispatcher := webhook.New(webhook.Config{Timeout: cfg.WebhookTimeout, AllowHTTP: cfg.WebhookAllowHTTP, AllowPrivateNetwork: cfg.WebhookAllowPrivate})
 	cockpitClient := cockpit.New(cockpit.Config{SnapshotPath: cfg.CockpitSnapshotPath, BaseURL: cfg.CockpitBaseURL, APIKey: cfg.CockpitAPIKey, TestModel: cfg.CockpitTestModel})
+	provisioningRegistry := provisioning.NewRegistry()
+	provisioningRegistry.Register("openai", provisioning.NewOpenAIAdmin(nil, cfg.OpenAIAdminKey, cfg.OpenAIProvisioningEnabled))
+	for _, providerType := range []string{"openai_compatible", "openrouter", "deepseek", "anthropic", "gemini", "qwen", "kimi", "glm", "grok", "xai"} {
+		provisioningRegistry.Register(providerType, provisioning.NewStatic(provisioning.Capability{ProviderType: providerType,
+			Mode: "BYOK", Enabled: true, Reason: "No configured official project-credit API; use BYOK or an operator-reviewed enterprise binding."}))
+	}
+	provisioningRegistry.Register("mock_enterprise", provisioning.NewMockEnterprise(cfg.ProviderProvisioningMock))
 	workerHost, _ := os.Hostname()
 	webhookWorker := webhook.NewWorker(db, vault, webhookDispatcher, webhook.WorkerConfig{
 		WorkerID:     workerHost + "-" + fmt.Sprint(os.Getpid()),
@@ -218,6 +230,10 @@ func run() error {
 		Region: cfg.ProviderQualityProbeRegion, PollInterval: cfg.ProviderQualityPoll,
 		Lease: cfg.ProviderQualityLease, BatchSize: cfg.ProviderQualityBatchSize, Logger: logger,
 	})
+	provisioningWorker := provisioning.NewWorker(db, vault, provisioningRegistry, provisioning.WorkerConfig{
+		WorkerID: workerHost + "-provisioning-" + fmt.Sprint(os.Getpid()), PollInterval: cfg.ProviderProvisioningPoll,
+		Lease: cfg.ProviderProvisioningLease, BatchSize: cfg.ProviderProvisioningBatch, Logger: logger,
+	})
 	supplierSettlementWorker := settlementworker.NewWorker(db, vault, payoutRegistry, cfg.SupplierSettlementPoll,
 		cfg.SupplierSettlementBatchSize, logger)
 	counter := scheduler.NewRedisCounter(redisClient)
@@ -225,7 +241,7 @@ func run() error {
 	draining := &atomic.Bool{}
 	deps := server.Dependencies{
 		Config: cfg, Store: db, Redis: redisClient, Vault: vault, APIKeys: keys, Auth: authManager,
-		OpenAI: openAI, Providers: providerRegistry, Scheduler: scheduler.New(db, counter), Limiter: ratelimit.New(redisClient), Metrics: metrics, Logger: logger, Webhooks: webhookDispatcher, Cockpit: cockpitClient, Payments: paymentRegistry,
+		OpenAI: openAI, Providers: providerRegistry, Provisioners: provisioningRegistry, Scheduler: scheduler.New(db, counter), Limiter: ratelimit.New(redisClient), Metrics: metrics, Logger: logger, Webhooks: webhookDispatcher, Cockpit: cockpitClient, Payments: paymentRegistry,
 		StartupComplete: startupComplete, Draining: draining, SecretManager: secrets.NewEnvManager(), Payouts: payoutRegistry,
 	}
 	gateway := &http.Server{Addr: cfg.GatewayAddr, Handler: server.GatewayEngine(deps), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
@@ -249,6 +265,7 @@ func run() error {
 	reconciliationWorkerDone := make(chan struct{})
 	governanceWorkerDone := make(chan struct{})
 	providerQualityWorkerDone := make(chan struct{})
+	provisioningWorkerDone := make(chan struct{})
 	supplierSettlementWorkerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
@@ -281,6 +298,10 @@ func run() error {
 	go func() {
 		defer close(providerQualityWorkerDone)
 		providerQualityWorker.Run(workerCtx)
+	}()
+	go func() {
+		defer close(provisioningWorkerDone)
+		provisioningWorker.Run(workerCtx)
 	}()
 	go func() {
 		defer close(supplierSettlementWorkerDone)
@@ -336,6 +357,10 @@ func run() error {
 	}
 	select {
 	case <-providerQualityWorkerDone:
+	case <-shutdownCtx.Done():
+	}
+	select {
+	case <-provisioningWorkerDone:
 	case <-shutdownCtx.Done():
 	}
 	select {

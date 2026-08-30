@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Private security report
-    url: https://github.com/Yangjunjie-Lin/RelayDock/security/advisories/new
+    url: https://github.com/Yangjunjie-Lin/ModelDock/security/advisories/new
     about: Report suspected vulnerabilities privately; never include secrets or customer data in a public issue.
   - name: Security policy
-    url: https://github.com/Yangjunjie-Lin/RelayDock/blob/main/SECURITY.md
+    url: https://github.com/Yangjunjie-Lin/ModelDock/blob/main/SECURITY.md
     about: Read supported-version and reporting guidance.

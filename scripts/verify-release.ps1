@@ -11,13 +11,18 @@ Set-StrictMode -Version 3.0
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-    throw "Release version must be a stable Semantic Version in MAJOR.MINOR.PATCH form."
+$semver = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+if ($Version -notmatch $semver) {
+    throw "Release version must conform to Semantic Versioning 2.0."
 }
 if ($Commit -and $Commit -notmatch '^[0-9a-f]{40}$') {
     throw "Release commit must be a full lowercase 40-character Git SHA."
 }
 
+$versionFile = [System.IO.File]::ReadAllText((Join-Path $repoRoot "VERSION")).Trim()
+if ($versionFile -cne $Version) {
+    throw "VERSION must exactly match release version $Version."
+}
 $versionSource = [System.IO.File]::ReadAllText((Join-Path $repoRoot "internal\version\version.go"))
 $versionMatch = [regex]::Match($versionSource, '(?m)^\s*Current\s*=\s*"([^"]+)"\s*$')
 if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -ne $Version) {

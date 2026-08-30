@@ -1,4 +1,4 @@
-# RelayDock 单机生产部署（Ubuntu 24.04）
+# ModelDock 单机生产部署（Ubuntu 24.04）
 
 > Provider commercial governance and pricing hardening are mandatory after migrations 14 and 15. Review legal
 > entity, resale permission, dates, regions, processing residency, organization
@@ -129,7 +129,7 @@ docker compose version
 
 ```bash
 sudo install -d -m 0750 /opt/relaydock
-sudo git clone git@github.com:Yangjunjie-Lin/RelayDock.git /opt/relaydock/src
+sudo git clone git@github.com:Yangjunjie-Lin/ModelDock.git /opt/relaydock/src
 sudo chown -R "$USER:$USER" /opt/relaydock
 cd /opt/relaydock/src
 ```

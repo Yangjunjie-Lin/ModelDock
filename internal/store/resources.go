@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/relayedock/relayedock/internal/domain"
 	"github.com/relayedock/relayedock/internal/id"
+	"github.com/relayedock/relayedock/internal/pricing"
 )
 
 type providerRowQuerier interface {
@@ -271,13 +273,16 @@ func (s *Store) DeleteProvider(ctx context.Context, providerID string) error {
 
 func scanCredential(row pgx.Row) (domain.Credential, error) {
 	var c domain.Credential
-	var tags []byte
-	err := row.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion)
+	var tags, modelFilters, apiKeyFilters, memberFilters []byte
+	err := row.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.BYOKPrioritySection, &c.SharedCapacityFallback, &modelFilters, &apiKeyFilters, &memberFilters)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}
 	c.HasSecret = len(c.EncryptedSecret) > 0
 	_ = json.Unmarshal(tags, &c.Tags)
+	_ = json.Unmarshal(modelFilters, &c.ModelFilters)
+	_ = json.Unmarshal(apiKeyFilters, &c.APIKeyFilters)
+	_ = json.Unmarshal(memberFilters, &c.MemberFilters)
 	if c.Tags == nil {
 		c.Tags = []string{}
 	}
@@ -285,7 +290,7 @@ func scanCredential(row pgx.Row) (domain.Credential, error) {
 }
 
 // #nosec G101 -- SQL projection names encrypted credential columns but contains no credential value.
-const credentialColumns = `c.id,c.provider_id,p.name,COALESCE((SELECT string_agg(g.name,', ' ORDER BY g.name) FROM credential_group_members gm JOIN credential_groups g ON g.id=gm.group_id WHERE gm.credential_id=c.id),''),c.name,c.credential_type,c.encrypted_secret,c.secret_last4,c.organization_id,c.project_id,c.status,c.priority,c.weight,c.max_concurrency,c.current_health,c.last_success_at,c.last_failure_at,c.cooldown_until,c.created_at,c.updated_at,COALESCE((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM credential_tags t WHERE t.credential_id=c.id),'[]'::jsonb),c.credential_owner,c.owner_organization_id,c.ownership_confirmed_at,c.ownership_confirmed_by,c.ownership_terms_version`
+const credentialColumns = `c.id,c.provider_id,p.name,COALESCE((SELECT string_agg(g.name,', ' ORDER BY g.name) FROM credential_group_members gm JOIN credential_groups g ON g.id=gm.group_id WHERE gm.credential_id=c.id),''),c.name,c.credential_type,c.encrypted_secret,c.secret_last4,c.organization_id,c.project_id,c.status,c.priority,c.weight,c.max_concurrency,c.current_health,c.last_success_at,c.last_failure_at,c.cooldown_until,c.created_at,c.updated_at,COALESCE((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM credential_tags t WHERE t.credential_id=c.id),'[]'::jsonb),c.credential_owner,c.owner_organization_id,c.ownership_confirmed_at,c.ownership_confirmed_by,c.ownership_terms_version,c.byok_priority_section,c.shared_capacity_fallback,c.model_filters,c.api_key_filters,c.member_filters`
 
 func (s *Store) ListCredentials(ctx context.Context, limit, offset int) ([]domain.Credential, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`, clamp(limit), max(offset, 0))
@@ -302,6 +307,56 @@ func (s *Store) ListCredentials(ctx context.Context, limit, offset int) ([]domai
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ListCredentialsFiltered powers the multi-provider credential management UI.
+// Filters are applied in PostgreSQL so pagination cannot hide matching records.
+func (s *Store) ListCredentialsFiltered(ctx context.Context, search, status, group string, limit, offset int) ([]domain.Credential, int64, error) {
+	conditions := make([]string, 0, 3)
+	args := make([]any, 0, 5)
+	if search = strings.TrimSpace(search); search != "" {
+		args = append(args, "%"+search+"%")
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, `(c.name ILIKE `+placeholder+` OR p.name ILIKE `+placeholder+` OR
+			COALESCE(c.project_id,'') ILIKE `+placeholder+` OR EXISTS(
+				SELECT 1 FROM credential_tags search_tag WHERE search_tag.credential_id=c.id AND search_tag.tag ILIKE `+placeholder+`
+			))`)
+	}
+	if status = strings.ToUpper(strings.TrimSpace(status)); status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("c.status=$%d", len(args)))
+	}
+	if group = strings.TrimSpace(group); group != "" {
+		args = append(args, group)
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, `EXISTS(SELECT 1 FROM credential_group_members filter_member
+			JOIN credential_groups filter_group ON filter_group.id=filter_member.group_id
+			WHERE filter_member.credential_id=c.id AND (filter_group.id::text=`+placeholder+` OR filter_group.name=`+placeholder+`))`)
+	}
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+	var total int64
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM provider_credentials c JOIN providers p ON p.id=c.provider_id`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any(nil), args...), clamp(limit), max(offset, 0))
+	rows, err := s.pool.Query(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id`+
+		where+fmt.Sprintf(" ORDER BY c.created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2), queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]domain.Credential, 0)
+	for rows.Next() {
+		credential, scanErr := scanCredential(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		out = append(out, credential)
+	}
+	return out, total, rows.Err()
 }
 func (s *Store) CredentialByID(ctx context.Context, credentialID string) (domain.Credential, error) {
 	return scanCredential(s.pool.QueryRow(ctx, `SELECT `+credentialColumns+` FROM provider_credentials c JOIN providers p ON p.id=c.provider_id WHERE c.id=$1`, credentialID))
@@ -446,9 +501,9 @@ func (s *Store) RemoveGroupMember(ctx context.Context, groupID, credentialID str
 func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 	rows, err := s.pool.Query(ctx, `SELECT m.id,m.provider_id,p.name,m.provider_model_id,m.display_name,m.model_type,m.enabled,
 		m.capabilities,m.capability_source,m.context_window,m.latency_score::float8,m.quality_score::float8,
-		COALESCE(mp.input_price,0)::float8,COALESCE(mp.output_price,0)::float8,COALESCE(mp.currency,''),
+		COALESCE(mp.input_price_exact,mp.input_price,0)::text,COALESCE(mp.output_price_exact,mp.output_price,0)::text,COALESCE(NULLIF(mp.currency,''),p.settlement_currency),
 		m.metadata,m.created_at,m.updated_at,COALESCE(m.service_subject,''),COALESCE(m.filing_info,''),COALESCE(m.generated_content_label_capability,'UNKNOWN'),COALESCE(m.user_disclosure,'') FROM models m JOIN providers p ON p.id=m.provider_id
-		LEFT JOIN LATERAL (SELECT input_price,output_price,currency FROM model_prices
+		LEFT JOIN LATERAL (SELECT input_price,input_price_exact,output_price,output_price_exact,currency FROM model_prices
 			WHERE model_id=m.id AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
 		ORDER BY p.name,m.provider_model_id`)
 	if err != nil {
@@ -459,10 +514,19 @@ func (s *Store) ListModels(ctx context.Context) ([]domain.Model, error) {
 	for rows.Next() {
 		var m domain.Model
 		var caps, meta []byte
+		var inputPrice, outputPrice string
 		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ProviderName, &m.ProviderModelID, &m.DisplayName, &m.ModelType,
 			&m.Enabled, &caps, &m.CapabilitySource, &m.ContextWindow, &m.LatencyScore, &m.QualityScore,
-			&m.InputPrice, &m.OutputPrice, &m.PriceCurrency, &meta, &m.CreatedAt, &m.UpdatedAt, &m.ServiceSubject, &m.FilingInfo, &m.GeneratedContentLabelCapability, &m.UserDisclosure); err != nil {
+			&inputPrice, &outputPrice, &m.PriceCurrency, &meta, &m.CreatedAt, &m.UpdatedAt, &m.ServiceSubject, &m.FilingInfo, &m.GeneratedContentLabelCapability, &m.UserDisclosure); err != nil {
 			return nil, err
+		}
+		m.InputPrice, err = domain.ParseDecimal(inputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model %s input price: %w", m.ID, err)
+		}
+		m.OutputPrice, err = domain.ParseDecimal(outputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model %s output price: %w", m.ID, err)
 		}
 		_ = json.Unmarshal(caps, &m.Capabilities)
 		_ = json.Unmarshal(meta, &m.Metadata)
@@ -588,7 +652,7 @@ func (s *Store) DisableModel(ctx context.Context, modelID string) error {
 }
 
 func (s *Store) ListModelPrices(ctx context.Context, modelID string) ([]domain.ModelPrice, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,model_id,version,effective_from,input_price::float8,cached_input_price::float8,output_price::float8,currency,unit,source,created_at FROM model_prices WHERE model_id=$1 ORDER BY effective_from DESC,version DESC`, modelID)
+	rows, err := s.pool.Query(ctx, `SELECT id,model_id,version,effective_from,COALESCE(input_price_exact,input_price)::text,COALESCE(cached_input_price_exact,cached_input_price)::text,COALESCE(output_price_exact,output_price)::text,currency,unit,source,created_at FROM model_prices WHERE model_id=$1 ORDER BY effective_from DESC,version DESC`, modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -596,14 +660,37 @@ func (s *Store) ListModelPrices(ctx context.Context, modelID string) ([]domain.M
 	var out []domain.ModelPrice
 	for rows.Next() {
 		var p domain.ModelPrice
-		if err := rows.Scan(&p.ID, &p.ModelID, &p.Version, &p.EffectiveFrom, &p.InputPrice, &p.CachedInputPrice, &p.OutputPrice, &p.Currency, &p.Unit, &p.Source, &p.CreatedAt); err != nil {
+		var inputPrice, cachedInputPrice, outputPrice string
+		if err := rows.Scan(&p.ID, &p.ModelID, &p.Version, &p.EffectiveFrom, &inputPrice, &cachedInputPrice, &outputPrice, &p.Currency, &p.Unit, &p.Source, &p.CreatedAt); err != nil {
 			return nil, err
+		}
+		p.InputPrice, err = domain.ParseDecimal(inputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model price %s input: %w", p.ID, err)
+		}
+		p.CachedInputPrice, err = domain.ParseDecimal(cachedInputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model price %s cached input: %w", p.ID, err)
+		}
+		p.OutputPrice, err = domain.ParseDecimal(outputPrice)
+		if err != nil {
+			return nil, fmt.Errorf("scan model price %s output: %w", p.ID, err)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 func (s *Store) CreateModelPrice(ctx context.Context, p domain.ModelPrice) (domain.ModelPrice, error) {
+	p = normalizeModelPriceDefaults(p)
+	for label, value := range map[string]domain.Decimal{"input": p.InputPrice, "cached input": p.CachedInputPrice, "output": p.OutputPrice} {
+		negative, err := value.IsNegative()
+		if err != nil {
+			return domain.ModelPrice{}, fmt.Errorf("invalid %s model price: %w", label, err)
+		}
+		if negative {
+			return domain.ModelPrice{}, fmt.Errorf("invalid %s model price: amount must not be negative", label)
+		}
+	}
 	p.ID = id.UUID()
 	if p.Version <= 0 {
 		_ = s.pool.QueryRow(ctx, `SELECT COALESCE(max(version),0)+1 FROM model_prices WHERE model_id=$1`, p.ModelID).Scan(&p.Version)
@@ -620,52 +707,87 @@ func (s *Store) CreateModelPrice(ctx context.Context, p domain.ModelPrice) (doma
 	if p.Source == "" {
 		p.Source = "manual"
 	}
-	err := s.pool.QueryRow(ctx, `INSERT INTO model_prices(id,model_id,version,effective_from,input_price,cached_input_price,output_price,currency,unit,source) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING created_at`, p.ID, p.ModelID, p.Version, p.EffectiveFrom, p.InputPrice, p.CachedInputPrice, p.OutputPrice, p.Currency, p.Unit, p.Source).Scan(&p.CreatedAt)
+	err := s.pool.QueryRow(ctx, `INSERT INTO model_prices(id,model_id,version,effective_from,input_price,cached_input_price,output_price,input_price_exact,cached_input_price_exact,output_price_exact,currency,unit,source) VALUES($1,$2,$3,$4,round($5::numeric,10),round($6::numeric,10),round($7::numeric,10),$5,$6,$7,$8,$9,$10) RETURNING created_at`, p.ID, p.ModelID, p.Version, p.EffectiveFrom, p.InputPrice.String(), p.CachedInputPrice.String(), p.OutputPrice.String(), p.Currency, p.Unit, p.Source).Scan(&p.CreatedAt)
 	return p, err
 }
-func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel string, input, cached, output int64) (float64, error) {
-	var inputPrice, cachedPrice, outputPrice float64
+
+func normalizeModelPriceDefaults(p domain.ModelPrice) domain.ModelPrice {
+	if strings.TrimSpace(p.CachedInputPrice.String()) == "" {
+		p.CachedInputPrice = domain.MustDecimal("0")
+	}
+	return p
+}
+
+func (s *Store) CalculateCost(ctx context.Context, providerID, upstreamModel string, input, cached, output int64) (domain.Decimal, error) {
+	var inputPrice, cachedPrice, outputPrice string
+	var currency string
 	var unit int64
-	err := s.pool.QueryRow(ctx, `SELECT mp.input_price::float8,mp.cached_input_price::float8,mp.output_price::float8,mp.unit FROM model_prices mp JOIN models m ON m.id=mp.model_id WHERE m.provider_id=$1 AND m.provider_model_id=$2 AND mp.effective_from<=now() ORDER BY mp.effective_from DESC,mp.version DESC LIMIT 1`, providerID, upstreamModel).Scan(&inputPrice, &cachedPrice, &outputPrice, &unit)
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,COALESCE(NULLIF(mp.currency,''),p.settlement_currency) FROM model_prices mp JOIN models m ON m.id=mp.model_id JOIN providers p ON p.id=m.provider_id WHERE m.provider_id=$1 AND m.provider_model_id=$2 AND mp.effective_from<=now() ORDER BY mp.effective_from DESC,mp.version DESC LIMIT 1`, providerID, upstreamModel).Scan(&inputPrice, &cachedPrice, &outputPrice, &unit, &currency)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
+		return domain.MustDecimal("0"), nil
 	}
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	if cached > input {
-		cached = input
+	result, err := pricing.Calculate(
+		pricing.Rate{Input: inputPrice, Cached: cachedPrice, Output: outputPrice, Fixed: "0", Unit: unit, Currency: currency},
+		pricing.Rate{Input: "0", Cached: "0", Output: "0", Fixed: "0", Unit: unit, Currency: currency},
+		pricing.Tokens{Input: input, Cached: min(cached, input), Output: output}, "0", "0", "1",
+	)
+	if err != nil {
+		return "", err
 	}
-	noncached := input - cached
-	return (float64(noncached)*inputPrice + float64(cached)*cachedPrice + float64(output)*outputPrice) / float64(unit), nil
+	return domain.ParseDecimal(result.ProviderCost)
 }
 
 // CalculateProjectReferenceCost returns the highest current catalog cost among
 // enabled models granted to the project. Intelligent-router savings use this
 // explicit, reproducible baseline and are still estimates rather than invoices.
-func (s *Store) CalculateProjectReferenceCost(ctx context.Context, projectID string, input, cached, output int64) (float64, error) {
-	rows, err := s.pool.Query(ctx, `SELECT mp.input_price::float8,mp.cached_input_price::float8,
-		mp.output_price::float8,mp.unit FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
+func (s *Store) CalculateProjectReferenceCost(ctx context.Context, projectID string, input, cached, output int64) (domain.Decimal, error) {
+	rows, err := s.pool.Query(ctx, `SELECT COALESCE(mp.input_price_exact,mp.input_price)::text,COALESCE(mp.cached_input_price_exact,mp.cached_input_price)::text,
+		COALESCE(mp.output_price_exact,mp.output_price)::text,mp.unit,COALESCE(NULLIF(mp.currency,''),p.settlement_currency) FROM project_model_routes pmr JOIN model_routes r ON r.id=pmr.model_route_id
 		JOIN models m ON m.provider_id=r.provider_id AND m.provider_model_id=r.upstream_model
-		JOIN LATERAL (SELECT input_price,cached_input_price,output_price,unit FROM model_prices WHERE model_id=m.id
+		JOIN providers p ON p.id=m.provider_id
+		JOIN LATERAL (SELECT input_price,input_price_exact,cached_input_price,cached_input_price_exact,
+			output_price,output_price_exact,unit,currency FROM model_prices WHERE model_id=m.id
 			AND effective_from<=now() ORDER BY effective_from DESC,version DESC LIMIT 1) mp ON true
 		WHERE pmr.project_id=$1 AND pmr.deleted_at IS NULL AND pmr.enabled AND r.enabled AND m.enabled`, projectID)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer rows.Close()
 	if cached > input {
 		cached = input
 	}
-	var highest float64
+	highest := domain.MustDecimal("0")
+	highestCurrency := ""
 	for rows.Next() {
-		var inputPrice, cachedPrice, outputPrice float64
+		var inputPrice, cachedPrice, outputPrice, currency string
 		var unit int64
-		if err := rows.Scan(&inputPrice, &cachedPrice, &outputPrice, &unit); err != nil {
-			return 0, err
+		if err := rows.Scan(&inputPrice, &cachedPrice, &outputPrice, &unit, &currency); err != nil {
+			return "", err
 		}
-		cost := (float64(input-cached)*inputPrice + float64(cached)*cachedPrice + float64(output)*outputPrice) / float64(unit)
-		if cost > highest {
+		if highestCurrency != "" && !strings.EqualFold(highestCurrency, currency) {
+			return "", fmt.Errorf("project reference cost spans currencies %s and %s without an approved FX conversion", highestCurrency, currency)
+		}
+		highestCurrency = currency
+		result, calculateErr := pricing.Calculate(
+			pricing.Rate{Input: inputPrice, Cached: cachedPrice, Output: outputPrice, Fixed: "0", Unit: unit, Currency: currency},
+			pricing.Rate{Input: "0", Cached: "0", Output: "0", Fixed: "0", Unit: unit, Currency: currency},
+			pricing.Tokens{Input: input, Cached: cached, Output: output}, "0", "0", "1",
+		)
+		if calculateErr != nil {
+			return "", calculateErr
+		}
+		cost, decimalErr := domain.ParseDecimal(result.ProviderCost)
+		if decimalErr != nil {
+			return "", decimalErr
+		}
+		comparison, decimalErr := cost.Compare(highest)
+		if decimalErr != nil {
+			return "", decimalErr
+		}
+		if comparison > 0 {
 			highest = cost
 		}
 	}
@@ -808,11 +930,14 @@ func (s *Store) Candidates(ctx context.Context, groupID string) ([]domain.Creden
 	var out []domain.Credential
 	for rows.Next() {
 		var c domain.Credential
-		var tags []byte
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.EffectiveWeight, &c.EffectivePriority); err != nil {
+		var tags, modelFilters, apiKeyFilters, memberFilters []byte
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.GroupName, &c.Name, &c.CredentialType, &c.EncryptedSecret, &c.SecretLast4, &c.OrganizationID, &c.ProjectID, &c.Status, &c.Priority, &c.Weight, &c.MaxConcurrency, &c.CurrentHealth, &c.LastSuccessAt, &c.LastFailureAt, &c.CooldownUntil, &c.CreatedAt, &c.UpdatedAt, &tags, &c.CredentialOwner, &c.OwnerOrganizationID, &c.OwnershipConfirmedAt, &c.OwnershipConfirmedBy, &c.OwnershipTermsVersion, &c.BYOKPrioritySection, &c.SharedCapacityFallback, &modelFilters, &apiKeyFilters, &memberFilters, &c.EffectiveWeight, &c.EffectivePriority); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tags, &c.Tags)
+		_ = json.Unmarshal(modelFilters, &c.ModelFilters)
+		_ = json.Unmarshal(apiKeyFilters, &c.APIKeyFilters)
+		_ = json.Unmarshal(memberFilters, &c.MemberFilters)
 		if c.Tags == nil {
 			c.Tags = []string{}
 		}

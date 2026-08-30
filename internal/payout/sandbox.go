@@ -41,7 +41,8 @@ func (sandbox *Sandbox) Send(ctx context.Context, request Request) (Result, erro
 	if sandbox == nil || !sandbox.config.Enabled || len(sandbox.config.Secret) < 32 {
 		return Result{}, ErrAdapterDisabled
 	}
-	if strings.TrimSpace(request.IdempotencyKey) == "" || !request.Amount.IsPositive() || len(request.Currency) != 3 || strings.TrimSpace(request.Destination) == "" {
+	amountPositive, amountErr := request.Amount.IsPositive()
+	if strings.TrimSpace(request.IdempotencyKey) == "" || amountErr != nil || !amountPositive || len(request.Currency) != 3 || strings.TrimSpace(request.Destination) == "" {
 		return Result{}, errors.New("invalid sandbox payout request")
 	}
 	mac := hmac.New(sha256.New, sandbox.config.Secret)

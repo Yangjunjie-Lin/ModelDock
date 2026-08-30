@@ -39,6 +39,29 @@ func TestCommercialPricingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	if _, err = s.CreateModelPrice(ctx, domain.ModelPrice{ModelID: modelID, EffectiveFrom: now.Add(-4 * time.Hour), InputPrice: domain.Decimal("1.000000000001"), CachedInputPrice: domain.Decimal("0.250000000001"), OutputPrice: domain.Decimal("2.000000000001"), Currency: "USD", Unit: 1_000_000, Source: "reference-cost-integration"}); err != nil {
+		t.Fatal(err)
+	}
+	groupID, routeID := id.UUID(), id.UUID()
+	if _, err = s.pool.Exec(ctx, `INSERT INTO credential_groups(id,provider_id,name) VALUES($1,$2,$3)`, groupID, providerID, "pricing-reference-group-"+groupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.pool.Exec(ctx, `INSERT INTO model_routes(id,alias,provider_id,upstream_model,credential_group_id,enabled)
+		VALUES($1,$2,$3,'pricing-integration-model',$4,true)`, routeID, "pricing-reference-route-"+routeID, providerID, groupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.pool.Exec(ctx, `INSERT INTO project_model_routes(id,project_id,model_route_id,alias,enabled)
+		VALUES($1,$2,$3,$4,true)`, id.UUID(), domain.LegacyProjectID, routeID, "pricing-reference-project-route-"+routeID); err != nil {
+		t.Fatal(err)
+	}
+	referenceCost, err := s.CalculateProjectReferenceCost(ctx, domain.LegacyProjectID, 1_000_000, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comparison, compareErr := referenceCost.Compare(domain.MustDecimal("1.000000000001"))
+	if compareErr != nil || comparison != 0 {
+		t.Fatalf("exact project reference cost=%s", referenceCost)
+	}
 	cost, err := s.CreateProviderCostPriceBook(ctx, domain.ProviderCostPriceBook{ProviderID: providerID, ModelID: modelID, InputTokenCost: "1", CachedInputTokenCost: "0.25", OutputTokenCost: "2", RequestFixedCost: "0", Currency: "USD", Unit: 1_000_000, EffectiveAt: now.Add(-3 * time.Hour), Source: "integration", ApprovalStatus: "APPROVED"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +191,7 @@ func TestCommercialPricingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestID := "pricing-request-" + id.UUID()
-	err = s.InsertScopedRequestLog(ctx, domain.RequestLog{RequestID: requestID, UserID: userID, APIKeyID: keyID, OrganizationID: orgID, ProjectID: domain.LegacyProjectID, ProviderID: providerID, RequestedModel: "pricing-integration-model", ResolvedModel: "pricing-integration-model", Endpoint: "/responses", StatusCode: 200, InputTokens: 1_000_000, TotalTokens: 1_000_000, EstimatedCost: 999.99, PricingVersionID: settlementQuote.PricingVersionID, PromotionAmount: settlementQuote.PromotionAmount, ExchangeRate: "1", TaxRate: "0", CreatedAt: time.Now().UTC()})
+	err = s.InsertScopedRequestLog(ctx, domain.RequestLog{RequestID: requestID, UserID: userID, APIKeyID: keyID, OrganizationID: orgID, ProjectID: domain.LegacyProjectID, ProviderID: providerID, RequestedModel: "pricing-integration-model", ResolvedModel: "pricing-integration-model", Endpoint: "/responses", StatusCode: 200, InputTokens: 1_000_000, TotalTokens: 1_000_000, EstimatedCost: domain.Decimal("999.99"), ReferenceCost: domain.Decimal("0"), SavingsAmount: domain.Decimal("0"), PricingVersionID: settlementQuote.PricingVersionID, PromotionAmount: settlementQuote.PromotionAmount, ExchangeRate: "1", TaxRate: "0", CreatedAt: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}

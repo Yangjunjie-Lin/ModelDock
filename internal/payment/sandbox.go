@@ -109,9 +109,10 @@ func (adapter *SandboxAdapter) VerifyWebhook(_ context.Context, request WebhookR
 		return VerifiedWebhook{}, ErrInvalidSignature
 	}
 	payload.Status = strings.ToUpper(strings.TrimSpace(payload.Status))
+	amountPositive, amountErr := payload.Amount.IsPositive()
 	if payload.EventID == "" || payload.PlatformOrderNo == "" || payload.ProviderOrderNo == "" ||
 		(payload.Status != "PAID" && payload.Status != "FAILED" && payload.Status != "CHARGEBACK") ||
-		!payload.Amount.IsPositive() || len(payload.Currency) != 3 {
+		amountErr != nil || !amountPositive || len(payload.Currency) != 3 {
 		return VerifiedWebhook{}, errors.New("invalid sandbox webhook fields")
 	}
 	verified := VerifiedWebhook{ProviderEventID: payload.EventID, ProviderOrderNo: payload.ProviderOrderNo,

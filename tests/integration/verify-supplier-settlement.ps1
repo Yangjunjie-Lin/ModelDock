@@ -19,8 +19,12 @@ foreach ($raw in Get-Content -LiteralPath $EnvFile) {
     $name, $value = $line.Split("=", 2)
     $settings[$name.Trim()] = $value.Trim().Trim('"').Trim("'")
 }
-foreach ($required in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL")) {
+foreach ($required in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL", "POSTGRES_HOST_PORT")) {
     if (-not $settings.ContainsKey($required) -or [string]::IsNullOrWhiteSpace($settings[$required])) { throw "Missing $required." }
+}
+$postgresHostPort = 0
+if (-not [int]::TryParse($settings.POSTGRES_HOST_PORT, [ref]$postgresHostPort) -or $postgresHostPort -lt 1 -or $postgresHostPort -gt 65535) {
+    throw "POSTGRES_HOST_PORT must be a valid TCP port."
 }
 $postgres = @(docker ps --filter "ancestor=postgres:17-alpine" --format "{{.ID}}") | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($postgres)) { throw "The local RelayDock PostgreSQL container is not running." }
@@ -56,16 +60,16 @@ try {
     $uri = [Uri]$settings.DATABASE_URL
     $builder = [UriBuilder]$uri
     $builder.Host = "127.0.0.1"
-    $builder.Port = 5433
+    $builder.Port = $postgresHostPort
     $builder.Path = "/$database"
     $env:DATABASE_URL = $builder.Uri.AbsoluteUri
     $env:TEST_DATABASE_URL = $builder.Uri.AbsoluteUri
     & $GoExecutable run ./cmd/relayedock migrate
-    if ($LASTEXITCODE -ne 0) { throw "The V21 to V22 application migration failed." }
+    if ($LASTEXITCODE -ne 0) { throw "The V21 through V27 application migration failed." }
 
-    $upgrade = (Invoke-Psql "SELECT (SELECT count(*) FROM schema_migrations WHERE version=22 AND name='supplier_settlement')||'|'||(SELECT count(*) FROM supplier_organizations WHERE id='22000000-0000-4000-8000-000000000003')||'|'||(SELECT count(*) FROM supplier_settlement_policy WHERE supplier_id='22000000-0000-4000-8000-000000000003' AND enabled=false)||'|'||(SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('supplier_payable_accrual','supplier_settlement_batch','supplier_payout_attempt','supplier_appeal'))").Trim()
-    if ($upgrade -ne "1|1|1|4") { throw "The V21 fixture was not upgraded additively or the existing supplier was not safely disabled." }
-    Write-Host "PASS populated V21 database upgraded to V22 with the existing supplier and disabled payout policy preserved"
+    $upgrade = (Invoke-Psql "SELECT (SELECT max(version) FROM schema_migrations)||'|'||(SELECT count(*) FROM schema_migrations WHERE version=22 AND name='supplier_settlement')||'|'||(SELECT count(*) FROM supplier_organizations WHERE id='22000000-0000-4000-8000-000000000003')||'|'||(SELECT count(*) FROM supplier_settlement_policy WHERE supplier_id='22000000-0000-4000-8000-000000000003' AND enabled=false)||'|'||(SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('supplier_payable_accrual','supplier_settlement_batch','supplier_payout_attempt','supplier_appeal'))").Trim()
+    if ($upgrade -ne "27|1|1|1|4") { throw "The V21 fixture was not upgraded through V27, upgraded additively, or the existing supplier was not safely disabled." }
+    Write-Host "PASS populated V21 database upgraded through V27 with the existing supplier and disabled payout policy preserved"
 
     & $GoExecutable test ./internal/store -run TestSupplierSettlementPlatformUsageConcurrencyAndPayoutIntegration -count=1 -v
     if ($LASTEXITCODE -ne 0) { throw "Supplier settlement integration test failed." }

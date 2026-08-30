@@ -299,17 +299,22 @@ func jsonBytes(v any) []byte {
 
 func scanUser(row pgx.Row) (domain.User, error) {
 	var u domain.User
+	var monthlyCostLimit *string
 	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.Status,
-		&u.MonthlyTokenLimit, &u.MonthlyCostLimit, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
+		&u.MonthlyTokenLimit, &monthlyCostLimit, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
 		&u.EmailVerifiedAt, &u.SessionVersion, &u.MFAEnabled, &u.RiskScore, &u.VerificationLevel,
 		&u.PaymentRisk, &u.AbuseStatus, &u.ManualReviewStatus, &u.NewAccountSpendLimit, &u.ClosedAt, &u.LegalHold)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
+	if err != nil {
+		return u, err
+	}
+	u.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
 	return u, err
 }
 
-const userColumns = `id,email,password_hash,display_name,role,status,monthly_token_limit,monthly_cost_limit,created_at,updated_at,last_login_at,email_verified_at,session_version,(totp_enrolled_at IS NOT NULL),risk_score,verification_level,payment_risk,abuse_status,manual_review_status,COALESCE(new_account_spend_limit::text,''),closed_at,legal_hold`
+const userColumns = `id,email,password_hash,display_name,role,status,monthly_token_limit,COALESCE(monthly_cost_limit_exact,monthly_cost_limit)::text,created_at,updated_at,last_login_at,email_verified_at,session_version,(totp_enrolled_at IS NOT NULL),risk_score,verification_level,payment_risk,abuse_status,manual_review_status,COALESCE(new_account_spend_limit::text,''),closed_at,legal_hold`
 
 func (s *Store) UserByEmail(ctx context.Context, email string) (domain.User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE lower(email)=lower($1)`, email))

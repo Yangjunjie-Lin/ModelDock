@@ -24,6 +24,19 @@ func TestRegistryResolvesProviderTypeCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestRegistrySupportsCustomOpenAICompatibleProvider(t *testing.T) {
+	registry := providers.NewRegistry()
+	adapter := openai.New(nil)
+	registry.Register("openai_compatible", adapter)
+	resolved, err := registry.Resolve("OPENAI_COMPATIBLE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != adapter {
+		t.Fatal("custom OpenAI-compatible type did not resolve to the shared adapter")
+	}
+}
+
 func TestProviderEndpointPolicyRequiresHTTPSAndAllowlist(t *testing.T) {
 	policy := openai.EndpointPolicy{AllowedHosts: []string{"api.example.invalid", "*.provider.invalid"}}
 	allowed, _ := url.Parse("https://api.example.invalid/v1")

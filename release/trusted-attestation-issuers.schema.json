@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Yangjunjie-Lin/ModelDock/release/trusted-attestation-issuers.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository", "trusted_issuers"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "repository": { "const": "Yangjunjie-Lin/ModelDock" },
+    "trusted_issuers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "roles", "public_key_pem", "certificate_identity", "certificate_issuer", "not_before", "not_after"],
+        "properties": {
+          "issuer": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@:-]{1,127}$" },
+          "roles": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": { "enum": ["Owner", "Legal", "Finance", "Commercial", "Security", "Operations", "IndependentTester"] }
+          },
+          "public_key_pem": { "type": "string", "pattern": "^-----BEGIN PUBLIC KEY-----" },
+          "certificate_identity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@:-]{1,127}$" },
+          "certificate_issuer": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@:-]{1,127}$" },
+          "not_before": { "type": "string", "format": "date-time" },
+          "not_after": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

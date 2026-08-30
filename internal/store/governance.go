@@ -33,8 +33,8 @@ func (s *Store) GatewayRiskCheck(ctx context.Context, userID, organizationID str
 	}
 	var spendExceeded bool
 	if err = s.pool.QueryRow(ctx, `SELECT
-		(u.created_at>=now()-interval '7 days' AND u.new_account_spend_limit IS NOT NULL AND COALESCE((SELECT sum(estimated_cost) FROM request_logs WHERE user_id=u.id),0)>=u.new_account_spend_limit)
-		OR (o.created_at>=now()-interval '7 days' AND o.new_account_spend_limit IS NOT NULL AND COALESCE((SELECT sum(estimated_cost) FROM request_logs WHERE organization_id=o.id),0)>=o.new_account_spend_limit)
+		(u.created_at>=now()-interval '7 days' AND u.new_account_spend_limit IS NOT NULL AND COALESCE((SELECT sum(estimated_cost_exact) FROM request_logs WHERE user_id=u.id),0)>=u.new_account_spend_limit)
+		OR (o.created_at>=now()-interval '7 days' AND o.new_account_spend_limit IS NOT NULL AND COALESCE((SELECT sum(estimated_cost_exact) FROM request_logs WHERE organization_id=o.id),0)>=o.new_account_spend_limit)
 		FROM users u JOIN organizations o ON o.id=$2 WHERE u.id=$1`, userID, organizationID).Scan(&spendExceeded); err != nil {
 		return false, "risk_state_unavailable", err
 	}
@@ -267,7 +267,7 @@ func (s *Store) DetectUsageAnomalies(ctx context.Context, logEntry domain.Reques
 		}
 	}
 	var recent, baseline string
-	err = tx.QueryRow(ctx, `SELECT COALESCE(sum(CASE WHEN created_at>=now()-interval '10 minutes' THEN estimated_cost ELSE 0 END),0)::text,COALESCE(sum(CASE WHEN created_at>=now()-interval '70 minutes' AND created_at<now()-interval '10 minutes' THEN estimated_cost ELSE 0 END)/6,0)::text FROM request_logs WHERE organization_id=$1`, logEntry.OrganizationID).Scan(&recent, &baseline)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(sum(CASE WHEN created_at>=now()-interval '10 minutes' THEN estimated_cost_exact ELSE 0 END),0)::text,COALESCE(sum(CASE WHEN created_at>=now()-interval '70 minutes' AND created_at<now()-interval '10 minutes' THEN estimated_cost_exact ELSE 0 END)/6,0)::text FROM request_logs WHERE organization_id=$1`, logEntry.OrganizationID).Scan(&recent, &baseline)
 	if err != nil {
 		return err
 	}

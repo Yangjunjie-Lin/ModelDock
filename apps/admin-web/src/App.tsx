@@ -22,6 +22,8 @@ import { SupplierApplicationsPage } from './pages/SupplierApplicationsPage'
 import { ProviderQualityPage } from './pages/ProviderQualityPage'
 import { SupplierSettlementsPage } from './pages/SupplierSettlementsPage'
 import { MarketplaceLaunchPage } from './pages/MarketplaceLaunchPage'
+import { ProviderAccountsPage } from './pages/ProviderAccountsPage'
+import { ProviderCapabilitiesPage } from './pages/ProviderCapabilitiesPage'
 
 export function App() {
   return <Routes>
@@ -35,6 +37,8 @@ export function App() {
       <Route path="providers" element={<ProvidersPage />} />
       <Route path="marketplace" element={<MarketplaceLaunchPage />} />
       <Route path="credentials" element={<CredentialsPage />} />
+      <Route path="provider-accounts" element={<ProviderAccountsPage />} />
+      <Route path="provider-capabilities" element={<ProviderCapabilitiesPage />} />
       <Route path="groups" element={<GroupsPage />} />
       <Route path="models" element={<ModelsPage />} />
       <Route path="routes" element={<RoutesPage />} />

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,15 @@ import (
 // budget event, and webhook outbox rows atomically.  V1 InsertRequestLog is
 // retained for compatibility; all V2 data-plane writes should use this method.
 func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.RequestLog) error {
+	for field, value := range map[string]domain.Decimal{
+		"estimated_cost": logEntry.EstimatedCost,
+		"reference_cost": logEntry.ReferenceCost,
+		"savings_amount": logEntry.SavingsAmount,
+	} {
+		if err := value.Validate(); err != nil {
+			return fmt.Errorf("invalid request log %s: %w", field, err)
+		}
+	}
 	createdAt := logEntry.CreatedAt.UTC()
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -29,14 +39,14 @@ func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.Requ
 	var routeID *string
 	err = tx.QueryRow(ctx, `INSERT INTO request_logs(id,request_id,trace_id,user_id,api_key_id,organization_id,project_id,route_id,
 		provider_id,credential_id,requested_model,resolved_model,endpoint,status_code,streaming,input_tokens,
-		cached_input_tokens,output_tokens,total_tokens,estimated_cost,reference_cost,savings_amount,latency_ms,ttft_ms,upstream_request_id,error_code,
+		cached_input_tokens,output_tokens,total_tokens,estimated_cost,reference_cost,savings_amount,estimated_cost_exact,reference_cost_exact,savings_amount_exact,latency_ms,ttft_ms,upstream_request_id,error_code,
 		scheduler_reason,created_at,funding_operation_id,usage_source)
-		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,round($20::numeric,8),round($21::numeric,8),round($22::numeric,8),$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
 		RETURNING organization_id,project_id,route_id`, id.UUID(), logEntry.RequestID, logEntry.TraceID,
 		nullString(logEntry.UserID), nullString(logEntry.APIKeyID), nullString(logEntry.OrganizationID), nullString(logEntry.ProjectID), nullString(logEntry.RouteID),
 		nullString(logEntry.ProviderID), nullString(logEntry.CredentialID), logEntry.RequestedModel, logEntry.ResolvedModel,
 		logEntry.Endpoint, logEntry.StatusCode, logEntry.Streaming, logEntry.InputTokens, logEntry.CachedInputTokens,
-		logEntry.OutputTokens, logEntry.TotalTokens, logEntry.EstimatedCost, logEntry.ReferenceCost, logEntry.SavingsAmount,
+		logEntry.OutputTokens, logEntry.TotalTokens, logEntry.EstimatedCost.String(), logEntry.ReferenceCost.String(), logEntry.SavingsAmount.String(),
 		logEntry.LatencyMS, logEntry.TTFTMS, nullString(logEntry.UpstreamRequestID), nullString(logEntry.ErrorCode),
 		jsonBytes(logEntry.SchedulerReason), createdAt, nullString(logEntry.FundingOperationID), nullString(logEntry.UsageSource)).
 		Scan(&organizationID, &projectID, &routeID)
@@ -46,28 +56,30 @@ func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.Requ
 
 	errorCount := boolInt(logEntry.StatusCode >= 400)
 	_, err = tx.Exec(ctx, `INSERT INTO usage_daily(organization_id,project_id,route_id,date,user_id,api_key_id,model,
-		requests,input_tokens,cached_input_tokens,output_tokens,cost,errors)
-		VALUES($1,$2,$3,($4::timestamptz AT TIME ZONE 'UTC')::date,$5,$6,$7,1,$8,$9,$10,$11,$12)
+		requests,input_tokens,cached_input_tokens,output_tokens,cost,cost_exact,errors)
+		VALUES($1,$2,$3,($4::timestamptz AT TIME ZONE 'UTC')::date,$5,$6,$7,1,$8,$9,$10,round($11::numeric,8),$11,$12)
 		ON CONFLICT ON CONSTRAINT usage_daily_scope_pkey DO UPDATE SET
 		requests=usage_daily.requests+1,input_tokens=usage_daily.input_tokens+EXCLUDED.input_tokens,
 		cached_input_tokens=usage_daily.cached_input_tokens+EXCLUDED.cached_input_tokens,
-		output_tokens=usage_daily.output_tokens+EXCLUDED.output_tokens,cost=usage_daily.cost+EXCLUDED.cost,
+		output_tokens=usage_daily.output_tokens+EXCLUDED.output_tokens,cost=round(usage_daily.cost+EXCLUDED.cost,8),
+		cost_exact=usage_daily.cost_exact+EXCLUDED.cost_exact,
 		errors=usage_daily.errors+EXCLUDED.errors`, organizationID, projectID, routeID, createdAt, logEntry.UserID,
 		logEntry.APIKeyID, logEntry.ResolvedModel, logEntry.InputTokens, logEntry.CachedInputTokens,
-		logEntry.OutputTokens, logEntry.EstimatedCost, errorCount)
+		logEntry.OutputTokens, logEntry.EstimatedCost.String(), errorCount)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO usage_hourly(organization_id,project_id,route_id,hour,user_id,api_key_id,model,
-		requests,input_tokens,cached_input_tokens,output_tokens,cost,errors)
-		VALUES($1,$2,$3,date_trunc('hour',$4::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',$5,$6,$7,1,$8,$9,$10,$11,$12)
+		requests,input_tokens,cached_input_tokens,output_tokens,cost,cost_exact,errors)
+		VALUES($1,$2,$3,date_trunc('hour',$4::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',$5,$6,$7,1,$8,$9,$10,round($11::numeric,8),$11,$12)
 		ON CONFLICT ON CONSTRAINT usage_hourly_scope_pkey DO UPDATE SET
 		requests=usage_hourly.requests+1,input_tokens=usage_hourly.input_tokens+EXCLUDED.input_tokens,
 		cached_input_tokens=usage_hourly.cached_input_tokens+EXCLUDED.cached_input_tokens,
-		output_tokens=usage_hourly.output_tokens+EXCLUDED.output_tokens,cost=usage_hourly.cost+EXCLUDED.cost,
+		output_tokens=usage_hourly.output_tokens+EXCLUDED.output_tokens,cost=round(usage_hourly.cost+EXCLUDED.cost,8),
+		cost_exact=usage_hourly.cost_exact+EXCLUDED.cost_exact,
 		errors=usage_hourly.errors+EXCLUDED.errors`, organizationID, projectID, routeID, createdAt, logEntry.UserID,
 		logEntry.APIKeyID, logEntry.ResolvedModel, logEntry.InputTokens, logEntry.CachedInputTokens,
-		logEntry.OutputTokens, logEntry.EstimatedCost, errorCount)
+		logEntry.OutputTokens, logEntry.EstimatedCost.String(), errorCount)
 	if err != nil {
 		return err
 	}
@@ -77,10 +89,10 @@ func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.Requ
 		eventType = "request.failed"
 	}
 	budgetMetadata := map[string]any{"status_code": logEntry.StatusCode, "model": logEntry.RequestedModel}
-	_, err = tx.Exec(ctx, `INSERT INTO budget_events(id,organization_id,project_id,user_id,api_key_id,request_id,event_type,tokens,cost,idempotency_key,metadata)
-		VALUES($1,$2,$3,$4,$5,$6,'COMMIT',$7,$8,$6,$9) ON CONFLICT DO NOTHING`, id.UUID(), organizationID,
+	_, err = tx.Exec(ctx, `INSERT INTO budget_events(id,organization_id,project_id,user_id,api_key_id,request_id,event_type,tokens,cost,cost_exact,idempotency_key,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,'COMMIT',$7,round($8::numeric,8),$8,$6,$9) ON CONFLICT DO NOTHING`, id.UUID(), organizationID,
 		projectID, logEntry.UserID, logEntry.APIKeyID, logEntry.RequestID, logEntry.InputTokens+logEntry.OutputTokens,
-		logEntry.EstimatedCost, jsonBytes(budgetMetadata))
+		logEntry.EstimatedCost.String(), jsonBytes(budgetMetadata))
 	if err != nil {
 		return err
 	}
@@ -110,7 +122,7 @@ func (s *Store) InsertScopedRequestLog(ctx context.Context, logEntry domain.Requ
 func (s *Store) ExportUsageRows(ctx context.Context, filter domain.UsageExportFilter) ([]domain.UsageExportRow, error) {
 	query := `SELECT request_id,organization_id,project_id,COALESCE(user_id::text,''),COALESCE(api_key_id::text,''),
 		COALESCE(route_id::text,''),COALESCE(requested_model,''),endpoint,status_code,input_tokens,cached_input_tokens,
-		output_tokens,total_tokens,estimated_cost::float8,latency_ms,created_at FROM request_logs WHERE true`
+		output_tokens,total_tokens,estimated_cost_exact::text,latency_ms,created_at FROM request_logs WHERE true`
 	args := make([]any, 0, 10)
 	add := func(clause string, value any) {
 		args = append(args, value)
@@ -161,9 +173,14 @@ func (s *Store) ExportUsageRows(ctx context.Context, filter domain.UsageExportFi
 	out := make([]domain.UsageExportRow, 0)
 	for rows.Next() {
 		var row domain.UsageExportRow
+		var estimatedCost string
 		if err := rows.Scan(&row.RequestID, &row.OrganizationID, &row.ProjectID, &row.UserID, &row.APIKeyID,
 			&row.RouteID, &row.Model, &row.Endpoint, &row.StatusCode, &row.InputTokens, &row.CachedTokens,
-			&row.OutputTokens, &row.TotalTokens, &row.EstimatedCost, &row.LatencyMS, &row.CreatedAt); err != nil {
+			&row.OutputTokens, &row.TotalTokens, &estimatedCost, &row.LatencyMS, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		row.EstimatedCost, err = parseStoredDecimal(estimatedCost, "request_logs.estimated_cost")
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, row)
@@ -180,7 +197,7 @@ func (s *Store) ProjectUsageSeries(ctx context.Context, projectID string, from, 
 		return nil, errors.New("usage range end must be after start")
 	}
 	rows, err := s.pool.Query(ctx, `SELECT date::text,sum(requests),sum(input_tokens),sum(cached_input_tokens),
-		sum(output_tokens),sum(cost)::float8,sum(errors) FROM usage_daily
+		sum(output_tokens),sum(cost_exact)::text,sum(errors) FROM usage_daily
 		WHERE project_id=$1 AND date >= ($2::timestamptz AT TIME ZONE 'UTC')::date
 		AND date < ($3::timestamptz AT TIME ZONE 'UTC')::date GROUP BY date ORDER BY date`, projectID, from.UTC(), to.UTC())
 	if err != nil {
@@ -191,12 +208,16 @@ func (s *Store) ProjectUsageSeries(ctx context.Context, projectID string, from, 
 	for rows.Next() {
 		var date string
 		var requests, input, cached, output, failures int64
-		var cost float64
+		var cost string
 		if err := rows.Scan(&date, &requests, &input, &cached, &output, &cost, &failures); err != nil {
 			return nil, err
 		}
+		parsedCost, parseErr := parseStoredDecimal(cost, "request_logs.estimated_cost.daily_sum")
+		if parseErr != nil {
+			return nil, parseErr
+		}
 		out = append(out, map[string]any{"date": date, "requests": requests, "input_tokens": input,
-			"cached_input_tokens": cached, "output_tokens": output, "cost": cost, "errors": failures})
+			"cached_input_tokens": cached, "output_tokens": output, "cost": parsedCost, "errors": failures})
 	}
 	return out, rows.Err()
 }
@@ -213,12 +234,12 @@ func (s *Store) ProjectUsageHourlySeries(ctx context.Context, projectID string, 
 	), aggregate AS (
 		SELECT date_trunc('hour',hour) AS hour,sum(requests) AS requests,
 			sum(input_tokens) AS input_tokens,sum(cached_input_tokens) AS cached_input_tokens,
-			sum(output_tokens) AS output_tokens,sum(cost)::float8 AS cost,sum(errors) AS errors
+			sum(output_tokens) AS output_tokens,sum(cost_exact)::text AS cost,sum(errors) AS errors
 		FROM usage_hourly WHERE project_id=$1 AND hour >= $2 AND hour < $3 GROUP BY date_trunc('hour',hour)
 	)
 	SELECT buckets.hour,COALESCE(aggregate.requests,0),COALESCE(aggregate.input_tokens,0),
 		COALESCE(aggregate.cached_input_tokens,0),COALESCE(aggregate.output_tokens,0),
-		COALESCE(aggregate.cost,0)::float8,COALESCE(aggregate.errors,0)
+		COALESCE(aggregate.cost,'0'),COALESCE(aggregate.errors,0)
 	FROM buckets LEFT JOIN aggregate USING(hour) ORDER BY buckets.hour`, projectID, from.UTC(), to.UTC())
 	if err != nil {
 		return nil, err
@@ -228,13 +249,17 @@ func (s *Store) ProjectUsageHourlySeries(ctx context.Context, projectID string, 
 	for rows.Next() {
 		var hour time.Time
 		var requests, input, cached, output, failures int64
-		var cost float64
+		var cost string
 		if err := rows.Scan(&hour, &requests, &input, &cached, &output, &cost, &failures); err != nil {
 			return nil, err
 		}
+		parsedCost, parseErr := parseStoredDecimal(cost, "request_logs.estimated_cost.hourly_sum")
+		if parseErr != nil {
+			return nil, parseErr
+		}
 		out = append(out, map[string]any{"time": hour.UTC().Format(time.RFC3339), "requests": requests,
 			"input_tokens": input, "cached_input_tokens": cached, "output_tokens": output,
-			"cost": cost, "errors": failures})
+			"cost": parsedCost, "errors": failures})
 	}
 	return out, rows.Err()
 }

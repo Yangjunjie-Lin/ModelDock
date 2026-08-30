@@ -527,10 +527,11 @@ func registerProjectBudgetV2(g *gin.RouterGroup, d Dependencies, admin bool) {
 		if policy.Status == "" {
 			policy.Status = "ACTIVE"
 		}
+		thresholdComparison, thresholdErr := policy.AlertThreshold.Compare(domain.MustDecimal("1"))
 		if strings.TrimSpace(policy.Name) == "" || (policy.Period != "DAILY" && policy.Period != "MONTHLY") ||
-			(policy.Status != "ACTIVE" && policy.Status != "DISABLED") || policy.AlertThreshold < 0 || policy.AlertThreshold > 1 ||
+			(policy.Status != "ACTIVE" && policy.Status != "DISABLED") || invalidOrNegativeDecimal(policy.AlertThreshold) || thresholdErr != nil || thresholdComparison > 0 ||
 			(policy.TokenLimit == nil && policy.CostLimit == nil) || (policy.TokenLimit != nil && *policy.TokenLimit < 0) ||
-			(policy.CostLimit != nil && *policy.CostLimit < 0) {
+			(policy.CostLimit != nil && invalidOrNegativeDecimal(*policy.CostLimit)) {
 			openAIError(c, http.StatusBadRequest, "invalid_request", "name, period, at least one non-negative limit, and a threshold from 0 to 1 are required.")
 			return
 		}
@@ -959,7 +960,7 @@ func exportProjectUsage(c *gin.Context, d Dependencies, admin bool) {
 			store.CSVSafeCell(row.UserID), store.CSVSafeCell(row.APIKeyID), store.CSVSafeCell(row.RouteID),
 			store.CSVSafeCell(row.Model), store.CSVSafeCell(row.Endpoint), strconv.Itoa(row.StatusCode),
 			strconv.FormatInt(row.InputTokens, 10), strconv.FormatInt(row.CachedTokens, 10), strconv.FormatInt(row.OutputTokens, 10),
-			strconv.FormatInt(row.TotalTokens, 10), strconv.FormatFloat(row.EstimatedCost, 'f', 8, 64),
+			strconv.FormatInt(row.TotalTokens, 10), row.EstimatedCost.String(),
 			strconv.FormatInt(row.LatencyMS, 10), row.CreatedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}

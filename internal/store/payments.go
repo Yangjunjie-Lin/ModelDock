@@ -21,15 +21,17 @@ var (
 )
 
 type CreateRechargeOrderRequest struct {
-	PlatformOrderNo string
-	OrganizationID  string
-	PaymentProvider string
-	Amount          domain.Decimal
-	Currency        string
-	Region          string
-	IdempotencyKey  string
-	ExpiresAt       time.Time
-	CreatedBy       *string
+	PlatformOrderNo        string
+	OrganizationID         string
+	PaymentProvider        string
+	Amount                 domain.Decimal
+	Currency               string
+	Region                 string
+	IdempotencyKey         string
+	ExpiresAt              time.Time
+	CreatedBy              *string
+	TargetProviderID       string
+	TargetProvisioningMode string
 }
 
 type CreateRefundOrderRequest struct {
@@ -44,13 +46,14 @@ type CreateRefundOrderRequest struct {
 
 func rechargeFingerprint(request CreateRechargeOrderRequest) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{request.OrganizationID, request.PaymentProvider,
-		request.Amount.String(), request.Currency, request.Region}, "\x00")))
+		request.Amount.String(), request.Currency, request.Region, request.TargetProviderID, request.TargetProvisioningMode}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 
 const rechargeOrderSelect = `SELECT id,platform_order_no,organization_id,wallet_id,created_by,payment_provider,
 	COALESCE(provider_order_no,''),status,amount::text,currency,region,idempotency_key,wallet_transaction_id,
-	ledger_journal_id,expires_at,paid_at,credited_at,provider_closed_at,COALESCE(failure_code,''),metadata,created_at,updated_at FROM recharge_order`
+	ledger_journal_id,expires_at,paid_at,credited_at,provider_closed_at,COALESCE(failure_code,''),metadata,created_at,updated_at,
+	target_provider_id,target_provisioning_mode FROM recharge_order`
 
 func scanRechargeOrder(row pgx.Row) (domain.RechargeOrder, error) {
 	var order domain.RechargeOrder
@@ -59,12 +62,13 @@ func scanRechargeOrder(row pgx.Row) (domain.RechargeOrder, error) {
 	err := row.Scan(&order.ID, &order.PlatformOrderNo, &order.OrganizationID, &order.WalletID, &order.CreatedBy,
 		&order.PaymentProvider, &order.ProviderOrderNo, &order.Status, &amount, &order.Currency, &order.Region,
 		&order.IdempotencyKey, &order.WalletTransactionID, &order.LedgerJournalID, &order.ExpiresAt, &order.PaidAt,
-		&order.CreditedAt, &order.ProviderClosedAt, &order.FailureCode, &metadata, &order.CreatedAt, &order.UpdatedAt)
+		&order.CreditedAt, &order.ProviderClosedAt, &order.FailureCode, &metadata, &order.CreatedAt, &order.UpdatedAt,
+		&order.TargetProviderID, &order.TargetProvisioningMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return order, ErrNotFound
 	}
 	if err == nil {
-		order.Amount = domain.Decimal(amount)
+		order.Amount, err = parseStoredDecimal(amount, "payment_order.amount")
 		_ = json.Unmarshal(metadata, &order.Metadata)
 	}
 	return order, err
@@ -74,9 +78,14 @@ func (s *Store) CreateRechargeOrder(ctx context.Context, request CreateRechargeO
 	request.Currency = strings.ToUpper(strings.TrimSpace(request.Currency))
 	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
 	request.PaymentProvider = strings.ToLower(strings.TrimSpace(request.PaymentProvider))
+	request.TargetProviderID = strings.TrimSpace(request.TargetProviderID)
+	request.TargetProvisioningMode = strings.ToUpper(strings.TrimSpace(request.TargetProvisioningMode))
+	amountPositive, amountErr := request.Amount.IsPositive()
 	if request.PlatformOrderNo == "" || request.OrganizationID == "" || request.IdempotencyKey == "" ||
-		len(request.IdempotencyKey) > 200 || !request.Amount.IsPositive() || len(request.Currency) != 3 ||
-		len(request.Region) != 2 || request.ExpiresAt.Before(time.Now().UTC()) {
+		len(request.IdempotencyKey) > 200 || amountErr != nil || !amountPositive || len(request.Currency) != 3 ||
+		len(request.Region) != 2 || request.ExpiresAt.Before(time.Now().UTC()) ||
+		((request.TargetProviderID == "") != (request.TargetProvisioningMode == "")) ||
+		(request.TargetProvisioningMode != "" && !validProvisioningMode(request.TargetProvisioningMode)) {
 		return domain.RechargeOrder{}, false, errors.New("invalid recharge order")
 	}
 	fingerprint := rechargeFingerprint(request)
@@ -112,6 +121,35 @@ func (s *Store) CreateRechargeOrder(ctx context.Context, request CreateRechargeO
 			return domain.RechargeOrder{}, false, err
 		}
 	}
+	if request.TargetProviderID != "" {
+		if request.CreatedBy == nil || strings.TrimSpace(*request.CreatedBy) == "" {
+			return domain.RechargeOrder{}, false, errors.New("target provider recharge requires a user")
+		}
+		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+			providerBindingAdvisoryKey(request.OrganizationID, *request.CreatedBy, request.TargetProviderID)); err != nil {
+			return domain.RechargeOrder{}, false, err
+		}
+		var targetAllowed bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM providers WHERE id=$1 AND enabled)
+			AND EXISTS(SELECT 1 FROM organization_memberships WHERE organization_id=$2 AND user_id=$3 AND status='ACTIVE')`,
+			request.TargetProviderID, request.OrganizationID, *request.CreatedBy).Scan(&targetAllowed); err != nil {
+			return domain.RechargeOrder{}, false, err
+		}
+		if !targetAllowed {
+			return domain.RechargeOrder{}, false, ErrNotFound
+		}
+		bindingID := id.UUID()
+		err = tx.QueryRow(ctx, `INSERT INTO provider_account_binding(id,organization_id,user_id,provider_id,provisioning_mode,status)
+			VALUES($1,$2,$3,$4,$5,'PENDING') ON CONFLICT(organization_id,user_id,provider_id) DO UPDATE SET updated_at=now()
+			WHERE provider_account_binding.provisioning_mode=EXCLUDED.provisioning_mode RETURNING id`, bindingID,
+			request.OrganizationID, *request.CreatedBy, request.TargetProviderID, request.TargetProvisioningMode).Scan(&bindingID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.RechargeOrder{}, false, ErrBindingMode
+		}
+		if err != nil {
+			return domain.RechargeOrder{}, false, err
+		}
+	}
 	var walletID, walletCurrency, walletStatus string
 	err = tx.QueryRow(ctx, `SELECT id,currency,status FROM wallets WHERE organization_id=$1 FOR UPDATE`, request.OrganizationID).
 		Scan(&walletID, &walletCurrency, &walletStatus)
@@ -126,16 +164,18 @@ func (s *Store) CreateRechargeOrder(ctx context.Context, request CreateRechargeO
 	}
 	orderID := id.UUID()
 	_, err = tx.Exec(ctx, `INSERT INTO recharge_order(id,platform_order_no,organization_id,wallet_id,created_by,
-		payment_provider,status,amount,currency,region,idempotency_key,request_fingerprint,expires_at)
-		VALUES($1,$2,$3,$4,$5,$6,'CREATED',$7,$8,$9,$10,$11,$12)`, orderID, request.PlatformOrderNo,
+		payment_provider,status,amount,currency,region,idempotency_key,request_fingerprint,expires_at,target_provider_id,target_provisioning_mode)
+		VALUES($1,$2,$3,$4,$5,$6,'CREATED',$7,$8,$9,$10,$11,$12,$13,$14)`, orderID, request.PlatformOrderNo,
 		request.OrganizationID, walletID, request.CreatedBy, request.PaymentProvider, request.Amount.String(),
-		request.Currency, request.Region, request.IdempotencyKey, fingerprint, request.ExpiresAt)
+		request.Currency, request.Region, request.IdempotencyKey, fingerprint, request.ExpiresAt,
+		nullString(request.TargetProviderID), nullString(request.TargetProvisioningMode))
 	if err != nil {
 		return domain.RechargeOrder{}, false, err
 	}
 	if err = writeAuditTx(ctx, tx, request.CreatedBy, "payment.recharge_created", "recharge_order", orderID, map[string]any{
 		"platform_order_no": request.PlatformOrderNo, "organization_id": request.OrganizationID,
 		"payment_provider": request.PaymentProvider, "amount": request.Amount.String(), "currency": request.Currency,
+		"target_provider_id": request.TargetProviderID, "target_provisioning_mode": request.TargetProvisioningMode,
 	}); err != nil {
 		return domain.RechargeOrder{}, false, err
 	}
@@ -551,6 +591,9 @@ func (s *Store) CreditPaidRecharge(ctx context.Context, orderID string) (domain.
 	if err != nil {
 		return domain.RechargeOrder{}, false, err
 	}
+	if err = enqueueProviderAllocationTx(ctx, tx, order); err != nil {
+		return domain.RechargeOrder{}, false, err
+	}
 	if err = writeAuditTx(ctx, tx, nil, "payment.recharge_credited", "recharge_order", order.ID, map[string]any{
 		"wallet_id": order.WalletID, "wallet_transaction_id": transactionID, "ledger_journal_id": journalID,
 		"amount": order.Amount.String(), "currency": order.Currency,
@@ -663,7 +706,8 @@ func (s *Store) CreateRefundOrder(ctx context.Context, request CreateRefundOrder
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.RefundOrder{}, false, err
 	}
-	if order.Status != "CREDITED" || !request.Amount.IsPositive() ||
+	amountPositive, amountErr := request.Amount.IsPositive()
+	if order.Status != "CREDITED" || amountErr != nil || !amountPositive ||
 		request.IdempotencyKey == "" || strings.TrimSpace(request.Reason) == "" {
 		return domain.RefundOrder{}, false, ErrPaymentState
 	}
@@ -738,7 +782,7 @@ func scanRefundOrder(row pgx.Row, refund *domain.RefundOrder) error {
 		&refund.WalletTransactionID, &refund.LedgerJournalID, &refund.CreatedBy, &refund.FailureCode,
 		&refund.CreatedAt, &refund.UpdatedAt, &refund.CompletedAt)
 	if err == nil {
-		refund.Amount = domain.Decimal(amount)
+		refund.Amount, err = parseStoredDecimal(amount, "payment_refund.amount")
 	}
 	return err
 }

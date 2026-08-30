@@ -13,7 +13,7 @@ const (
 // metadata with -ldflags -X. Development builds intentionally retain explicit
 // values instead of reading mutable environment variables at runtime.
 var (
-	Current   = "2.0.0"
+	Current   = "3.0.0-beta.1"
 	Commit    = "unknown"
 	BuildTime = "unknown"
 )

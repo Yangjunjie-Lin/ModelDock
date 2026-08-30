@@ -13,20 +13,25 @@ import (
 
 // #nosec G101 -- SQL projection names API-key columns but contains no credential value.
 const v2APIKeyColumns = `k.id,k.user_id,k.organization_id,k.project_id,COALESCE(k.team_id::text,''),k.name,k.environment,k.key_prefix,k.key_hash,k.status,
-	k.expires_at,k.rate_limit_rpm,k.rate_limit_tpm,k.monthly_token_limit,k.monthly_cost_limit,k.allowed_models,
+	k.expires_at,k.rate_limit_rpm,k.rate_limit_tpm,k.monthly_token_limit,COALESCE(k.monthly_cost_limit_exact,k.monthly_cost_limit)::text,k.allowed_models,
 	 k.created_at,k.updated_at,k.last_used_at,COALESCE(k.frozen_reason,''),k.frozen_at,k.last_leak_detected_at,
 	COALESCE((SELECT max(v.version) FROM api_key_versions v WHERE v.api_key_id=k.id),0)`
 
 func scanV2APIKey(row pgx.Row) (domain.APIKey, error) {
 	var key domain.APIKey
 	var allowed []byte
+	var monthlyCostLimit *string
 	err := row.Scan(&key.ID, &key.UserID, &key.OrganizationID, &key.ProjectID, &key.TeamID, &key.Name, &key.Environment,
 		&key.KeyPrefix, &key.KeyHash, &key.Status, &key.ExpiresAt, &key.RateLimitRPM, &key.RateLimitTPM,
-		&key.MonthlyTokenLimit, &key.MonthlyCostLimit, &allowed, &key.CreatedAt, &key.UpdatedAt,
+		&key.MonthlyTokenLimit, &monthlyCostLimit, &allowed, &key.CreatedAt, &key.UpdatedAt,
 		&key.LastUsedAt, &key.FrozenReason, &key.FrozenAt, &key.LastLeakDetectedAt, &key.CurrentVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return key, ErrNotFound
 	}
+	if err != nil {
+		return key, err
+	}
+	key.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
 	if err != nil {
 		return key, err
 	}
@@ -105,10 +110,10 @@ func (s *Store) CreateProjectAPIKey(ctx context.Context, key domain.APIKey) (dom
 		}
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO api_keys(id,user_id,organization_id,project_id,team_id,name,environment,key_prefix,key_hash,status,
-		expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,allowed_models)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, key.ID, key.UserID, key.OrganizationID,
+		expires_at,rate_limit_rpm,rate_limit_tpm,monthly_token_limit,monthly_cost_limit,monthly_cost_limit_exact,allowed_models)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,round($15::numeric,8),$15,$16)`, key.ID, key.UserID, key.OrganizationID,
 		key.ProjectID, nullString(key.TeamID), key.Name, key.Environment, key.KeyPrefix, key.KeyHash, key.Status, key.ExpiresAt,
-		key.RateLimitRPM, key.RateLimitTPM, key.MonthlyTokenLimit, key.MonthlyCostLimit, jsonBytes(key.AllowedModels))
+		key.RateLimitRPM, key.RateLimitTPM, key.MonthlyTokenLimit, decimalPointer(key.MonthlyCostLimit), jsonBytes(key.AllowedModels))
 	if err != nil {
 		return domain.APIKey{}, err
 	}
@@ -180,6 +185,7 @@ func (s *Store) ListAPIKeyVersions(ctx context.Context, keyID string) ([]domain.
 func (s *Store) AuthenticateAPIKeyVersion(ctx context.Context, hash []byte) (domain.APIKeyAuthentication, error) {
 	var authn domain.APIKeyAuthentication
 	var allowed []byte
+	var monthlyCostLimit *string
 	err := s.pool.QueryRow(ctx, `SELECT `+v2APIKeyColumns+`,
 		v.id,v.api_key_id,v.version,v.key_prefix,v.key_hash,v.status,v.valid_from,v.grace_expires_at,v.expires_at,v.created_at,v.last_used_at
 		FROM api_key_versions v JOIN api_keys k ON k.id=v.api_key_id JOIN users u ON u.id=k.user_id
@@ -192,7 +198,7 @@ func (s *Store) AuthenticateAPIKeyVersion(ctx context.Context, hash []byte) (dom
 		AND (v.status='ACTIVE' OR (v.status='GRACE' AND v.grace_expires_at>now()))`, hash).
 		Scan(&authn.Key.ID, &authn.Key.UserID, &authn.Key.OrganizationID, &authn.Key.ProjectID, &authn.Key.TeamID, &authn.Key.Name,
 			&authn.Key.Environment, &authn.Key.KeyPrefix, &authn.Key.KeyHash, &authn.Key.Status, &authn.Key.ExpiresAt,
-			&authn.Key.RateLimitRPM, &authn.Key.RateLimitTPM, &authn.Key.MonthlyTokenLimit, &authn.Key.MonthlyCostLimit,
+			&authn.Key.RateLimitRPM, &authn.Key.RateLimitTPM, &authn.Key.MonthlyTokenLimit, &monthlyCostLimit,
 			&allowed, &authn.Key.CreatedAt, &authn.Key.UpdatedAt, &authn.Key.LastUsedAt, &authn.Key.FrozenReason, &authn.Key.FrozenAt,
 			&authn.Key.LastLeakDetectedAt, &authn.Key.CurrentVersion,
 			&authn.Version.ID, &authn.Version.APIKeyID, &authn.Version.Version, &authn.Version.KeyPrefix,
@@ -201,6 +207,10 @@ func (s *Store) AuthenticateAPIKeyVersion(ctx context.Context, hash []byte) (dom
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.APIKeyAuthentication{}, ErrNotFound
 	}
+	if err != nil {
+		return domain.APIKeyAuthentication{}, err
+	}
+	authn.Key.MonthlyCostLimit, err = decimalFromStringPointer(monthlyCostLimit)
 	if err != nil {
 		return domain.APIKeyAuthentication{}, err
 	}

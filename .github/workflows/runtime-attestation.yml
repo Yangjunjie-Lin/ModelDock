@@ -1,0 +1,123 @@
+name: ModelDock Runtime Attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full protected candidate Commit SHA
+        required: true
+        type: string
+      release_profile:
+        description: Target release profile
+        required: true
+        type: choice
+        options: [COMMERCIAL_BETA, MARKETPLACE_PRODUCTION]
+      environment_id:
+        description: Non-secret target Environment ID
+        required: true
+        type: string
+      server_image_digest:
+        description: Immutable Server Digest
+        required: true
+        type: string
+      admin_image_digest:
+        description: Immutable Admin Digest
+        required: true
+        type: string
+      console_image_digest:
+        description: Immutable Console Digest
+        required: true
+        type: string
+      customer_region:
+        description: ISO alpha-2 customer region
+        required: true
+        type: string
+      data_processing_region:
+        description: ISO alpha-2 data-processing region
+        required: true
+        type: string
+      smtp_proof_run_id:
+        description: ModelDock run containing smtp-delivery-proof-COMMIT
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: runtime-attestation-${{ inputs.release_profile }}-${{ inputs.environment_id }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    name: Generate signed target Runtime Attestation
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.release_profile == 'COMMERCIAL_BETA' && 'commercial-beta' || 'marketplace-production' }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - name: Validate exact clean identity
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit_sha }}
+        run: |
+          test "$EXPECTED_COMMIT" = "$GITHUB_SHA"
+          test "$EXPECTED_COMMIT" = "$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)"
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.3
+      - name: Download target SMTP delivery proof
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: smtp-delivery-proof-${{ inputs.commit_sha }}
+          path: .cache/smtp-proof
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.smtp_proof_run_id }}
+      - name: Materialize external Ed25519 key only in runner temp
+        shell: pwsh
+        env:
+          PRIVATE_KEY_PEM: ${{ secrets.MODELDOCK_RUNTIME_ED25519_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_KEY_PEM)) { throw 'Runtime signing key is not configured.' }
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'modeldock-runtime-ed25519.pem'),$env:PRIVATE_KEY_PEM)
+      - name: Query target environment and sign Runtime Attestation V2
+        shell: pwsh
+        env:
+          DATABASE_URL: ${{ secrets.MODELDOCK_RUNTIME_DATABASE_URL }}
+          MODELDOCK_ATTESTATION_ID_SALT: ${{ secrets.MODELDOCK_ATTESTATION_ID_SALT }}
+          MODELDOCK_RUNTIME_PAYMENT_ADAPTER: ${{ vars.MODELDOCK_RUNTIME_PAYMENT_ADAPTER }}
+          MODELDOCK_RUNTIME_PAYMENT_PRODUCTION_READY: ${{ vars.MODELDOCK_RUNTIME_PAYMENT_PRODUCTION_READY }}
+          MODELDOCK_RUNTIME_PAYOUT_ADAPTER: ${{ vars.MODELDOCK_RUNTIME_PAYOUT_ADAPTER }}
+          MODELDOCK_RUNTIME_PAYOUT_PRODUCTION_READY: ${{ vars.MODELDOCK_RUNTIME_PAYOUT_PRODUCTION_READY }}
+          ATTESTATION_ISSUER: ${{ vars.MODELDOCK_RUNTIME_ATTESTATION_ISSUER }}
+          CERTIFICATE_IDENTITY: ${{ vars.MODELDOCK_RUNTIME_CERTIFICATE_IDENTITY }}
+          CERTIFICATE_ISSUER: ${{ vars.MODELDOCK_RUNTIME_CERTIFICATE_ISSUER }}
+          RELEASE_PROFILE: ${{ inputs.release_profile }}
+          ENVIRONMENT_ID: ${{ inputs.environment_id }}
+          SERVER_DIGEST: ${{ inputs.server_image_digest }}
+          ADMIN_DIGEST: ${{ inputs.admin_image_digest }}
+          CONSOLE_DIGEST: ${{ inputs.console_image_digest }}
+          CUSTOMER_REGION: ${{ inputs.customer_region }}
+          DATA_PROCESSING_REGION: ${{ inputs.data_processing_region }}
+        run: |
+          New-Item -ItemType Directory -Force .cache/runtime | Out-Null
+          ./scripts/generate-runtime-attestation.ps1 -Profile $env:RELEASE_PROFILE -EnvironmentId $env:ENVIRONMENT_ID -ServerImageDigest $env:SERVER_DIGEST -AdminImageDigest $env:ADMIN_DIGEST -ConsoleImageDigest $env:CONSOLE_DIGEST -CustomerRegion $env:CUSTOMER_REGION -DataProcessingRegion $env:DATA_PROCESSING_REGION -SMTPDeliveryProofPath .cache/smtp-proof/smtp-delivery-proof.json -Ed25519PrivateKeyPath (Join-Path $env:RUNNER_TEMP 'modeldock-runtime-ed25519.pem') -Issuer $env:ATTESTATION_ISSUER -CertificateIdentity $env:CERTIFICATE_IDENTITY -CertificateIssuer $env:CERTIFICATE_ISSUER -OutputPath .cache/runtime/runtime-attestation.json
+      - name: Remove signing key
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'modeldock-runtime-ed25519.pem') -Force -ErrorAction SilentlyContinue
+      - name: Upload signed Runtime Attestation Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-attestation-${{ inputs.commit_sha }}-${{ inputs.release_profile }}
+          path: .cache/runtime/runtime-attestation.json
+          if-no-files-found: error
+          retention-days: 30

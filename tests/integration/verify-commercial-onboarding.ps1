@@ -2,7 +2,8 @@
 param(
     [switch]$ConfirmIsolatedTestDatabase,
     [ValidateRange(60, 240)]
-    [int]$StartupTimeoutSeconds = 150
+    [int]$StartupTimeoutSeconds = 150,
+    [string]$ExistingServerImage = ""
 )
 
 Set-StrictMode -Version 3.0
@@ -12,6 +13,10 @@ if (-not $ConfirmIsolatedTestDatabase) {
     throw "Pass -ConfirmIsolatedTestDatabase only for a disposable local Docker run."
 }
 
+$curl = Get-Command -Name @("curl.exe", "curl") -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $curl) { throw "A curl executable is required for the database outage readiness probe." }
+$nullDevice = if ($IsWindows) { "NUL" } else { "/dev/null" }
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $runID = [Guid]::NewGuid().ToString("N").Substring(0, 16)
 $network = "modeldock-onboarding-$runID"
@@ -20,7 +25,8 @@ $redis = "modeldock-onboarding-redis-$runID"
 $mock = "modeldock-onboarding-mock-$runID"
 $server = "modeldock-onboarding-app-$runID"
 $failoverServer = "modeldock-onboarding-app2-$runID"
-$serverImage = "modeldock/onboarding-integration:$runID"
+$serverImage = if ($ExistingServerImage) { $ExistingServerImage } else { "modeldock/onboarding-integration:$runID" }
+$ownsServerImage = -not [bool]$ExistingServerImage
 $mockImage = "modeldock/onboarding-mock:$runID"
 $sandboxSecret = "synthetic-sandbox-secret-32-bytes-$runID"
 $mockAPIKey = "synthetic-mock-provider-key"
@@ -58,6 +64,18 @@ function Wait-ContainerCommand {
         $ErrorActionPreference = $savedPreference
     }
     throw "$Operation did not become ready before the timeout."
+}
+
+function Wait-RedisCounterCleared {
+    param([string]$Container, [string]$Key, [string]$Operation)
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $value = [string]::Join("", @(Invoke-Docker -Arguments @("exec", $Container, "redis-cli", "--raw", "GET", $Key) -Operation $Operation)).Trim()
+        $counter = 0L
+        if ([string]::IsNullOrWhiteSpace($value) -or ([int64]::TryParse($value, [ref]$counter) -and $counter -le 0)) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "$Operation did not reach zero before the timeout."
 }
 
 function Wait-PostgresFinalStartup {
@@ -259,7 +277,11 @@ function Get-HMACSHA256Hex {
 }
 
 try {
-    [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/docker/Dockerfile.relaydock"), "-t", $serverImage, $repoRoot) -Operation "Building the onboarding server image")
+    if ($ownsServerImage) {
+        [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/docker/Dockerfile.relaydock"), "-t", $serverImage, $repoRoot) -Operation "Building the onboarding server image")
+    } else {
+        [void](Invoke-Docker -Arguments @("image", "inspect", $serverImage) -Operation "Inspecting the prebuilt onboarding server image")
+    }
     [void](Invoke-Docker -Arguments @("build", "--quiet", "-f", (Join-Path $repoRoot "deploy/mock-openai/Dockerfile"), "-t", $mockImage, $repoRoot) -Operation "Building the deterministic Provider image")
     [void](Invoke-Docker -Arguments @("network", "create", $network) -Operation "Creating the isolated network")
 
@@ -389,6 +411,22 @@ try {
         $afterValue = if ($null -eq $afterProperty) { "<omitted>" } else { ConvertTo-Json $afterProperty.Value -Compress -Depth 10 }
         Assert-True ($afterValue -eq $beforeValue) "Region confirmation changed organization policy $field."
     }
+
+    # Migration 27 intentionally defaults new Workspaces to deny Provider data
+    # collection. This end-to-end fixture declares non-zero synthetic retention,
+    # so opt in explicitly instead of weakening the production privacy default or
+    # falsely labelling the mock Provider as ZDR.
+    $workspaceSettings = Invoke-SessionJSON -Method PUT -URL "$controlURL/api/console/projects/$projectID/workspace-settings" -Session $consoleSession -CSRF $consoleCSRF -Body @{
+        default_provider_policy = @{}
+        privacy_policy = @{ data_collection = "allow"; zdr = $false }
+        observability_config = @{}
+        include_byok_in_budgets = $false
+        free_daily_request_limit = 0
+        free_daily_token_limit = 0
+        allowed_processing_regions = @()
+    }
+    Assert-Status $workspaceSettings 200 "Opting the isolated Workspace into synthetic Provider data collection"
+    Assert-True ([string]$workspaceSettings.JSON.privacy_policy.data_collection -eq "allow") "The isolated Workspace privacy policy was not persisted."
 
     $adminSession = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
     $adminLogin = Invoke-JSON -Method POST -URL "$controlURL/api/admin/auth/login" -Session $adminSession -Body @{ email = "admin@example.invalid"; password = "synthetic-admin-password-2026" }
@@ -719,6 +757,7 @@ SELECT concat_ws('|',
     $abortEvidence = Invoke-Psql -SQL "SELECT operation.status||'|'||operation.settled_amount::text||'|'||operation.released_amount::text||'|'||COALESCE(log.error_code,'') FROM funding_operation operation LEFT JOIN request_logs log ON log.request_id=operation.request_id WHERE operation.idempotency_key='client-abort-$runID';"
     Assert-True ($abortEvidence.EndsWith("|client_disconnected")) "The gateway did not classify the cancelled SSE request correctly: $abortEvidence"
     Assert-True ((Invoke-Psql -SQL "SELECT count(*) FROM wallets WHERE organization_id='$organizationID' AND reserved_balance=0;") -eq "1") "Client interruption left wallet funds reserved."
+    Wait-RedisCounterCleared -Container $redis -Key "rdk:subscription:active:$organizationID" -Operation "client-disconnect concurrency release"
 
     $gatewayJob = {
         param($URL, $Key, $Model, $Idempotency, $Stream)
@@ -823,7 +862,7 @@ SELECT concat_ws('|',
     $databaseStatus = ""
     try {
         [void](Invoke-Docker -Arguments @("pause", $postgres) -Operation "Pausing isolated PostgreSQL")
-        $databaseStatus = [string]::Join("", @(& curl.exe --silent --output NUL --write-out "%{http_code}" --max-time 4 "$controlURL/readyz" 2>$null))
+        $databaseStatus = [string]::Join("", @(& $curl.Source --silent --output $nullDevice --write-out "%{http_code}" --max-time 4 "$controlURL/readyz" 2>$null))
     } finally {
         [void](Invoke-Docker -Arguments @("unpause", $postgres) -Operation "Unpausing isolated PostgreSQL")
         Wait-ContainerCommand -Container $postgres -Command @("pg_isready", "--username", "relaydock", "--dbname", "relaydock") -Operation "PostgreSQL recovery"
@@ -880,7 +919,7 @@ SELECT concat_ws('|',
     [void](Invoke-Docker -Arguments @("exec", $postgres, "pg_restore", "--username", "postgres", "--dbname", $restoreDatabase, "--no-owner", $backupPath) -Operation "Restoring the isolated PostgreSQL backup")
     $restoreEvidence = [string]::Join("`n", (Invoke-Docker -Arguments @("exec", $postgres, "psql", "--no-psqlrc", "--tuples-only", "--no-align", "--username", "postgres", "--dbname", $restoreDatabase, "--command", "SELECT concat_ws('|',(SELECT max(version) FROM schema_migrations),(SELECT count(*) FROM funding_operation),(SELECT count(*) FROM ledger_journal WHERE status='POSTED'),(SELECT count(*) FROM audit_logs));") -Operation "Validating the restored database")).Trim()
     $liveEvidence = Invoke-Psql -SQL "SELECT concat_ws('|',(SELECT max(version) FROM schema_migrations),(SELECT count(*) FROM funding_operation),(SELECT count(*) FROM ledger_journal WHERE status='POSTED'),(SELECT count(*) FROM audit_logs));"
-    Assert-True ($restoreEvidence -eq $liveEvidence -and $restoreEvidence.StartsWith("19|")) "The restored backup did not preserve schema, funding, posted ledger, and audit evidence counts."
+    Assert-True ($restoreEvidence -eq $liveEvidence -and $restoreEvidence.StartsWith("27|")) "The restored backup did not preserve schema, funding, posted ledger, and audit evidence counts."
 
     $pendingRecharge = Invoke-SessionJSON -Method POST -URL "$controlURL/api/console/organizations/$organizationID/recharge-orders" -Session $consoleSession -CSRF $consoleCSRF -Body @{
         amount = "1.000000000000"; currency = "USD"; region = "CN"; payment_provider = "sandbox"; idempotency_key = "worker-recharge-$runID"
@@ -957,6 +996,8 @@ SELECT concat_ws('|',
 
     $migrationVersion = Invoke-Psql -SQL "SELECT name FROM schema_migrations WHERE version=19;"
     Assert-True ($migrationVersion -eq "public_commercial_onboarding") "Migration 19 is absent from the isolated ledger."
+    $latestMigrationVersion = Invoke-Psql -SQL "SELECT max(version) FROM schema_migrations;"
+    Assert-True ($latestMigrationVersion -eq "27") "The isolated commercial onboarding ledger is not current through migration 27."
     $evidenceTableCount = Invoke-Psql -SQL "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('public_commercial_terms','public_payment_fee_schedule','commercial_funnel_events','commercial_funnel_api_call_counter');"
     Assert-True ([int]$evidenceTableCount -eq 4) "The commercial onboarding evidence schema is incomplete."
     $auditCount = Invoke-Psql -SQL "SELECT count(*) FROM audit_logs WHERE action IN ('commercial.public_terms.publish','commercial.payment_fee.publish');"
@@ -983,7 +1024,7 @@ SELECT concat_ws('|',
     Write-Host "PASS public configuration, legal-review disclosure, and pre-purchase fail-closed pricing"
     Write-Host "PASS exact subscription, Token, payment fee, bonus, tax, refund, Provider, and region disclosure"
     Write-Host "PASS registration, email verification, explicit plan, signed recharge, rdk_test_* key, first and second /v1 calls"
-    Write-Host "PASS server-derived onboarding, exact usage/charge visibility, funnel idempotency, privacy, audit, and migration 19"
+    Write-Host "PASS server-derived onboarding, exact usage/charge visibility, funnel idempotency, privacy, audit, and migrations 19-27"
     Write-Host "PASS ordinary/SSE/fallback/client-abort flows, exact reserve-settle-release, concurrent wallet requests, and request replay"
     Write-Host "PASS Provider timeout/429/500, Redis/database interruption, in-flight price version switch, and zero-difference four-way reconciliation"
     Write-Host "PASS sandbox refund replay, PostgreSQL backup restore, application failover, ledger/payment worker recovery, and monthly statement"
@@ -1003,5 +1044,6 @@ SELECT concat_ws('|',
     if ($network -match "^modeldock-onboarding-$runID$") {
         & docker network rm $network *> $null
     }
-    & docker image rm $serverImage $mockImage *> $null
+    if ($ownsServerImage) { & docker image rm $serverImage *> $null }
+    & docker image rm $mockImage *> $null
 }

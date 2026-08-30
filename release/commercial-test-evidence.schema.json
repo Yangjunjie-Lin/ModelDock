@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Yangjunjie-Lin/ModelDock/release/commercial-test-evidence.schema.json",
+  "title": "ModelDock exact-commit commercial test evidence V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "evidence_level", "evidence_origin", "repository", "commit_sha", "tree_sha",
+    "branch_or_tag", "version", "migration_version", "workflow_run_id", "workflow_run_attempt",
+    "server_image_digest", "admin_image_digest", "console_image_digest", "started_at", "completed_at",
+    "suite_results", "status", "gateway_tested_server_digest", "build_digests", "security_scans",
+    "sboms", "provenance", "candidate_tags", "candidate_tag_digests"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0.0" },
+    "evidence_level": { "enum": ["DEVELOPMENT", "ENGINEERING_CI", "RELEASE_CANDIDATE"] },
+    "evidence_origin": { "enum": ["LOCAL_DEVELOPMENT", "GITHUB_ACTIONS_ARTIFACT"] },
+    "repository": { "const": "Yangjunjie-Lin/ModelDock" },
+    "commit_sha": { "$ref": "#/$defs/commit" },
+    "tree_sha": { "$ref": "#/$defs/commit" },
+    "branch_or_tag": { "type": "string", "pattern": "^(branch|tag)/[^\\s]{1,248}$" },
+    "version": { "$ref": "#/$defs/semver" },
+    "migration_version": { "$ref": "#/$defs/migration" },
+    "workflow_run_id": { "type": "string", "pattern": "^(LOCAL|[1-9][0-9]{0,19})$" },
+    "workflow_run_attempt": { "type": "string", "pattern": "^(LOCAL|[1-9][0-9]{0,9})$" },
+    "server_image_digest": { "$ref": "#/$defs/digest" },
+    "admin_image_digest": { "$ref": "#/$defs/digest" },
+    "console_image_digest": { "$ref": "#/$defs/digest" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "suite_results": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" },
+          "status": { "enum": ["PASS", "FAIL", "NOT_RUN"] }
+        }
+      }
+    },
+    "status": { "enum": ["PASS", "FAIL"] },
+    "gateway_tested_server_digest": { "$ref": "#/$defs/digest" },
+    "build_digests": { "$ref": "#/$defs/digests" },
+    "security_scans": { "$ref": "#/$defs/componentEvidence" },
+    "sboms": { "$ref": "#/$defs/componentEvidence" },
+    "provenance": { "$ref": "#/$defs/componentEvidence" },
+    "candidate_tags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "admin", "console"],
+      "properties": {
+        "server": { "$ref": "#/$defs/tag" },
+        "admin": { "$ref": "#/$defs/tag" },
+        "console": { "$ref": "#/$defs/tag" }
+      }
+    },
+    "candidate_tag_digests": { "$ref": "#/$defs/digests" }
+  },
+  "$defs": {
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "migration": { "type": "string", "pattern": "^[0-9]{4}_[a-z0-9_]+$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^(candidate-[1-9][0-9]{0,19}-[1-9][0-9]{0,9}|local-[0-9a-f]{12})$"
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "admin", "console"],
+      "properties": {
+        "server": { "$ref": "#/$defs/digest" },
+        "admin": { "$ref": "#/$defs/digest" },
+        "console": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "componentEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "admin", "console"],
+      "properties": {
+        "server": { "$ref": "#/$defs/check" },
+        "admin": { "$ref": "#/$defs/check" },
+        "console": { "$ref": "#/$defs/check" }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "image_digest", "commit"],
+      "properties": {
+        "status": { "enum": ["PASS", "NOT_RUN"] },
+        "image_digest": { "$ref": "#/$defs/digest" },
+        "commit": { "$ref": "#/$defs/commit" }
+      }
+    }
+  }
+}

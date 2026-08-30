@@ -23,8 +23,8 @@ func (s *Store) InvestigateRequest(ctx context.Context, requestID string) (map[s
 	err := s.pool.QueryRow(ctx, `SELECT r.request_id,COALESCE(r.trace_id,''),COALESCE(r.route_id::text,''),COALESCE(route.alias,''),
 		COALESCE(r.provider_id::text,''),COALESCE(provider.slug,''),COALESCE(r.credential_id::text,''),
 		COALESCE(r.requested_model,''),COALESCE(r.resolved_model,''),r.endpoint,r.status_code,r.streaming,
-		r.input_tokens,r.cached_input_tokens,r.output_tokens,r.total_tokens,r.estimated_cost::text,r.reference_cost::text,
-		r.savings_amount::text,r.latency_ms,r.ttft_ms,COALESCE(r.upstream_request_id,''),COALESCE(r.error_code,''),
+		r.input_tokens,r.cached_input_tokens,r.output_tokens,r.total_tokens,r.estimated_cost_exact::text,r.reference_cost_exact::text,
+		r.savings_amount_exact::text,r.latency_ms,r.ttft_ms,COALESCE(r.upstream_request_id,''),COALESCE(r.error_code,''),
 		r.scheduler_reason,COALESCE(r.funding_operation_id::text,''),r.created_at
 		FROM request_logs r LEFT JOIN model_routes route ON route.id=r.route_id
 		LEFT JOIN providers provider ON provider.id=r.provider_id WHERE r.request_id=$1`, requestID).Scan(

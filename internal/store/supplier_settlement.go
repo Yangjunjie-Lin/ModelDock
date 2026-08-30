@@ -69,7 +69,10 @@ func scanSupplierPolicy(row pgx.Row) (domain.SupplierSettlementPolicy, error) {
 		&value.RiskReserveBPS, &value.ReserveHoldDays, &value.PayoutAdapter, &value.PayoutRegion,
 		&value.TaxVerificationRequired, &value.InvoiceRequired, &value.NextSettlementAt, &lastPeriodEnd,
 		&value.CreatedAt, &value.UpdatedAt)
-	value.MinimumPayout = domain.Decimal(minimum)
+	if err != nil {
+		return value, err
+	}
+	value.MinimumPayout, err = parseStoredDecimal(minimum, "supplier_settlement_policy.minimum_payout")
 	value.LastPeriodEnd = lastPeriodEnd
 	return value, err
 }
@@ -86,9 +89,10 @@ func (s *Store) UpdateSupplierSettlementPolicy(ctx context.Context, value domain
 	value.SettlementCycle = strings.ToUpper(strings.TrimSpace(value.SettlementCycle))
 	value.PayoutAdapter = strings.ToLower(strings.TrimSpace(value.PayoutAdapter))
 	value.PayoutRegion = strings.ToUpper(strings.TrimSpace(value.PayoutRegion))
+	minimumNegative, minimumErr := value.MinimumPayout.IsNegative()
 	if value.SettlementCycle != "DAILY" && value.SettlementCycle != "WEEKLY" && value.SettlementCycle != "MONTHLY" ||
 		value.CommissionBPS < 0 || value.CommissionBPS > 10000 || value.RiskReserveBPS < 0 || value.RiskReserveBPS > 10000 ||
-		value.ReserveHoldDays < 0 || value.ReserveHoldDays > 3660 || value.MinimumPayout.IsNegative() ||
+		value.ReserveHoldDays < 0 || value.ReserveHoldDays > 3660 || minimumErr != nil || minimumNegative ||
 		value.PayoutAdapter == "" || value.Enabled && (len(value.PayoutRegion) != 2 || value.PayoutAdapter == "disabled") {
 		return domain.SupplierSettlementPolicy{}, ErrSupplierSettlementState
 	}
@@ -214,7 +218,11 @@ func (s *Store) AccrueEligibleSupplierUsage(ctx context.Context, limit int) (int
 	rows.Close()
 	created := 0
 	for _, value := range items {
-		split, splitErr := settlementcalc.Split(domain.Decimal(value.gross), value.commissionBPS, value.reserveBPS)
+		gross, parseErr := parseStoredDecimal(value.gross, "usage_price_snapshot.provider_cost_amount")
+		if parseErr != nil {
+			return 0, parseErr
+		}
+		split, splitErr := settlementcalc.Split(gross, value.commissionBPS, value.reserveBPS)
 		if splitErr != nil {
 			return 0, splitErr
 		}
@@ -234,7 +242,11 @@ func (s *Store) AccrueEligibleSupplierUsage(ctx context.Context, limit int) (int
 			continue
 		}
 		created++
-		if split.Payable.IsPositive() {
+		payablePositive, decimalErr := split.Payable.IsPositive()
+		if decimalErr != nil {
+			return 0, decimalErr
+		}
+		if payablePositive {
 			_, err = tx.Exec(ctx, `INSERT INTO supplier_payable_entry(id,idempotency_key,supplier_id,provider_id,accrual_id,
 				entry_type,entry_side,amount,currency,available_at,reference,metadata)
 				VALUES($1,$2,$3,$4,$5,'USAGE_ACCRUAL','CREDIT',$6,$7,$8,$9,$10)`, id.UUID(), "usage-accrual:"+accrualID,
@@ -312,7 +324,22 @@ func (s *Store) SupplierPayableSummary(ctx context.Context, supplierID string) (
 		if err = rows.Scan(&value.Currency, &accrued, &reserve, &refund, &paid, &available, &value.OpenAppeals, &value.UnmatchedAccruals); err != nil {
 			return nil, err
 		}
-		value.Accrued, value.ReserveHeld, value.RefundShare, value.Paid, value.Available = domain.Decimal(accrued), domain.Decimal(reserve), domain.Decimal(refund), domain.Decimal(paid), domain.Decimal(available)
+		value.Accrued, err = parseStoredDecimal(accrued, "supplier_payable_summary.accrued")
+		if err == nil {
+			value.ReserveHeld, err = parseStoredDecimal(reserve, "supplier_payable_summary.reserve_held")
+		}
+		if err == nil {
+			value.RefundShare, err = parseStoredDecimal(refund, "supplier_payable_summary.refund_share")
+		}
+		if err == nil {
+			value.Paid, err = parseStoredDecimal(paid, "supplier_payable_summary.paid")
+		}
+		if err == nil {
+			value.Available, err = parseStoredDecimal(available, "supplier_payable_summary.available")
+		}
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, value)
 	}
 	return out, rows.Err()
@@ -341,7 +368,19 @@ func (s *Store) ListSupplierPayableAccruals(ctx context.Context, supplierID stri
 			&value.ReserveReleasableAt, &value.StatementMatched, &value.OpenAppeal, &value.CreatedAt); err != nil {
 			return nil, err
 		}
-		value.GrossAmount, value.CommissionAmount, value.ReserveAmount, value.InitialPayableAmount = domain.Decimal(gross), domain.Decimal(commission), domain.Decimal(reserve), domain.Decimal(payable)
+		value.GrossAmount, err = parseStoredDecimal(gross, "supplier_payable_accrual.gross_amount")
+		if err == nil {
+			value.CommissionAmount, err = parseStoredDecimal(commission, "supplier_payable_accrual.commission_amount")
+		}
+		if err == nil {
+			value.ReserveAmount, err = parseStoredDecimal(reserve, "supplier_payable_accrual.reserve_amount")
+		}
+		if err == nil {
+			value.InitialPayableAmount, err = parseStoredDecimal(payable, "supplier_payable_accrual.initial_payable_amount")
+		}
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, value)
 	}
 	return out, rows.Err()
@@ -365,8 +404,22 @@ func scanSupplierBatch(row pgx.Row) (domain.SupplierSettlementBatch, error) {
 		&value.PayoutRegion, &value.ProviderPayoutReference, &value.RetryCount, &value.MaxAttempts, &value.NextRetryAt,
 		&value.LastFailureCode, &value.ApprovedBy, &value.ApprovalReason, &value.ApprovedAt, &value.PaidAt,
 		&value.CreatedAt, &value.UpdatedAt)
-	value.GrossUsageAmount, value.CommissionAmount, value.ReserveHeldAmount = domain.Decimal(gross), domain.Decimal(commission), domain.Decimal(reserve)
-	value.AdjustmentAmount, value.PayoutAmount = domain.Decimal(adjustment), domain.Decimal(payout)
+	if err != nil {
+		return value, err
+	}
+	value.GrossUsageAmount, err = parseStoredDecimal(gross, "supplier_settlement_batch.gross_usage_amount")
+	if err == nil {
+		value.CommissionAmount, err = parseStoredDecimal(commission, "supplier_settlement_batch.commission_amount")
+	}
+	if err == nil {
+		value.ReserveHeldAmount, err = parseStoredDecimal(reserve, "supplier_settlement_batch.reserve_held_amount")
+	}
+	if err == nil {
+		value.AdjustmentAmount, err = parseStoredDecimal(adjustment, "supplier_settlement_batch.adjustment_amount")
+	}
+	if err == nil {
+		value.PayoutAmount, err = parseStoredDecimal(payout, "supplier_settlement_batch.payout_amount")
+	}
 	return value, err
 }
 
@@ -411,7 +464,10 @@ func (s *Store) SupplierSettlementBatchByID(ctx context.Context, batchID string,
 		if err = rows.Scan(&item.ID, &item.PayableEntryID, &item.AccrualID, &item.EntrySide, &amount, &item.RequestID, &item.EntryType, &item.CreatedAt); err != nil {
 			return value, err
 		}
-		item.Amount = domain.Decimal(amount)
+		item.Amount, err = parseStoredDecimal(amount, "supplier_settlement_batch_item.amount")
+		if err != nil {
+			return value, err
+		}
 		value.Items = append(value.Items, item)
 	}
 	return value, rows.Err()
@@ -437,10 +493,13 @@ func (s *Store) CreateSupplierSettlementBatch(ctx context.Context, supplierID, p
 		&policy.SettlementCycle, &minimum, &policy.CommissionBPS, &policy.RiskReserveBPS, &policy.ReserveHoldDays,
 		&policy.PayoutAdapter, &policy.PayoutRegion, &policy.TaxVerificationRequired, &policy.InvoiceRequired,
 		&policy.NextSettlementAt, &policy.LastPeriodEnd, &policy.CreatedAt, &policy.UpdatedAt)
-	policy.MinimumPayout = domain.Decimal(minimum)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.SupplierSettlementBatch{}, false, ErrSupplierPayoutBlocked
 	}
+	if err != nil {
+		return domain.SupplierSettlementBatch{}, false, err
+	}
+	policy.MinimumPayout, err = parseStoredDecimal(minimum, "supplier_settlement_policy.minimum_payout")
 	if err != nil {
 		return domain.SupplierSettlementBatch{}, false, err
 	}
@@ -663,7 +722,19 @@ func (s *Store) ApproveSupplierSettlement(ctx context.Context, batchID, provider
 	if err != nil {
 		return domain.SupplierSettlementBatch{}, err
 	}
-	if status != "PENDING_APPROVAL" && status != "DISPUTED" && status != "FAILED" || createdBy == actor || domain.Decimal(payout).IsNegative() || !domain.Decimal(payout).IsPositive() {
+	payoutDecimal, decimalErr := domain.ParseDecimal(payout)
+	if decimalErr != nil {
+		return domain.SupplierSettlementBatch{}, decimalErr
+	}
+	payoutNegative, decimalErr := payoutDecimal.IsNegative()
+	if decimalErr != nil {
+		return domain.SupplierSettlementBatch{}, decimalErr
+	}
+	payoutPositive, decimalErr := payoutDecimal.IsPositive()
+	if decimalErr != nil {
+		return domain.SupplierSettlementBatch{}, decimalErr
+	}
+	if status != "PENDING_APPROVAL" && status != "DISPUTED" && status != "FAILED" || createdBy == actor || payoutNegative || !payoutPositive {
 		return domain.SupplierSettlementBatch{}, ErrSupplierSettlementState
 	}
 	minRat, _ := new(big.Rat).SetString(minimum)
@@ -818,7 +889,10 @@ func (s *Store) ClaimSupplierPayout(ctx context.Context, now time.Time) (Supplie
 	if err != nil {
 		return SupplierPayoutJob{}, err
 	}
-	job.Batch.PayoutAmount = domain.Decimal(amount)
+	job.Batch.PayoutAmount, err = parseStoredDecimal(amount, "supplier_settlement_batch.payout_amount")
+	if err != nil {
+		return SupplierPayoutJob{}, err
+	}
 	job.AttemptID = id.UUID()
 	job.AttemptNo = job.Batch.RetryCount + 1
 	_, err = tx.Exec(ctx, `UPDATE supplier_settlement_batch SET status='PROCESSING',retry_count=retry_count+1,next_retry_at=NULL,updated_at=now() WHERE id=$1`, job.Batch.ID)
@@ -1061,7 +1135,12 @@ func (s *Store) RetrySupplierSettlement(ctx context.Context, batchID, reason, ac
 }
 
 func (s *Store) CreateSupplierRefundShare(ctx context.Context, accrualID, amount, reference, idempotencyKey, actor string) (domain.SupplierPayableEntry, bool, error) {
-	if !domain.Decimal(amount).IsPositive() || strings.TrimSpace(reference) == "" || strings.TrimSpace(idempotencyKey) == "" {
+	refundAmount, decimalErr := domain.ParseDecimal(amount)
+	amountPositive := false
+	if decimalErr == nil {
+		amountPositive, decimalErr = refundAmount.IsPositive()
+	}
+	if decimalErr != nil || !amountPositive || strings.TrimSpace(reference) == "" || strings.TrimSpace(idempotencyKey) == "" {
 		return domain.SupplierPayableEntry{}, false, ErrSupplierSettlementState
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -1083,7 +1162,11 @@ func (s *Store) CreateSupplierRefundShare(ctx context.Context, accrualID, amount
 	var existingID, existingAmount string
 	err = tx.QueryRow(ctx, `SELECT id,amount::text FROM supplier_payable_entry WHERE idempotency_key=$1 FOR SHARE`, idempotencyKey).Scan(&existingID, &existingAmount)
 	if err == nil {
-		if existingAmount != domain.Decimal(amount).String() {
+		existing, parseErr := parseStoredDecimal(existingAmount, "supplier_payable_entry.amount")
+		if parseErr != nil {
+			return domain.SupplierPayableEntry{}, false, parseErr
+		}
+		if existing.String() != refundAmount.String() {
 			return domain.SupplierPayableEntry{}, false, ErrIdempotencyConflict
 		}
 		if err = tx.Commit(ctx); err != nil {
@@ -1151,7 +1234,9 @@ func (s *Store) SupplierPayableEntryByID(ctx context.Context, entryID string) (d
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrNotFound
 	}
-	v.Amount = domain.Decimal(amount)
+	if err == nil {
+		v.Amount, err = parseStoredDecimal(amount, "supplier_payable_entry.amount")
+	}
 	_ = json.Unmarshal(metadata, &v.Metadata)
 	return v, err
 }
@@ -1241,7 +1326,10 @@ func (s *Store) SupplierBillByID(ctx context.Context, billID string, includeLine
 	if err != nil {
 		return v, err
 	}
-	v.TotalAmount = domain.Decimal(amount)
+	v.TotalAmount, err = parseStoredDecimal(amount, "supplier_bill.total_amount")
+	if err != nil {
+		return v, err
+	}
 	if !includeLines {
 		return v, nil
 	}
@@ -1257,7 +1345,10 @@ func (s *Store) SupplierBillByID(ctx context.Context, billID string, includeLine
 		if err = rows.Scan(&line.ID, &line.ExternalLineID, &line.RequestID, &line.UpstreamRequestID, &line.UsageDate, &line.InputTokens, &line.CachedInputTokens, &line.OutputTokens, &a, &line.Currency, &meta); err != nil {
 			return v, err
 		}
-		line.Amount = domain.Decimal(a)
+		line.Amount, err = parseStoredDecimal(a, "supplier_bill_line.amount")
+		if err != nil {
+			return v, err
+		}
 		_ = json.Unmarshal(meta, &line.Metadata)
 		v.Lines = append(v.Lines, line)
 	}

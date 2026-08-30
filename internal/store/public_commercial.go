@@ -18,7 +18,7 @@ const (
 	FunnelHomepageVisited   = "HOMEPAGE_VISITED"
 	FunnelRegistered        = "REGISTERED"
 	FunnelEmailVerified     = "EMAIL_VERIFIED"
-	FunnelAPIKeyCreated     = "API_KEY_CREATED"
+	FunnelAPIKeyCreated     = "API_KEY_CREATED" // #nosec G101 -- analytics event name, not a credential
 	FunnelFirstRecharge     = "FIRST_RECHARGE"
 	FunnelFirstAPICall      = "FIRST_API_CALL"
 	FunnelSecondAPICall     = "SECOND_API_CALL"

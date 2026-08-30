@@ -151,6 +151,50 @@ export function addDecimalStrings(values: unknown[]) {
   return `${negative ? '-' : ''}${integer}${fraction ? `.${fraction}` : ''}`
 }
 
+export function maximumDecimalString(values: unknown[]) {
+  return values.reduce<string>((maximum, value) => {
+    const candidate = String(value ?? '0').trim()
+    return compareNonNegativeDecimals(candidate, maximum) > 0 ? candidate : maximum
+  }, '0')
+}
+
+export function decimalRatioPercent(value: unknown, limit: unknown): number | null {
+  const parse = (input: unknown) => {
+    const match = String(input ?? '0').trim().match(/^(\d+)(?:\.(\d+))?$/)
+    return match ? { integer: match[1], fraction: match[2] || '' } : null
+  }
+  const left = parse(value), right = parse(limit)
+  if (!left || !right) return null
+  const scale = Math.max(left.fraction.length, right.fraction.length)
+  const numerator = BigInt(`${left.integer}${left.fraction.padEnd(scale, '0')}`)
+  const denominator = BigInt(`${right.integer}${right.fraction.padEnd(scale, '0')}`)
+  if (denominator <= 0n) return null
+  const tenths = numerator * 1000n / denominator
+  return Math.min(100, Number(tenths) / 10)
+}
+
+export function percentStringToRatio(value: string) {
+  const match = value.trim().match(/^(\d{1,3})$/)
+  if (!match) return '0'
+  const percent = BigInt(match[1])
+  const bounded = percent > 100n ? 100n : percent
+  const digits = bounded.toString().padStart(3, '0')
+  return `${digits.slice(0, -2)}.${digits.slice(-2)}`.replace(/\.?0+$/, '') || '0'
+}
+
+function compareNonNegativeDecimals(left: string, right: string) {
+  const parse = (value: string) => {
+    const match = value.match(/^(\d+)(?:\.(\d+))?$/)
+    return match ? { integer: match[1].replace(/^0+(?=\d)/, ''), fraction: match[2] || '' } : { integer: '0', fraction: '' }
+  }
+  const a = parse(left), b = parse(right)
+  if (a.integer.length !== b.integer.length) return a.integer.length > b.integer.length ? 1 : -1
+  if (a.integer !== b.integer) return a.integer > b.integer ? 1 : -1
+  const scale = Math.max(a.fraction.length, b.fraction.length)
+  const af = a.fraction.padEnd(scale, '0'), bf = b.fraction.padEnd(scale, '0')
+  return af === bf ? 0 : af > bf ? 1 : -1
+}
+
 export function formatDate(value: unknown) {
   if (!value) return 'Never'
   const date = new Date(String(value))

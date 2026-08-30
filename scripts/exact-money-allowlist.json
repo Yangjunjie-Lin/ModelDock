@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "entries": [
+    { "path": "internal/domain/domain.go", "line_pattern": "LatencyScore|QualityScore|QualityWeight|PriceWeight|LatencyWeight|\\bScore\\b|Uptime", "reason": "Routing quality, latency, and availability scores are non-monetary telemetry." },
+    { "path": "internal/domain/routing.go", "line_pattern": "\\bScore\\b", "reason": "Provider routing candidate score is non-monetary telemetry." },
+    { "path": "internal/scheduler/scheduler.go", "line_pattern": "float64", "reason": "Scheduler weights and active-load ratios are non-monetary." },
+    { "path": "internal/store/intelligent_router.go", "line_pattern": "float64|::float8", "reason": "Routing score weights, quality, latency, and multipliers are non-monetary." },
+    { "path": "internal/store/gateway.go", "line_pattern": "avgLatency|p95Latency|success|errorRate|case float64|avg\\(latency_ms\\)|percentile_cont", "reason": "Latency and success/error rates are non-monetary telemetry; the type switch decodes counts." },
+    { "path": "internal/store/marketplace_enterprise.go", "line_pattern": "uptime::float8", "reason": "Marketplace uptime is a non-monetary availability ratio." },
+    { "path": "internal/store/resources.go", "line_pattern": "latency_score::float8|quality_score::float8|defaultScore|float64", "reason": "Model quality and latency scores are non-monetary." },
+    { "path": "internal/server/control.go", "line_pattern": "validModelScore|float64", "reason": "Model score validation is non-monetary." },
+    { "path": "internal/server/gateway.go", "line_pattern": "v.\\(float64\\)", "reason": "JSON token-count decoding uses the standard library's number representation, not money." },
+    { "path": "internal/server/public_commercial.go", "line_pattern": "conversion|float64", "reason": "Acquisition funnel conversion is a non-monetary statistical ratio." },
+    { "path": "internal/server/v2_console.go", "line_pattern": "errorRate|float64", "reason": "Request error rate is non-monetary telemetry." },
+    { "path": "internal/server/gateway_test.go", "line_pattern": "float64", "reason": "Fixture reproduces JSON-decoded token counts." },
+    { "path": "internal/server/public_commercial_test.go", "line_pattern": "float64", "reason": "Fixture verifies a non-monetary conversion ratio." },
+    { "path": "apps/admin-web/src/lib/api.ts", "line_pattern": "Number\\(tenths\\)", "reason": "Exact BigInt arithmetic is converted only to a display-only CSS percentage." },
+    { "path": "apps/console-web/src/lib/api.ts", "line_pattern": "Number\\(tenths\\)", "reason": "Exact BigInt arithmetic is converted only to a display-only CSS percentage." },
+    { "path": "apps/admin-web/src/pages/AcquisitionPage.tsx", "line_pattern": "rate_bps", "reason": "Basis points are validated and transmitted as an integer, not a monetary amount." },
+    { "path": "apps/admin-web/src/pages/PricingPage.tsx", "line_pattern": "Number\\(form.unit\\)", "reason": "Pricing unit is an integer token count, not a monetary amount." },
+    { "path": "apps/admin-web/src/pages/ProviderQualityPage.tsx", "line_pattern": "Number\\(verification.unit\\)", "reason": "Verification unit is an integer token count, not a monetary amount." },
+    { "path": "apps/admin-web/src/pages/ProviderQualityPage.tsx", "line_pattern": "price_truth_tolerance_bps", "reason": "Price-truth tolerance is an integer basis-point control, not a monetary amount." },
+    { "path": "apps/console-web/src/pages/PaymentsPage.tsx", "line_pattern": "rate_bps", "reason": "Payment fee basis points are a displayed integer; exact fixed amounts remain strings." },
+    { "path": "apps/console-web/src/pages/PaymentsPage.tsx", "line_pattern": "moves no real funds", "reason": "The word real appears in a sandbox warning, not as a numeric type." },
+    { "path": "internal/payment/sandbox.go", "line_pattern": "never moves real funds", "reason": "The word REAL appears in a user-facing sandbox warning, not as a SQL numeric type." },
+    { "path": "internal/store/public_commercial_integration_test.go", "line_pattern": "double precision", "reason": "The cast converts a synthetic delay in milliseconds, not money." },
+    { "path": "apps/console-web/src/pages/SupplierOnboardingPage.tsx", "line_pattern": "Number\\(price.unit\\)", "reason": "Supplier pricing unit is an integer token count, not a monetary amount." },
+    { "path": "migrations/0008_pricing.sql", "line_pattern": "SELECT .*mp\\.input_price", "reason": "Published migration 0008 performs the historical one-time import from the then-canonical legacy catalog and cannot be edited." },
+    { "path": "migrations/0024_exact_money_and_release_evidence.sql", "line_pattern": "SELECT '(users|api_keys|teams)\\.monthly_cost_limit'", "reason": "Migration 0024 intentionally reads each legacy compatibility column only to reconcile it against its exact companion." }
+  ]
+}

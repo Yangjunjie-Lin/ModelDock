@@ -138,7 +138,12 @@ func listGatewayModels(c *gin.Context, d Dependencies) {
 		data = append(data, gin.H{"id": rule.Alias, "object": "model", "created": rule.CreatedAt.Unix(), "owned_by": "modeldock-router"})
 	}
 	if activeRoutes > 0 {
-		for _, alias := range []string{"auto", "auto:cost", "auto:quality", "auto:balanced"} {
+		autoAliases := []string{"auto", "auto:cost", "auto:quality", "auto:balanced"}
+		if workspace, workspaceErr := d.Store.WorkspaceSettings(c.Request.Context(), key.ProjectID); workspaceErr == nil &&
+			workspace.FreeDailyRequestLimit > 0 && workspace.FreeDailyTokenLimit > 0 {
+			autoAliases = append(autoAliases, "auto:free")
+		}
+		for _, alias := range autoAliases {
 			if !seen[alias] && modelAllowed(key.AllowedModels, alias) {
 				data = append(data, gin.H{"id": alias, "object": "model", "created": time.Now().Unix(), "owned_by": "modeldock-router"})
 			}
@@ -163,7 +168,16 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		return
 	}
 	var payload map[string]any
-	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	decodeErr := decoder.Decode(&payload)
+	if decodeErr == nil {
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			decodeErr = errors.New("request body contains trailing JSON data")
+		}
+	}
+	if len(body) == 0 || decodeErr != nil || payload == nil {
 		openAIError(c, 400, "invalid_json", "The request body must be a valid JSON object.")
 		d.Metrics.Error()
 		return
@@ -175,7 +189,23 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		return
 	}
 	requestedModel = strings.TrimSpace(requestedModel)
-	logEntry := domain.RequestLog{RequestID: requestID(c), TraceID: traceID(c), UserID: key.UserID, APIKeyID: key.ID, OrganizationID: key.OrganizationID, ProjectID: key.ProjectID, RequestedModel: requestedModel, Endpoint: endpoint, Streaming: false, CreatedAt: time.Now().UTC()}
+	requestPolicy, err := requestProviderPolicy(payload)
+	if err != nil {
+		openAIError(c, http.StatusBadRequest, "invalid_provider_policy", err.Error())
+		d.Metrics.Error()
+		return
+	}
+	workspace, err := d.Store.WorkspaceSettings(c.Request.Context(), key.ProjectID)
+	if err != nil {
+		openAIError(c, http.StatusServiceUnavailable, "workspace_policy_unavailable", "Workspace routing policy is temporarily unavailable.")
+		d.Metrics.Error()
+		return
+	}
+	requestPolicy = providerPolicyWithRequestCapabilities(requestPolicy, payload)
+	providerPolicy := mergeProviderPolicies(workspace.DefaultProviderPolicy, requestPolicy, workspace.AllowedProcessingRegions, workspace.PrivacyPolicy)
+	allowFallbacks := providerPolicy.AllowFallbacks == nil || *providerPolicy.AllowFallbacks
+	requestedModels := requestedModelFallbacks(payload, requestedModel, allowFallbacks)
+	logEntry := domain.RequestLog{RequestID: requestID(c), TraceID: traceID(c), UserID: key.UserID, APIKeyID: key.ID, OrganizationID: key.OrganizationID, ProjectID: key.ProjectID, RequestedModel: requestedModel, Endpoint: endpoint, Streaming: false, EstimatedCost: domain.MustDecimal("0"), ReferenceCost: domain.MustDecimal("0"), SavingsAmount: domain.MustDecimal("0"), CreatedAt: time.Now().UTC()}
 	var providerAttemptStarted time.Time
 	var providerAttemptTTFTMS *int64
 	stream, _ := payload["stream"].(bool)
@@ -239,7 +269,25 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		openAIError(c, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must not exceed 200 characters.")
 		return
 	}
-	routingDecision, err := d.Store.ResolveProjectRouteForEndpointActorRequest(c.Request.Context(), key.ProjectID, key.UserID, requestedModel, endpoint, logEntry.RequestID)
+	var routingDecision domain.RoutingDecision
+	selectedRequestedModel := ""
+	var routeErr error
+	for _, candidateModel := range requestedModels {
+		if !modelAllowed(key.AllowedModels, candidateModel) {
+			routeErr = store.ErrNotFound
+			continue
+		}
+		routingDecision, routeErr = d.Store.ResolveProjectRouteForEndpointActorRequestPolicy(c.Request.Context(), key.ProjectID,
+			key.UserID, candidateModel, endpoint, logEntry.RequestID, providerPolicy)
+		if routeErr == nil && routingDecision.Route.Enabled {
+			selectedRequestedModel = candidateModel
+			break
+		}
+		if !allowFallbacks {
+			break
+		}
+	}
+	err = routeErr
 	projectRoute := routingDecision.Route
 	if err != nil || !projectRoute.Enabled {
 		if errors.Is(err, store.ErrProviderQualityCircuitOpen) || errors.Is(err, store.ErrProviderQualityRampLimited) {
@@ -267,7 +315,7 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		openAIError(c, http.StatusNotFound, "model_not_found", "The requested model does not exist or is not enabled for this project.")
 		return
 	}
-	if routingDecision.Strategy != "manual" {
+	if routingDecision.Strategy != "manual" || len(requestedModels) > 1 {
 		if entitlementErr := d.Store.RequireBooleanEntitlement(c.Request.Context(), key.OrganizationID, "advanced_routing"); entitlementErr != nil {
 			logEntry.StatusCode = http.StatusForbidden
 			logEntry.ErrorCode = "subscription_entitlement_required"
@@ -312,14 +360,23 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			return
 		}
 	}
-	if !modelAllowed(key.AllowedModels, requestedModel) {
+	if selectedRequestedModel == "" || !modelAllowed(key.AllowedModels, selectedRequestedModel) {
 		logEntry.StatusCode = 403
 		logEntry.ErrorCode = "model_not_allowed"
 		d.Metrics.Error()
 		openAIError(c, 403, "model_not_allowed", "This API key is not allowed to use the requested model.")
 		return
 	}
-	walletAllowed, walletErr := d.Store.WalletAllowsRequest(c.Request.Context(), key.OrganizationID)
+	freeRoute := strings.EqualFold(selectedRequestedModel, "auto:free")
+	walletAllowed := false
+	var walletErr error
+	if freeRoute {
+		wallet, err := d.Store.WalletByOrganization(c.Request.Context(), key.OrganizationID)
+		walletErr = err
+		walletAllowed = err == nil && wallet.Status == "ACTIVE"
+	} else {
+		walletAllowed, walletErr = d.Store.WalletAllowsRequest(c.Request.Context(), key.OrganizationID)
+	}
 	if walletErr != nil {
 		logEntry.StatusCode = http.StatusServiceUnavailable
 		logEntry.ErrorCode = "billing_state_unavailable"
@@ -339,6 +396,8 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		estimatedTokens = 1
 	}
 	maxOutputTokens := maximumOutputTokens(payload, endpoint)
+	freeUsageSettled := false
+	freeUsageDate := ""
 	var fundingQuote domain.PricingQuote
 	if quote, quoteErr := d.Store.QuotePricing(c.Request.Context(), store.PriceQuoteRequest{
 		OrganizationID: key.OrganizationID, ProviderID: projectRoute.ProviderID, Model: projectRoute.UpstreamModel,
@@ -372,6 +431,39 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "Commercial pricing state is temporarily unavailable.")
 		return
 	}
+	if freeRoute {
+		freePrice, parseErr := domain.ParseDecimal(fundingQuote.FinalAmount)
+		comparison, compareErr := freePrice.Compare(domain.MustDecimal("0"))
+		if fundingQuote.PricingVersionID == "" || parseErr != nil || compareErr != nil || comparison != 0 {
+			logEntry.StatusCode = http.StatusConflict
+			logEntry.ErrorCode = "free_route_pricing_mismatch"
+			d.Metrics.Error()
+			openAIError(c, http.StatusConflict, logEntry.ErrorCode, "The selected route is not priced as a zero-cost model.")
+			return
+		}
+		freeUsageDate, err = d.Store.AdmitFreeModelUsage(c.Request.Context(), key.ProjectID, key.ID, int64(estimatedTokens)+maxOutputTokens)
+		if err != nil {
+			logEntry.StatusCode = http.StatusTooManyRequests
+			logEntry.ErrorCode = "free_route_quota_exceeded"
+			if errors.Is(err, store.ErrFreeRouteDisabled) {
+				logEntry.StatusCode = http.StatusForbidden
+				logEntry.ErrorCode = "free_route_disabled"
+			}
+			openAIError(c, logEntry.StatusCode, logEntry.ErrorCode, "The workspace free-model allowance is disabled or exhausted for today.")
+			d.Metrics.Error()
+			return
+		}
+		defer func() {
+			if freeUsageSettled {
+				return
+			}
+			actual := logEntry.TotalTokens
+			settleCtx, settleCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer settleCancel()
+			_ = d.Store.SettleFreeModelUsage(settleCtx, freeUsageDate, key.ProjectID, key.ID, int64(estimatedTokens)+maxOutputTokens, actual)
+			freeUsageSettled = true
+		}()
+	}
 	d.Metrics.ObserveModelPricing(projectRoute.UpstreamModel, fundingQuote.RetailAmount, fundingQuote.ProviderCostAmount, fundingQuote.GrossMargin)
 	fingerprint := fundingRequestFingerprint(key.ProjectID, endpoint, body)
 	operation, replay, fundingErr := d.Store.ReserveFunding(c.Request.Context(), store.FundingReservationRequest{
@@ -380,6 +472,7 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		Currency: firstNonEmpty(fundingQuote.Currency, "USD"), MaximumAmount: firstNonEmpty(fundingQuote.FinalAmount, "0"),
 		PromotionAmount: fundingQuote.PromotionAmount, TaxRate: fundingQuote.TaxRate, ExchangeRate: fundingQuote.ExchangeRate,
 		EstimatedInput: int64(estimatedTokens), MaxOutput: maxOutputTokens, CreatedBy: stringPtr(key.UserID),
+		RoutingPolicySnapshot: providerPolicySnapshot(providerPolicy, requestedModels),
 	})
 	if fundingErr != nil {
 		if errors.Is(fundingErr, store.ErrWalletUnavailable) {
@@ -435,6 +528,13 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			return
 		}
 		logEntry.UsageSource = settled.UsageSource
+		if settled.CredentialOwner == domain.CredentialOwnerCustomer {
+			if workspace.IncludeBYOKInBudgets {
+				logEntry.EstimatedCost = settled.BYOKShadowAmount
+			} else {
+				logEntry.EstimatedCost = settled.PlatformServiceFee
+			}
+		}
 	}()
 	blocked, budgetErr := admitProjectBudgets(c.Request.Context(), d, key, logEntry.RequestID, int64(estimatedTokens))
 	if budgetErr != nil {
@@ -475,7 +575,15 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			openAIError(c, 503, "service_unavailable", "Quota state is temporarily unavailable.")
 			return
 		}
-		if used >= *key.MonthlyCostLimit {
+		quotaReached, compareErr := decimalAtLeast(used, *key.MonthlyCostLimit)
+		if compareErr != nil {
+			logEntry.StatusCode = 503
+			logEntry.ErrorCode = "quota_state_invalid"
+			d.Metrics.Error()
+			openAIError(c, 503, "service_unavailable", "The monthly cost quota contains an invalid amount.")
+			return
+		}
+		if quotaReached {
 			logEntry.StatusCode = 403
 			logEntry.ErrorCode = "quota_exceeded"
 			d.Metrics.Error()
@@ -500,7 +608,18 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 			openAIError(c, 503, "service_unavailable", "Quota state is temporarily unavailable.")
 			return
 		}
-		if (user.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *user.MonthlyTokenLimit) || (user.MonthlyCostLimit != nil && cost >= *user.MonthlyCostLimit) {
+		costBlocked := false
+		if user.MonthlyCostLimit != nil {
+			costBlocked, err = decimalAtLeast(cost, *user.MonthlyCostLimit)
+			if err != nil {
+				logEntry.StatusCode = 503
+				logEntry.ErrorCode = "quota_state_invalid"
+				d.Metrics.Error()
+				openAIError(c, 503, "service_unavailable", "The user monthly cost quota contains an invalid amount.")
+				return
+			}
+		}
+		if (user.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *user.MonthlyTokenLimit) || costBlocked {
 			logEntry.StatusCode = 403
 			logEntry.ErrorCode = "quota_exceeded"
 			d.Metrics.Error()
@@ -526,8 +645,18 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 				openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "Team quota state is temporarily unavailable.")
 				return
 			}
-			if (team.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *team.MonthlyTokenLimit) ||
-				(team.MonthlyCostLimit != nil && cost >= *team.MonthlyCostLimit) {
+			costBlocked := false
+			if team.MonthlyCostLimit != nil {
+				costBlocked, err = decimalAtLeast(cost, *team.MonthlyCostLimit)
+				if err != nil {
+					logEntry.StatusCode = http.StatusServiceUnavailable
+					logEntry.ErrorCode = "quota_state_invalid"
+					d.Metrics.Error()
+					openAIError(c, http.StatusServiceUnavailable, "service_unavailable", "The team monthly cost quota contains an invalid amount.")
+					return
+				}
+			}
+			if (team.MonthlyTokenLimit != nil && tokens+int64(estimatedTokens) > *team.MonthlyTokenLimit) || costBlocked {
 				logEntry.StatusCode = http.StatusForbidden
 				logEntry.ErrorCode = "team_quota_exceeded"
 				d.Metrics.Error()
@@ -591,6 +720,8 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		}
 	}()
 	payload["model"] = projectRoute.UpstreamModel
+	delete(payload, "provider")
+	delete(payload, "models")
 	upstreamBody, err := json.Marshal(payload)
 	if err != nil {
 		logEntry.StatusCode = 400
@@ -605,7 +736,8 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 		d.Metrics.Error()
 		return
 	}
-	constraints := mergeCredentialConstraints(routeCredentialConstraints(projectRoute.FallbackConfig), routeCredentialConstraints(projectRoute.RoutingConfig))
+	constraints := mergeCredentialConstraints(routeCredentialConstraints(projectRoute.FallbackConfig), routeCredentialConstraints(projectRoute.RoutingConfig),
+		scheduler.CredentialConstraints{Model: projectRoute.UpstreamModel, APIKeyID: key.ID, MemberID: key.UserID, UseSharedCapacity: providerPolicy.UseSharedCapacity})
 	selectedGroupID := projectRoute.CredentialGroupID
 	selection, err := d.Scheduler.SelectConstrainedForOrganization(c.Request.Context(), projectRoute.CredentialGroupID, projectRoute.RoutingPolicy, constraints, key.OrganizationID)
 	if err != nil && projectRoute.FallbackGroupID != nil {
@@ -625,6 +757,11 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 	}
 	defer selection.Release()
 	cred := selection.Credential
+	capacitySource := "shared"
+	if cred.CredentialOwner == domain.CredentialOwnerCustomer {
+		capacitySource = "byok"
+	}
+	c.Header("X-RelayDock-Capacity-Source", capacitySource)
 	logEntry.CredentialID = cred.ID
 	logEntry.SchedulerReason = selection.Reason
 	if logEntry.SchedulerReason == nil {
@@ -632,7 +769,12 @@ func proxyGateway(c *gin.Context, d Dependencies, endpoint string) {
 	}
 	logEntry.SchedulerReason["model_router"] = map[string]any{"strategy": routingDecision.Strategy,
 		"score": routingDecision.Score, "candidates": routingDecision.Candidates, "selected_alias": projectRoute.Alias,
-		"selected_model": projectRoute.UpstreamModel, "provider_type": projectRoute.ProviderType}
+		"selected_model": projectRoute.UpstreamModel, "provider_type": projectRoute.ProviderType, "requested_models": requestedModels,
+		"provider_policy": providerPolicy, "candidate_trace": routingDecision.CandidateTrace}
+	c.Header("X-RelayDock-Provider", projectRoute.ProviderID)
+	c.Header("X-RelayDock-Resolved-Model", projectRoute.UpstreamModel)
+	c.Header("X-RelayDock-Routing-Strategy", routingDecision.Strategy)
+	c.Header("X-RelayDock-Routing-Candidates", strconv.Itoa(routingDecision.Candidates))
 	secret, err := d.Vault.Decrypt(cred.EncryptedSecret, cred.ID)
 	if err != nil {
 		logEntry.StatusCode = 503
@@ -861,14 +1003,30 @@ streamLoop:
 		logEntry.TotalTokens = fundingUsage.Total
 	}
 	logEntry.UsageSource = fundingUsageSource
-	if cost, err := d.Store.CalculateCost(c.Request.Context(), projectRoute.ProviderID, projectRoute.UpstreamModel, usage.Input, usage.Cached, usage.Output); err == nil {
+	// The client may have disconnected before the provider stream finishes. Pricing
+	// and settlement still have to complete against the immutable price snapshot,
+	// so do not reuse the cancelled HTTP request context for those ledger writes.
+	pricingCtx, pricingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer pricingCancel()
+	if cost, err := d.Store.CalculateCost(pricingCtx, projectRoute.ProviderID, projectRoute.UpstreamModel, usage.Input, usage.Cached, usage.Output); err == nil {
 		logEntry.EstimatedCost = cost
+	} else {
+		logEntry.ErrorCode = "pricing_calculation_invalid"
+		d.Metrics.Error()
+		d.Logger.Error("pricing_calculation_invalid", "request_id", logEntry.RequestID, "error", err)
 	}
 	if routingDecision.Strategy != "manual" {
-		if reference, err := d.Store.CalculateProjectReferenceCost(c.Request.Context(), key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
+		if reference, err := d.Store.CalculateProjectReferenceCost(pricingCtx, key.ProjectID, usage.Input, usage.Cached, usage.Output); err == nil {
 			logEntry.ReferenceCost = reference
-			if reference > logEntry.EstimatedCost {
-				logEntry.SavingsAmount = reference - logEntry.EstimatedCost
+			comparison, compareErr := reference.Compare(logEntry.EstimatedCost)
+			if compareErr != nil {
+				logEntry.ErrorCode = "pricing_calculation_invalid"
+			} else if comparison > 0 {
+				if savings, subtractErr := reference.Subtract(logEntry.EstimatedCost); subtractErr == nil {
+					logEntry.SavingsAmount = savings
+				} else {
+					logEntry.ErrorCode = "pricing_calculation_invalid"
+				}
 			}
 		}
 	}
@@ -1260,6 +1418,12 @@ func walkUsage(v any, best *tokenUsage) {
 func number(v any) int64 {
 	if n, ok := v.(float64); ok {
 		return int64(n)
+	}
+	if n, ok := v.(json.Number); ok {
+		parsed, err := n.Int64()
+		if err == nil {
+			return parsed
+		}
 	}
 	return 0
 }

@@ -21,6 +21,9 @@ type CockpitAccount = {
 
 type CockpitTestResult = { ok: boolean; model: string; latency_ms: number; tested_at: string; message: string }
 type CockpitPool = { configured: boolean; test_configured: boolean; source: string; generated_at?: string; accounts: CockpitAccount[]; last_test?: CockpitTestResult }
+type ProviderOption = { id: string; name: string; provider_type: string; base_url: string; enabled: boolean }
+type GroupOption = { id: string; provider_id: string; name: string }
+type CredentialProbe = { ok: boolean; status: string; provider_id: string; provider_name: string; provider_type: string; base_url: string; latency_ms: number; model_count: number; model_sample: string[]; tested_at: string }
 
 export function CredentialsPage() {
   const [search, setSearch] = useState('')
@@ -36,6 +39,7 @@ export function CredentialsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [moveGroupId, setMoveGroupId] = useState('')
   const [detail, setDetail] = useState<Credential | null>(null)
+  const [lastProbe, setLastProbe] = useState<CredentialProbe | null>(null)
   const [form, setForm] = useState({ provider_id: '', name: '', secret: '', organization_id: '', project_id: '', group_id: '', tags: '', weight: '100', priority: '10', max_concurrency: '10' })
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -48,7 +52,21 @@ export function CredentialsPage() {
     queryFn: () => api<CockpitPool>('/cockpit/accounts'),
     staleTime: 30_000,
   })
+  const providerResult = useQuery({
+    queryKey: ['credential-provider-options'],
+    queryFn: () => api<unknown>('/providers').then(asPage<ProviderOption>),
+    staleTime: 30_000,
+  })
+  const groupResult = useQuery({
+    queryKey: ['credential-group-options'],
+    queryFn: () => api<unknown>('/credential-groups').then(asPage<GroupOption>),
+    staleTime: 30_000,
+  })
   const rows = useMemo(() => result.data?.items || [], [result.data])
+  const providers = useMemo(() => providerResult.data?.items || [], [providerResult.data])
+  const groups = useMemo(() => groupResult.data?.items || [], [groupResult.data])
+  const selectedProvider = providers.find((provider) => provider.id === form.provider_id)
+  const providerGroups = groups.filter((candidate) => !form.provider_id || candidate.provider_id === form.provider_id)
   const stats = useMemo(() => ({ active: rows.filter((row) => String(row.status).toUpperCase() === 'ACTIVE').length, healthy: rows.filter((row) => String(row.current_health || row.health).toLowerCase() === 'healthy').length, limited: rows.filter((row) => String(row.status).includes('LIMIT')).length, concurrency: rows.reduce((sum, row) => sum + Number(row.max_concurrency || 0), 0) }), [rows])
   const save = useMutation({
     mutationFn: async (mode: 'validate' | 'disabled') => {
@@ -82,8 +100,8 @@ export function CredentialsPage() {
     onError: (error) => toast(error instanceof Error ? error.message : 'Bulk operation failed', 'danger'),
   })
   const testCredential = useMutation({
-    mutationFn: (id: string) => api(`/credentials/${id}/test`, { method: 'POST' }),
-    onSuccess: () => toast('Credential health check passed'),
+    mutationFn: (id: string) => api<CredentialProbe>(`/credentials/${id}/test`, { method: 'POST' }),
+    onSuccess: (value) => { setLastProbe(value); void queryClient.invalidateQueries({ queryKey: ['credentials'] }); toast(`${value.provider_name} passed · ${value.model_count} models · ${value.latency_ms} ms`) },
     onError: (error) => toast(error instanceof Error ? error.message : 'Health check failed', 'danger'),
   })
   const refreshCockpit = useMutation({
@@ -107,28 +125,32 @@ export function CredentialsPage() {
     const safeRows = rows.map((row) => ({ name: row.name, provider: row.provider_name || providerName(row.provider), project: row.project_id, status: row.status, group: row.group_name, weight: row.weight }))
     const blob = new Blob([JSON.stringify(safeRows, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'relaydock-credential-metadata.json'; link.click(); URL.revokeObjectURL(link.href)
   }
+  const openAddCredential = () => {
+    setForm((current) => ({ ...current, provider_id: current.provider_id || providers.find((provider) => provider.enabled)?.id || providers[0]?.id || '' }))
+    setAddOpen(true)
+  }
 
   return (
     <div className="page-stack">
-      <div className="page-header"><div><div className="eyebrow-row"><span className="live-dot" />AUTHORIZED CREDENTIALS</div><h1>Credential pool</h1><p>Health, load, and scheduling controls for administrator-supplied provider credentials.</p></div><div className="header-actions"><Button onClick={exportMetadata}><Download size={14} />Export metadata</Button><Button onClick={() => setImportOpen(true)}><Upload size={14} />Import JSON</Button><a className="button button-default button-md" href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">Open official dashboard<ArrowUpRight size={14} /></a><Button variant="primary" onClick={() => setAddOpen(true)}><Plus size={15} />Add credential</Button></div></div>
+      <div className="page-header"><div><div className="eyebrow-row"><span className="live-dot" />MULTI-PROVIDER CREDENTIALS</div><h1>Credential pool</h1><p>Health, model discovery, load, and scheduling controls for authorized credentials across every configured provider.</p></div><div className="header-actions"><Button onClick={exportMetadata}><Download size={14} />Export metadata</Button><Button onClick={() => setImportOpen(true)}><Upload size={14} />Import JSON</Button><a className="button button-default button-md" href="/providers">Manage providers<ArrowUpRight size={14} /></a><Button variant="primary" onClick={openAddCredential}><Plus size={15} />Add credential</Button></div></div>
       <div className="credential-stats"><div><span><KeyRound size={15} />Visible credentials</span><strong>{result.isLoading ? '—' : formatNumber(result.data?.total, false)}</strong></div><div><span><ShieldCheck size={15} />Healthy</span><strong>{stats.healthy}</strong></div><div><span><Activity size={15} />Active</span><strong>{stats.active}</strong></div><div><span><TimerReset size={15} />Rate limited</span><strong>{stats.limited}</strong></div><div><span><Gauge size={15} />Max concurrency</span><strong>{formatNumber(stats.concurrency, false)}</strong></div></div>
       <CockpitPanel pool={cockpitResult.data} loading={cockpitResult.isLoading} error={cockpitResult.isError ? cockpitResult.error : undefined} refreshing={refreshCockpit.isPending} testing={testCockpit.isPending} onRefresh={() => refreshCockpit.mutate()} onTest={() => testCockpit.mutate()} onRetry={() => cockpitResult.refetch()} />
       <section className="resource-panel credential-panel">
-        <div className="resource-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search name, project, or tag…" /><div className="toolbar-controls"><label className="select-control"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="RATE_LIMITED">Rate limited</option><option value="COOLDOWN">Cooldown</option><option value="AUTH_FAILED">Auth failed</option><option value="DISABLED">Disabled</option></select></label><label className="select-control"><Boxes size={14} /><select value={group} onChange={(event) => setGroup(event.target.value)}><option value="">All groups</option><option value="production">Production Pool</option><option value="reasoning">Reasoning Pool</option><option value="embedding">Embedding Pool</option></select></label><div className="view-toggle"><button className={view === 'cards' ? 'active' : ''} onClick={() => setView('cards')} aria-label="Card view"><Grid2X2 size={15} /></button><button className={view === 'table' ? 'active' : ''} onClick={() => setView('table')} aria-label="Table view"><List size={16} /></button></div></div></div>
+        <div className="resource-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Search name, project, or tag…" /><div className="toolbar-controls"><label className="select-control"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="RATE_LIMITED">Rate limited</option><option value="COOLDOWN">Cooldown</option><option value="AUTH_FAILED">Auth failed</option><option value="DISABLED">Disabled</option></select></label><label className="select-control"><Boxes size={14} /><select value={group} onChange={(event) => setGroup(event.target.value)}><option value="">All groups</option>{groups.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.name}</option>)}</select></label><div className="view-toggle"><button className={view === 'cards' ? 'active' : ''} onClick={() => setView('cards')} aria-label="Card view"><Grid2X2 size={15} /></button><button className={view === 'table' ? 'active' : ''} onClick={() => setView('table')} aria-label="Table view"><List size={16} /></button></div></div></div>
         {selected.size > 0 && <div className="bulk-bar"><span><strong>{selected.size}</strong> selected</span><Button size="sm" onClick={() => bulk.mutate('enable')}>Enable</Button><Button size="sm" onClick={() => bulk.mutate('disable')}>Disable</Button><Button size="sm" onClick={() => bulk.mutate('health_check')}><RefreshCw size={14} />Health check</Button><Button size="sm" onClick={() => setMoveGroupOpen(true)}>Move group</Button><Button size="sm" variant="danger" onClick={() => setDeleteOpen(true)}><Trash2 size={13} />Delete</Button><button className="clear-selection" onClick={() => setSelected(new Set())}>Clear</button></div>}
         {result.isLoading && <div className="panel-pad"><Skeleton rows={10} /></div>}
         {result.isError && <div className="panel-pad"><ErrorState error={result.error} onRetry={() => result.refetch()} /></div>}
-        {result.isSuccess && rows.length === 0 && <EmptyState title="No credentials configured" description="Add an authorized provider API credential to enable routing." action={<Button variant="primary" onClick={() => setAddOpen(true)}><Plus size={15} />Add your first credential</Button>} />}
+        {result.isSuccess && rows.length === 0 && <EmptyState title="No credentials configured" description="Add an authorized provider API credential to enable routing." action={<Button variant="primary" onClick={openAddCredential}><Plus size={15} />Add your first credential</Button>} />}
         {rows.length > 0 && view === 'cards' && <div className="credential-grid">{rows.map((credential) => <CredentialCard key={String(credential.id)} credential={credential} checked={selected.has(String(credential.id))} onCheck={(checked) => select(String(credential.id), checked)} onDetail={() => setDetail(credential)} onTest={() => testCredential.mutate(String(credential.id))} />)}</div>}
         {rows.length > 0 && view === 'table' && <CredentialTable rows={rows} selected={selected} onSelect={select} onDetail={setDetail} />}
         <Pagination page={page} pageSize={24} total={result.data?.total || 0} onChange={setPage} />
       </section>
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add OpenAI credential" description="RelayDock validates this administrator-supplied key against the official API before activating it." wide footer={<><Button onClick={() => setAddOpen(false)}>Cancel</Button><Button disabled={!form.provider_id || !form.name || !form.secret || save.isPending} onClick={() => save.mutate('disabled')}>Save disabled</Button><SubmitButton disabled={!form.provider_id || !form.name || !form.secret} pending={save.isPending} form="credential-form">Validate & save</SubmitButton></>}>
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add provider credential" description="RelayDock validates the administrator-supplied credential against the selected provider's Models API before activation." wide footer={<><Button onClick={() => setAddOpen(false)}>Cancel</Button><Button disabled={!form.provider_id || !form.name || !form.secret || save.isPending} onClick={() => save.mutate('disabled')}>Save disabled</Button><SubmitButton disabled={!form.provider_id || !form.name || !form.secret} pending={save.isPending} form="credential-form">Validate & save</SubmitButton></>}>
         <Form id="credential-form" className="form-grid" onSubmit={() => save.mutateAsync('validate')}>
           <label><span>Name *</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Production · East 01" /></label>
-          <label><span>Provider ID *</span><input required value={form.provider_id} onChange={(event) => setForm({ ...form, provider_id: event.target.value })} placeholder="OpenAI provider ID" /></label>
-          <label><span>Credential group</span><input value={form.group_id} onChange={(event) => setForm({ ...form, group_id: event.target.value })} placeholder="Optional group ID" /></label>
-          <label className="full-span"><span>OpenAI API key *</span><input required type="password" autoComplete="off" value={form.secret} onChange={(event) => setForm({ ...form, secret: event.target.value })} placeholder="Enter a newly issued official API key" /><small>The secret is encrypted at rest and cannot be retrieved after saving.</small></label>
+          <label><span>Provider *</span><select required value={form.provider_id} onChange={(event) => setForm({ ...form, provider_id: event.target.value, group_id: '' })}><option value="">Select provider…</option>{providers.map((provider) => <option value={provider.id} key={provider.id}>{provider.name} · {provider.provider_type}</option>)}</select><small>{selectedProvider?.base_url || 'Configure providers before adding credentials.'}</small></label>
+          <label><span>Credential group</span><select value={form.group_id} onChange={(event) => setForm({ ...form, group_id: event.target.value })}><option value="">No group</option>{providerGroups.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.name}</option>)}</select></label>
+          <label className="full-span"><span>Provider API key / bearer token *</span><input required type="password" autoComplete="off" value={form.secret} onChange={(event) => setForm({ ...form, secret: event.target.value })} placeholder="Enter an already-issued authorized provider credential" /><small>The secret is encrypted at rest and cannot be retrieved after saving. Consumer account passwords, cookies, and registration sessions are not accepted.</small></label>
           <label><span>Organization ID</span><input value={form.organization_id} onChange={(event) => setForm({ ...form, organization_id: event.target.value })} placeholder="Optional" /></label>
           <label><span>Project ID</span><input value={form.project_id} onChange={(event) => setForm({ ...form, project_id: event.target.value })} placeholder="Optional" /></label>
           <label className="full-span"><span>Scheduler tags</span><input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="region:apac, tier:production" /><small>Comma-separated labels used by route required/excluded tag constraints.</small></label>
@@ -144,9 +166,9 @@ export function CredentialsPage() {
           {importCredentials.isError && <div className="form-error full-span">{importCredentials.error instanceof Error ? importCredentials.error.message : 'Credential import failed.'}</div>}
         </Form>
       </Modal>
-      <Modal open={moveGroupOpen} onClose={() => setMoveGroupOpen(false)} title="Move selected credentials" description="Add every selected credential to the target scheduling group." footer={<><Button onClick={() => setMoveGroupOpen(false)}>Cancel</Button><Button variant="primary" disabled={!moveGroupId || bulk.isPending} onClick={() => bulk.mutate(`move:${moveGroupId}`)}>{bulk.isPending ? 'Moving…' : 'Move credentials'}</Button></>}><div className="form-grid"><label className="full-span"><span>Target group ID *</span><input required value={moveGroupId} onChange={(event) => setMoveGroupId(event.target.value)} placeholder="Credential group ID" /></label></div></Modal>
+      <Modal open={moveGroupOpen} onClose={() => setMoveGroupOpen(false)} title="Move selected credentials" description="Add every selected credential to the target scheduling group. Provider mismatches are rejected server-side." footer={<><Button onClick={() => setMoveGroupOpen(false)}>Cancel</Button><Button variant="primary" disabled={!moveGroupId || bulk.isPending} onClick={() => bulk.mutate(`move:${moveGroupId}`)}>{bulk.isPending ? 'Moving…' : 'Move credentials'}</Button></>}><div className="form-grid"><label className="full-span"><span>Target group *</span><select required value={moveGroupId} onChange={(event) => setMoveGroupId(event.target.value)}><option value="">Select group…</option>{groups.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.name}</option>)}</select></label></div></Modal>
       <Modal open={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete selected credentials" description="This permanently removes the selected encrypted credentials from RelayDock." footer={<><Button onClick={() => setDeleteOpen(false)}>Cancel</Button><Button variant="danger" disabled={bulk.isPending} onClick={() => bulk.mutate('delete')}>{bulk.isPending ? 'Deleting…' : `Delete ${selected.size} credentials`}</Button></>}><div className="inline-warning">Routes relying on these credentials may lose capacity. This action is recorded in the audit log.</div></Modal>
-      <Drawer open={Boolean(detail)} onClose={() => setDetail(null)} title="Credential details">{detail && <><CredentialDetails credential={detail} /><CredentialTagEditor key={String(detail.id)} credential={detail} onSaved={(value) => setDetail(value)} /><div className="drawer-actions"><Button onClick={() => testCredential.mutate(String(detail.id))}>Test connection</Button><Button onClick={() => { const nextStatus = String(detail.status).toUpperCase() === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'; void api(`/credentials/${detail.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: nextStatus }) }).then(() => { toast(`Credential ${nextStatus.toLowerCase()}`); setDetail(null); void queryClient.invalidateQueries({ queryKey: ['credentials'] }) }).catch((error) => toast(error instanceof Error ? error.message : 'Status update failed', 'danger')) }}>{String(detail.status).toUpperCase() === 'ACTIVE' ? 'Disable' : 'Enable'}</Button><Button variant="danger" onClick={() => { setSelected(new Set([String(detail.id)])); setDetail(null); setDeleteOpen(true) }}><Trash2 size={13} />Delete</Button></div></>}</Drawer>
+      <Drawer open={Boolean(detail)} onClose={() => { setDetail(null); setLastProbe(null) }} title="Credential details">{detail && <><CredentialDetails credential={detail} />{lastProbe && lastProbe.provider_id === detail.provider_id && <CredentialProbeSummary probe={lastProbe} />}<CredentialTagEditor key={String(detail.id)} credential={detail} onSaved={(value) => setDetail(value)} /><div className="drawer-actions"><Button onClick={() => testCredential.mutate(String(detail.id))} disabled={testCredential.isPending}>{testCredential.isPending ? 'Testing…' : 'Test connection'}</Button><Button onClick={() => { const nextStatus = String(detail.status).toUpperCase() === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'; void api(`/credentials/${detail.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: nextStatus }) }).then(() => { toast(`Credential ${nextStatus.toLowerCase()}`); setDetail(null); void queryClient.invalidateQueries({ queryKey: ['credentials'] }) }).catch((error) => toast(error instanceof Error ? error.message : 'Status update failed', 'danger')) }}>{String(detail.status).toUpperCase() === 'ACTIVE' ? 'Disable' : 'Enable'}</Button><Button variant="danger" onClick={() => { setSelected(new Set([String(detail.id)])); setDetail(null); setDeleteOpen(true) }}><Trash2 size={13} />Delete</Button></div></>}</Drawer>
     </div>
   )
 }
@@ -180,6 +202,10 @@ function CredentialTable({ rows, selected, onSelect, onDetail }: { rows: Credent
 function CredentialDetails({ credential }: { credential: Credential }) {
   const rows = [['Provider', credential.provider_name || providerName(credential.provider)], ['Project', credential.project_id], ['Group', credential.group_name], ['Status', credential.status], ['Health', credential.current_health || credential.health], ['Weight', credential.weight], ['Priority', credential.priority], ['Max concurrency', credential.max_concurrency], ['Last success', formatDate(credential.last_success_at)], ['Last failure', formatDate(credential.last_failure_at)], ['Cooldown until', formatDate(credential.cooldown_until)]]
   return <><div className="detail-hero"><span className="provider-glyph"><CheckCircle2 size={18} /></span><div><strong>{credential.name}</strong><code>••••••••{credential.secret_last4 || '••••'}</code></div></div><div className="detail-list">{rows.map(([label, value]) => <div key={String(label)}><span>{String(label)}</span><strong>{value === undefined || value === '' ? '—' : String(value)}</strong></div>)}</div><div className="inline-note">The original provider secret is never returned by the API. Enter a new value to replace it.</div></>
+}
+
+function CredentialProbeSummary({ probe }: { probe: CredentialProbe }) {
+  return <div className="inline-note"><strong>Latest connection test:</strong> {probe.provider_name} returned {probe.model_count} models in {probe.latency_ms} ms.{probe.model_sample.length > 0 && <> Sample: <code>{probe.model_sample.slice(0, 4).join(', ')}</code>.</>}</div>
 }
 
 function CredentialTagEditor({ credential, onSaved }: { credential: Credential; onSaved: (credential: Credential) => void }) {

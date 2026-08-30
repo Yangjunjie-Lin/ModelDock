@@ -80,6 +80,18 @@ var supplierSettlementSchema string
 //go:embed 0023_marketplace_launch_acceptance.sql
 var marketplaceLaunchAcceptanceSchema string
 
+//go:embed 0024_exact_money_and_release_evidence.sql
+var exactMoneyAndReleaseEvidenceSchema string
+
+//go:embed 0025_commercial_attestation_and_decimal_hardening.sql
+var commercialAttestationAndDecimalHardeningSchema string
+
+//go:embed 0026_provider_account_provisioning.sql
+var providerAccountProvisioningSchema string
+
+//go:embed 0027_openrouter_operating_model.sql
+var openRouterOperatingModelSchema string
+
 // All is ordered oldest to newest.  Never edit a released migration; append a
 // new entry instead so checksum validation can detect binary/schema drift.
 var All = []Migration{
@@ -106,4 +118,8 @@ var All = []Migration{
 	{Version: 21, Name: "provider_quality", SQL: providerQualitySchema},
 	{Version: 22, Name: "supplier_settlement", SQL: supplierSettlementSchema},
 	{Version: 23, Name: "marketplace_launch_acceptance", SQL: marketplaceLaunchAcceptanceSchema},
+	{Version: 24, Name: "exact_money_and_release_evidence", SQL: exactMoneyAndReleaseEvidenceSchema},
+	{Version: 25, Name: "commercial_attestation_and_decimal_hardening", SQL: commercialAttestationAndDecimalHardeningSchema},
+	{Version: 26, Name: "provider_account_provisioning", SQL: providerAccountProvisioningSchema},
+	{Version: 27, Name: "openrouter_operating_model", SQL: openRouterOperatingModelSchema},
 }

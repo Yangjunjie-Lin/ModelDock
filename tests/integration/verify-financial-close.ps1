@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$EnvFile = ".env", [switch]$ConfirmIsolatedTestDatabase)
+param([string]$EnvFile = ".env", [string]$GoExecutable = "go", [switch]$ConfirmIsolatedTestDatabase)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 if (-not $ConfirmIsolatedTestDatabase) { throw "Pass -ConfirmIsolatedTestDatabase for a disposable local Docker database." }
@@ -12,8 +12,12 @@ foreach ($raw in Get-Content -LiteralPath $EnvFile) {
     if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) { continue }
     $parts = $line.Split("=", 2); $values[$parts[0].Trim()] = $parts[1].Trim().Trim('"').Trim("'")
 }
-foreach ($name in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL")) {
+foreach ($name in @("POSTGRES_USER", "POSTGRES_DB", "DATABASE_URL", "POSTGRES_HOST_PORT")) {
     if (-not $values.ContainsKey($name) -or [string]::IsNullOrWhiteSpace([string]$values[$name])) { throw "The environment file is missing $name." }
+}
+$postgresHostPort = 0
+if (-not [int]::TryParse($values.POSTGRES_HOST_PORT, [ref]$postgresHostPort) -or $postgresHostPort -lt 1 -or $postgresHostPort -gt 65535) {
+    throw "POSTGRES_HOST_PORT must be a valid TCP port."
 }
 $container = "relaydock-postgres-1"
 $inspect = docker container inspect $container | ConvertFrom-Json
@@ -28,9 +32,9 @@ try {
     docker container exec $container createdb --no-password --username ([string]$values.POSTGRES_USER) --maintenance-db ([string]$values.POSTGRES_DB) $databaseName | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Creating the disposable financial-close database failed." }
     $created = $true
-    $builder = [System.UriBuilder]([Uri]([string]$values.DATABASE_URL)); $builder.Path = "/$databaseName"
+    $builder = [System.UriBuilder]([Uri]([string]$values.DATABASE_URL)); $builder.Host = "127.0.0.1"; $builder.Port = $postgresHostPort; $builder.Path = "/$databaseName"
     $env:TEST_DATABASE_URL = $builder.Uri.AbsoluteUri
-    docker run --rm --network $network --env TEST_DATABASE_URL -v relaydock-go-mod-cache:/go/pkg/mod -v "${repoRoot}:/src" -w /src golang:1.26.6-alpine go test -count=1 -run 'TestFinancialCloseIntegration|TestFinancialReconciliationFailureIsDurable|TestReconciliationUTCStatementReverseScanAndSourceReversalGuard' ./internal/store
+    & $GoExecutable -C $repoRoot test -count=1 -run 'TestFinancialCloseIntegration|TestFinancialReconciliationFailureIsDurable|TestReconciliationUTCStatementReverseScanAndSourceReversalGuard' ./internal/store
     if ($LASTEXITCODE -ne 0) { throw "Financial-close integration test failed." }
     Write-Host "PASS replay/no duplicate repair, durable FAILED run, UTC boundaries, reverse Provider-statement scan, one reversal per source journal, evidence-bound payment reconciliation, refund caps, invoice/accounting/CSV scopes, Provider/organization region checks"
 } finally {

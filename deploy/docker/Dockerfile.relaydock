@@ -2,7 +2,7 @@ FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea0
 WORKDIR /src
 COPY go.mod go.sum ./
 ARG GOPROXY=https://proxy.golang.org,direct
-ARG VERSION=2.0.0
+ARG VERSION=3.0.0-beta.1
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_DATE_EPOCH=0
@@ -24,10 +24,11 @@ FROM build AS test
 RUN go test -timeout 60s ./...
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
-ARG VERSION=2.0.0
+RUN apk add --no-cache --upgrade 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0'
+ARG VERSION=3.0.0-beta.1
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
-ARG REPOSITORY_URL=https://github.com/Yangjunjie-Lin/RelayDock
+ARG REPOSITORY_URL=https://github.com/Yangjunjie-Lin/ModelDock
 LABEL org.opencontainers.image.title="ModelDock Server" \
       org.opencontainers.image.description="ModelDock server with RelayDock compatibility" \
       org.opencontainers.image.version="${VERSION}" \

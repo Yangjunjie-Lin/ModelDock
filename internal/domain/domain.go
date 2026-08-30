@@ -3,7 +3,9 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -11,9 +13,41 @@ import (
 
 // Decimal preserves the exact base-10 representation used by PostgreSQL
 // NUMERIC. It accepts either a JSON number or string for control-plane
-// compatibility and emits a JSON number without binary floating-point
-// conversion.
+// compatibility and emits a JSON string so JavaScript and other clients cannot
+// silently round a NUMERIC value while decoding it.
 type Decimal string
+
+var decimalPattern = regexp.MustCompile(`^[+-]?(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$`)
+
+// ParseDecimal validates the exact NUMERIC(30,12) representation used by all
+// commercial money paths. Empty values, exponents, fractions, excessive scale,
+// and values outside the database range are errors; callers must decide
+// explicitly whether an optional absence means zero.
+func ParseDecimal(value string) (Decimal, error) {
+	value = strings.TrimSpace(value)
+	if !decimalPattern.MatchString(value) {
+		return "", fmt.Errorf("invalid NUMERIC(30,12) decimal %q", value)
+	}
+	if _, ok := new(big.Rat).SetString(value); !ok {
+		return "", fmt.Errorf("invalid decimal %q", value)
+	}
+	return Decimal(value), nil
+}
+
+// MustDecimal is for compile-time constants and tests. Request, database, and
+// worker inputs must use ParseDecimal and propagate the returned error.
+func MustDecimal(value string) Decimal {
+	decimal, err := ParseDecimal(value)
+	if err != nil {
+		panic(err)
+	}
+	return decimal
+}
+
+func (d Decimal) Validate() error {
+	_, err := ParseDecimal(string(d))
+	return err
+}
 
 func (d *Decimal) UnmarshalJSON(raw []byte) error {
 	value := strings.TrimSpace(string(raw))
@@ -25,48 +59,103 @@ func (d *Decimal) UnmarshalJSON(raw []byte) error {
 		value = strings.TrimSpace(parsed)
 	}
 	if value == "" || value == "null" {
-		value = "0"
+		return errors.New("decimal is required")
 	}
-	if _, ok := new(big.Rat).SetString(value); !ok {
-		return errors.New("invalid decimal")
+	parsed, err := ParseDecimal(value)
+	if err != nil {
+		return err
 	}
-	*d = Decimal(value)
+	*d = parsed
 	return nil
 }
 
 func (d Decimal) MarshalJSON() ([]byte, error) {
-	value := strings.TrimSpace(string(d))
-	if value == "" {
-		value = "0"
+	value, err := ParseDecimal(string(d))
+	if err != nil {
+		return nil, err
 	}
-	if _, ok := new(big.Rat).SetString(value); !ok {
-		return nil, errors.New("invalid decimal")
-	}
-	return json.RawMessage(value).MarshalJSON()
+	return json.Marshal(string(value))
 }
 func (d Decimal) String() string {
-	if strings.TrimSpace(string(d)) == "" {
-		return "0"
-	}
 	return string(d)
 }
-func (d Decimal) IsZero() bool {
-	r, ok := new(big.Rat).SetString(d.String())
-	return ok && r.Sign() == 0
+func (d Decimal) IsZero() (bool, error) {
+	r, err := decimalRat(d)
+	return err == nil && r.Sign() == 0, err
 }
-func (d Decimal) IsNegative() bool {
-	r, ok := new(big.Rat).SetString(d.String())
-	return ok && r.Sign() < 0
+func (d Decimal) IsNegative() (bool, error) {
+	r, err := decimalRat(d)
+	return err == nil && r.Sign() < 0, err
 }
-func (d Decimal) IsPositive() bool {
-	r, ok := new(big.Rat).SetString(d.String())
-	return ok && r.Sign() > 0
+func (d Decimal) IsPositive() (bool, error) {
+	r, err := decimalRat(d)
+	return err == nil && r.Sign() > 0, err
 }
-func (d Decimal) Add(other Decimal) Decimal {
-	a, _ := new(big.Rat).SetString(d.String())
-	b, _ := new(big.Rat).SetString(other.String())
+func (d Decimal) Add(other Decimal) (Decimal, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return "", err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return "", err
+	}
 	a.Add(a, b)
-	return Decimal(a.FloatString(12))
+	return ParseDecimal(a.FloatString(12))
+}
+
+func (d Decimal) Subtract(other Decimal) (Decimal, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return "", err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return "", err
+	}
+	a.Sub(a, b)
+	return ParseDecimal(a.FloatString(12))
+}
+
+// Compare returns -1, 0, or 1 without crossing a binary floating-point
+// boundary. Invalid operands are returned as errors and can never silently
+// become zero.
+func (d Decimal) Compare(other Decimal) (int, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return 0, err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return 0, err
+	}
+	return a.Cmp(b), nil
+}
+
+// Multiply returns an exact base-10 product normalized to the database money
+// scale. It is used for thresholds and reports as well as settled amounts.
+func (d Decimal) Multiply(other Decimal) (Decimal, error) {
+	a, err := decimalRat(d)
+	if err != nil {
+		return "", err
+	}
+	b, err := decimalRat(other)
+	if err != nil {
+		return "", err
+	}
+	return ParseDecimal(new(big.Rat).Mul(a, b).FloatString(12))
+}
+
+func decimalRat(value Decimal) (*big.Rat, error) {
+	validated, err := ParseDecimal(string(value))
+	if err != nil {
+		return nil, err
+	}
+	parsed, ok := new(big.Rat).SetString(string(validated))
+	if !ok {
+		return nil, errors.New("invalid decimal")
+	}
+	return parsed, nil
 }
 
 type User struct {
@@ -77,7 +166,7 @@ type User struct {
 	Role                 string     `json:"role"`
 	Status               string     `json:"status"`
 	MonthlyTokenLimit    *int64     `json:"monthly_token_limit,omitempty"`
-	MonthlyCostLimit     *float64   `json:"monthly_cost_limit,omitempty"`
+	MonthlyCostLimit     *Decimal   `json:"monthly_cost_limit,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 	LastLoginAt          *time.Time `json:"last_login_at,omitempty"`
@@ -174,36 +263,41 @@ type Provider struct {
 }
 
 type Credential struct {
-	ID                    string     `json:"id"`
-	ProviderID            string     `json:"provider_id"`
-	ProviderName          string     `json:"provider_name,omitempty"`
-	GroupName             string     `json:"group_name,omitempty"`
-	Name                  string     `json:"name"`
-	CredentialType        string     `json:"credential_type"`
-	EncryptedSecret       []byte     `json:"-"`
-	HasSecret             bool       `json:"has_secret"`
-	SecretLast4           string     `json:"secret_last4"`
-	OrganizationID        *string    `json:"organization_id,omitempty"`
-	ProjectID             *string    `json:"project_id,omitempty"`
-	Status                string     `json:"status"`
-	Priority              int        `json:"priority"`
-	Weight                int        `json:"weight"`
-	MaxConcurrency        int        `json:"max_concurrency"`
-	CurrentHealth         string     `json:"current_health"`
-	LastSuccessAt         *time.Time `json:"last_success_at,omitempty"`
-	LastFailureAt         *time.Time `json:"last_failure_at,omitempty"`
-	CooldownUntil         *time.Time `json:"cooldown_until,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
-	ActiveRequests        int64      `json:"active_requests"`
-	EffectiveWeight       int        `json:"effective_weight,omitempty"`
-	EffectivePriority     int        `json:"effective_priority,omitempty"`
-	Tags                  []string   `json:"tags,omitempty"`
-	CredentialOwner       string     `json:"credential_owner"`
-	OwnerOrganizationID   *string    `json:"owner_organization_id,omitempty"`
-	OwnershipConfirmedAt  *time.Time `json:"ownership_confirmed_at,omitempty"`
-	OwnershipConfirmedBy  *string    `json:"ownership_confirmed_by,omitempty"`
-	OwnershipTermsVersion string     `json:"ownership_terms_version,omitempty"`
+	ID                     string     `json:"id"`
+	ProviderID             string     `json:"provider_id"`
+	ProviderName           string     `json:"provider_name,omitempty"`
+	GroupName              string     `json:"group_name,omitempty"`
+	Name                   string     `json:"name"`
+	CredentialType         string     `json:"credential_type"`
+	EncryptedSecret        []byte     `json:"-"`
+	HasSecret              bool       `json:"has_secret"`
+	SecretLast4            string     `json:"secret_last4"`
+	OrganizationID         *string    `json:"organization_id,omitempty"`
+	ProjectID              *string    `json:"project_id,omitempty"`
+	Status                 string     `json:"status"`
+	Priority               int        `json:"priority"`
+	Weight                 int        `json:"weight"`
+	MaxConcurrency         int        `json:"max_concurrency"`
+	CurrentHealth          string     `json:"current_health"`
+	LastSuccessAt          *time.Time `json:"last_success_at,omitempty"`
+	LastFailureAt          *time.Time `json:"last_failure_at,omitempty"`
+	CooldownUntil          *time.Time `json:"cooldown_until,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	ActiveRequests         int64      `json:"active_requests"`
+	EffectiveWeight        int        `json:"effective_weight,omitempty"`
+	EffectivePriority      int        `json:"effective_priority,omitempty"`
+	Tags                   []string   `json:"tags,omitempty"`
+	CredentialOwner        string     `json:"credential_owner"`
+	OwnerOrganizationID    *string    `json:"owner_organization_id,omitempty"`
+	OwnershipConfirmedAt   *time.Time `json:"ownership_confirmed_at,omitempty"`
+	OwnershipConfirmedBy   *string    `json:"ownership_confirmed_by,omitempty"`
+	OwnershipTermsVersion  string     `json:"ownership_terms_version,omitempty"`
+	BYOKPrioritySection    string     `json:"byok_priority_section,omitempty"`
+	SharedCapacityFallback string     `json:"shared_capacity_fallback,omitempty"`
+	ModelFilters           []string   `json:"model_filters,omitempty"`
+	APIKeyFilters          []string   `json:"api_key_filters,omitempty"`
+	MemberFilters          []string   `json:"member_filters,omitempty"`
 }
 
 type CredentialGroup struct {
@@ -232,8 +326,8 @@ type Model struct {
 	ContextWindow                   *int           `json:"context_window,omitempty"`
 	LatencyScore                    float64        `json:"latency_score"`
 	QualityScore                    float64        `json:"quality_score"`
-	InputPrice                      float64        `json:"input_price"`
-	OutputPrice                     float64        `json:"output_price"`
+	InputPrice                      Decimal        `json:"input_price"`
+	OutputPrice                     Decimal        `json:"output_price"`
 	PriceCurrency                   string         `json:"price_currency,omitempty"`
 	Metadata                        map[string]any `json:"metadata"`
 	AllowedRegions                  []string       `json:"allowed_regions,omitempty"`
@@ -265,9 +359,9 @@ type ModelPrice struct {
 	ModelID          string    `json:"model_id"`
 	Version          int       `json:"version"`
 	EffectiveFrom    time.Time `json:"effective_from"`
-	InputPrice       float64   `json:"input_price"`
-	CachedInputPrice float64   `json:"cached_input_price"`
-	OutputPrice      float64   `json:"output_price"`
+	InputPrice       Decimal   `json:"input_price"`
+	CachedInputPrice Decimal   `json:"cached_input_price"`
+	OutputPrice      Decimal   `json:"output_price"`
 	Currency         string    `json:"currency"`
 	Unit             int64     `json:"unit"`
 	Source           string    `json:"source"`
@@ -289,7 +383,7 @@ type APIKey struct {
 	RateLimitRPM       int        `json:"rate_limit_rpm"`
 	RateLimitTPM       int        `json:"rate_limit_tpm"`
 	MonthlyTokenLimit  *int64     `json:"monthly_token_limit,omitempty"`
-	MonthlyCostLimit   *float64   `json:"monthly_cost_limit,omitempty"`
+	MonthlyCostLimit   *Decimal   `json:"monthly_cost_limit,omitempty"`
 	AllowedModels      []string   `json:"allowed_models"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
@@ -319,9 +413,9 @@ type RequestLog struct {
 	CachedInputTokens   int64          `json:"cached_input_tokens"`
 	OutputTokens        int64          `json:"output_tokens"`
 	TotalTokens         int64          `json:"total_tokens"`
-	EstimatedCost       float64        `json:"estimated_cost"`
-	ReferenceCost       float64        `json:"reference_cost"`
-	SavingsAmount       float64        `json:"savings_amount"`
+	EstimatedCost       Decimal        `json:"estimated_cost"`
+	ReferenceCost       Decimal        `json:"reference_cost"`
+	SavingsAmount       Decimal        `json:"savings_amount"`
 	LatencyMS           int64          `json:"latency_ms"`
 	TTFTMS              *int64         `json:"ttft_ms,omitempty"`
 	UpstreamRequestID   string         `json:"upstream_request_id,omitempty"`
@@ -614,10 +708,12 @@ type RoutingRule struct {
 }
 
 type RoutingDecision struct {
-	Route      ProjectModelRoute `json:"route"`
-	Strategy   string            `json:"strategy"`
-	Score      float64           `json:"score"`
-	Candidates int               `json:"candidates"`
+	Route          ProjectModelRoute       `json:"route"`
+	Strategy       string                  `json:"strategy"`
+	Score          float64                 `json:"score"`
+	Candidates     int                     `json:"candidates"`
+	Policy         RequestProviderPolicy   `json:"policy,omitempty"`
+	CandidateTrace []RoutingCandidateTrace `json:"candidate_trace,omitempty"`
 }
 
 type MarketplaceListing struct {
@@ -642,7 +738,7 @@ type Team struct {
 	Slug              string         `json:"slug"`
 	Status            string         `json:"status"`
 	MonthlyTokenLimit *int64         `json:"monthly_token_limit,omitempty"`
-	MonthlyCostLimit  *float64       `json:"monthly_cost_limit,omitempty"`
+	MonthlyCostLimit  *Decimal       `json:"monthly_cost_limit,omitempty"`
 	Metadata          map[string]any `json:"metadata"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
@@ -865,41 +961,43 @@ type Journal struct {
 }
 
 type FundingOperation struct {
-	ID                      string     `json:"id"`
-	WalletID                string     `json:"wallet_id"`
-	OrganizationID          string     `json:"organization_id"`
-	ProjectID               string     `json:"project_id"`
-	APIKeyID                *string    `json:"api_key_id,omitempty"`
-	RequestID               string     `json:"request_id"`
-	IdempotencyKey          string     `json:"idempotency_key"`
-	RequestFingerprint      string     `json:"-"`
-	PricingVersionID        *string    `json:"pricing_version_id,omitempty"`
-	Status                  string     `json:"status"`
-	Currency                string     `json:"currency"`
-	MaximumAmount           Decimal    `json:"maximum_amount"`
-	PromotionAmount         Decimal    `json:"promotion_amount"`
-	ConsumedPromotionAmount Decimal    `json:"consumed_promotion_amount"`
-	TaxRate                 Decimal    `json:"tax_rate"`
-	ExchangeRate            Decimal    `json:"exchange_rate"`
-	SettledAmount           Decimal    `json:"settled_amount"`
-	ReleasedAmount          Decimal    `json:"released_amount"`
-	EstimatedInputTokens    int64      `json:"estimated_input_tokens"`
-	MaxOutputTokens         int64      `json:"max_output_tokens"`
-	ActualInputTokens       *int64     `json:"actual_input_tokens,omitempty"`
-	ActualCachedInputTokens *int64     `json:"actual_cached_input_tokens,omitempty"`
-	ActualOutputTokens      *int64     `json:"actual_output_tokens,omitempty"`
-	UsageSource             string     `json:"usage_source,omitempty"`
-	ObservedOutputBytes     int64      `json:"observed_output_bytes"`
-	FailureCode             string     `json:"failure_code,omitempty"`
-	ReservedAt              time.Time  `json:"reserved_at"`
-	SettledAt               *time.Time `json:"settled_at,omitempty"`
-	ReleasedAt              *time.Time `json:"released_at,omitempty"`
-	HeartbeatAt             time.Time  `json:"heartbeat_at"`
-	CreatedAt               time.Time  `json:"created_at"`
-	UpdatedAt               time.Time  `json:"updated_at"`
-	CredentialOwner         string     `json:"credential_owner"`
-	ProviderCredentialID    *string    `json:"provider_credential_id,omitempty"`
-	PlatformServiceFee      Decimal    `json:"platform_service_fee"`
+	ID                      string         `json:"id"`
+	WalletID                string         `json:"wallet_id"`
+	OrganizationID          string         `json:"organization_id"`
+	ProjectID               string         `json:"project_id"`
+	APIKeyID                *string        `json:"api_key_id,omitempty"`
+	RequestID               string         `json:"request_id"`
+	IdempotencyKey          string         `json:"idempotency_key"`
+	RequestFingerprint      string         `json:"-"`
+	PricingVersionID        *string        `json:"pricing_version_id,omitempty"`
+	Status                  string         `json:"status"`
+	Currency                string         `json:"currency"`
+	MaximumAmount           Decimal        `json:"maximum_amount"`
+	PromotionAmount         Decimal        `json:"promotion_amount"`
+	ConsumedPromotionAmount Decimal        `json:"consumed_promotion_amount"`
+	TaxRate                 Decimal        `json:"tax_rate"`
+	ExchangeRate            Decimal        `json:"exchange_rate"`
+	SettledAmount           Decimal        `json:"settled_amount"`
+	ReleasedAmount          Decimal        `json:"released_amount"`
+	EstimatedInputTokens    int64          `json:"estimated_input_tokens"`
+	MaxOutputTokens         int64          `json:"max_output_tokens"`
+	ActualInputTokens       *int64         `json:"actual_input_tokens,omitempty"`
+	ActualCachedInputTokens *int64         `json:"actual_cached_input_tokens,omitempty"`
+	ActualOutputTokens      *int64         `json:"actual_output_tokens,omitempty"`
+	UsageSource             string         `json:"usage_source,omitempty"`
+	ObservedOutputBytes     int64          `json:"observed_output_bytes"`
+	FailureCode             string         `json:"failure_code,omitempty"`
+	ReservedAt              time.Time      `json:"reserved_at"`
+	SettledAt               *time.Time     `json:"settled_at,omitempty"`
+	ReleasedAt              *time.Time     `json:"released_at,omitempty"`
+	HeartbeatAt             time.Time      `json:"heartbeat_at"`
+	CreatedAt               time.Time      `json:"created_at"`
+	UpdatedAt               time.Time      `json:"updated_at"`
+	CredentialOwner         string         `json:"credential_owner"`
+	ProviderCredentialID    *string        `json:"provider_credential_id,omitempty"`
+	PlatformServiceFee      Decimal        `json:"platform_service_fee"`
+	BYOKShadowAmount        Decimal        `json:"byok_shadow_amount"`
+	RoutingPolicySnapshot   map[string]any `json:"routing_policy_snapshot,omitempty"`
 }
 
 type FundingProviderAttempt struct {
@@ -935,28 +1033,85 @@ type WalletTransaction struct {
 // RechargeOrder is the durable local view of one externally verified payment.
 // Amount remains an exact PostgreSQL NUMERIC value throughout the API boundary.
 type RechargeOrder struct {
-	ID                  string         `json:"id"`
-	PlatformOrderNo     string         `json:"platform_order_no"`
-	OrganizationID      string         `json:"organization_id"`
-	WalletID            string         `json:"wallet_id"`
-	CreatedBy           *string        `json:"created_by,omitempty"`
-	PaymentProvider     string         `json:"payment_provider"`
-	ProviderOrderNo     string         `json:"provider_order_no,omitempty"`
-	Status              string         `json:"status"`
-	Amount              Decimal        `json:"amount"`
-	Currency            string         `json:"currency"`
-	Region              string         `json:"region"`
-	IdempotencyKey      string         `json:"idempotency_key"`
-	WalletTransactionID *string        `json:"wallet_transaction_id,omitempty"`
-	LedgerJournalID     *string        `json:"ledger_journal_id,omitempty"`
-	ExpiresAt           time.Time      `json:"expires_at"`
-	PaidAt              *time.Time     `json:"paid_at,omitempty"`
-	CreditedAt          *time.Time     `json:"credited_at,omitempty"`
-	ProviderClosedAt    *time.Time     `json:"provider_closed_at,omitempty"`
-	FailureCode         string         `json:"failure_code,omitempty"`
-	Metadata            map[string]any `json:"metadata"`
-	CreatedAt           time.Time      `json:"created_at"`
-	UpdatedAt           time.Time      `json:"updated_at"`
+	ID                     string         `json:"id"`
+	PlatformOrderNo        string         `json:"platform_order_no"`
+	OrganizationID         string         `json:"organization_id"`
+	WalletID               string         `json:"wallet_id"`
+	CreatedBy              *string        `json:"created_by,omitempty"`
+	PaymentProvider        string         `json:"payment_provider"`
+	ProviderOrderNo        string         `json:"provider_order_no,omitempty"`
+	Status                 string         `json:"status"`
+	Amount                 Decimal        `json:"amount"`
+	Currency               string         `json:"currency"`
+	Region                 string         `json:"region"`
+	IdempotencyKey         string         `json:"idempotency_key"`
+	WalletTransactionID    *string        `json:"wallet_transaction_id,omitempty"`
+	LedgerJournalID        *string        `json:"ledger_journal_id,omitempty"`
+	ExpiresAt              time.Time      `json:"expires_at"`
+	PaidAt                 *time.Time     `json:"paid_at,omitempty"`
+	CreditedAt             *time.Time     `json:"credited_at,omitempty"`
+	ProviderClosedAt       *time.Time     `json:"provider_closed_at,omitempty"`
+	FailureCode            string         `json:"failure_code,omitempty"`
+	Metadata               map[string]any `json:"metadata"`
+	CreatedAt              time.Time      `json:"created_at"`
+	UpdatedAt              time.Time      `json:"updated_at"`
+	TargetProviderID       *string        `json:"target_provider_id,omitempty"`
+	TargetProvisioningMode *string        `json:"target_provisioning_mode,omitempty"`
+}
+
+// ProviderAccountBinding links one RelayDock user to an authorized upstream
+// enterprise project/service account, BYOK credential, or reviewed manual
+// account. Upstream secrets are stored only in provider_credentials.
+type ProviderAccountBinding struct {
+	ID                string         `json:"id"`
+	OrganizationID    string         `json:"organization_id"`
+	UserID            string         `json:"user_id"`
+	UserEmail         string         `json:"user_email,omitempty"`
+	ProviderID        string         `json:"provider_id"`
+	ProviderName      string         `json:"provider_name,omitempty"`
+	ProviderType      string         `json:"provider_type,omitempty"`
+	ProvisioningMode  string         `json:"provisioning_mode"`
+	Status            string         `json:"status"`
+	ExternalAccountID string         `json:"external_account_id,omitempty"`
+	ExternalProjectID string         `json:"external_project_id,omitempty"`
+	CredentialID      *string        `json:"credential_id,omitempty"`
+	AllocatedAmount   Decimal        `json:"allocated_amount"`
+	Currency          string         `json:"currency,omitempty"`
+	Metadata          map[string]any `json:"metadata"`
+	LastSyncedAt      *time.Time     `json:"last_synced_at,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+type ProviderProvisioningJob struct {
+	ID                string         `json:"id"`
+	BindingID         string         `json:"binding_id"`
+	RechargeOrderID   *string        `json:"recharge_order_id,omitempty"`
+	OrganizationID    string         `json:"organization_id"`
+	UserID            string         `json:"user_id"`
+	ProviderID        string         `json:"provider_id"`
+	ProviderName      string         `json:"provider_name,omitempty"`
+	ProviderType      string         `json:"provider_type,omitempty"`
+	Operation         string         `json:"operation"`
+	IdempotencyKey    string         `json:"idempotency_key"`
+	Status            string         `json:"status"`
+	Amount            *Decimal       `json:"amount,omitempty"`
+	Currency          string         `json:"currency,omitempty"`
+	Attempts          int            `json:"attempts"`
+	MaxAttempts       int            `json:"max_attempts"`
+	AvailableAt       time.Time      `json:"available_at"`
+	LockedAt          *time.Time     `json:"locked_at,omitempty"`
+	LockedUntil       *time.Time     `json:"locked_until,omitempty"`
+	LockedBy          string         `json:"locked_by,omitempty"`
+	ClaimToken        string         `json:"-"`
+	ExternalReference string         `json:"external_reference,omitempty"`
+	ErrorCode         string         `json:"error_code,omitempty"`
+	ErrorDetail       string         `json:"error_detail,omitempty"`
+	Result            map[string]any `json:"result"`
+	CreatedBy         *string        `json:"created_by,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	CompletedAt       *time.Time     `json:"completed_at,omitempty"`
 }
 
 type PaymentAttempt struct {
@@ -1039,8 +1194,8 @@ type ProjectBudgetPolicy struct {
 	Name             string    `json:"name"`
 	Period           string    `json:"period"`
 	TokenLimit       *int64    `json:"token_limit,omitempty"`
-	CostLimit        *float64  `json:"cost_limit,omitempty"`
-	AlertThreshold   float64   `json:"alert_threshold"`
+	CostLimit        *Decimal  `json:"cost_limit,omitempty"`
+	AlertThreshold   Decimal   `json:"alert_threshold"`
 	EnforceHardLimit bool      `json:"enforce_hard_limit"`
 	Status           string    `json:"status"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -1058,7 +1213,7 @@ type ProjectBudgetUsage struct {
 	CachedTokens   int64     `json:"cached_input_tokens"`
 	OutputTokens   int64     `json:"output_tokens"`
 	TotalTokens    int64     `json:"total_tokens"`
-	Cost           float64   `json:"cost"`
+	Cost           Decimal   `json:"cost"`
 	Errors         int64     `json:"errors"`
 }
 
@@ -1072,7 +1227,7 @@ type BudgetEvent struct {
 	RequestID      string         `json:"request_id,omitempty"`
 	EventType      string         `json:"event_type"`
 	Tokens         int64          `json:"tokens"`
-	Cost           float64        `json:"cost"`
+	Cost           Decimal        `json:"cost"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
 	Metadata       map[string]any `json:"metadata"`
 	CreatedAt      time.Time      `json:"created_at"`
@@ -1165,7 +1320,7 @@ type UsageExportRow struct {
 	CachedTokens   int64     `json:"cached_input_tokens"`
 	OutputTokens   int64     `json:"output_tokens"`
 	TotalTokens    int64     `json:"total_tokens"`
-	EstimatedCost  float64   `json:"estimated_cost"`
+	EstimatedCost  Decimal   `json:"estimated_cost"`
 	LatencyMS      int64     `json:"latency_ms"`
 	CreatedAt      time.Time `json:"created_at"`
 }
@@ -1221,20 +1376,22 @@ type ProviderCostChangeRequest struct {
 // wraps a customer-owned Provider credential. Monetary values remain decimal
 // strings until PostgreSQL stores them as NUMERIC.
 type BYOKServiceFeePolicy struct {
-	ID                  string     `json:"id"`
-	OrganizationID      *string    `json:"organization_id,omitempty"`
-	ProviderID          *string    `json:"provider_id,omitempty"`
-	FixedFee            string     `json:"fixed_fee"`
-	InputTokenFee       string     `json:"input_token_fee"`
-	CachedInputTokenFee string     `json:"cached_input_token_fee"`
-	OutputTokenFee      string     `json:"output_token_fee"`
-	Currency            string     `json:"currency"`
-	Unit                int64      `json:"unit"`
-	EffectiveAt         time.Time  `json:"effective_at"`
-	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
-	Enabled             bool       `json:"enabled"`
-	CreatedBy           *string    `json:"created_by,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
+	ID                   string     `json:"id"`
+	OrganizationID       *string    `json:"organization_id,omitempty"`
+	ProviderID           *string    `json:"provider_id,omitempty"`
+	FixedFee             string     `json:"fixed_fee"`
+	InputTokenFee        string     `json:"input_token_fee"`
+	CachedInputTokenFee  string     `json:"cached_input_token_fee"`
+	OutputTokenFee       string     `json:"output_token_fee"`
+	ServiceFeeBPS        int        `json:"service_fee_bps"`
+	MonthlyFreeAllowance string     `json:"monthly_free_allowance"`
+	Currency             string     `json:"currency"`
+	Unit                 int64      `json:"unit"`
+	EffectiveAt          time.Time  `json:"effective_at"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
+	Enabled              bool       `json:"enabled"`
+	CreatedBy            *string    `json:"created_by,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 type CustomerRetailPriceBook struct {

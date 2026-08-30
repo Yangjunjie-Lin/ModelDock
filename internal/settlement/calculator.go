@@ -4,7 +4,6 @@ package settlement
 import (
 	"errors"
 	"math/big"
-	"strings"
 
 	"github.com/relayedock/relayedock/internal/domain"
 )
@@ -19,7 +18,11 @@ type SplitResult struct {
 }
 
 func Split(gross domain.Decimal, commissionBPS, reserveBPS int) (SplitResult, error) {
-	amount, ok := new(big.Rat).SetString(strings.TrimSpace(gross.String()))
+	validated, err := domain.ParseDecimal(gross.String())
+	if err != nil {
+		return SplitResult{}, ErrInvalidAmount
+	}
+	amount, ok := new(big.Rat).SetString(validated.String())
 	if !ok || amount.Sign() < 0 || commissionBPS < 0 || commissionBPS > 10000 || reserveBPS < 0 || reserveBPS > 10000 {
 		return SplitResult{}, ErrInvalidAmount
 	}
@@ -29,8 +32,19 @@ func Split(gross domain.Decimal, commissionBPS, reserveBPS int) (SplitResult, er
 	reserve := new(big.Rat).Mul(afterCommission, big.NewRat(int64(reserveBPS), 10000))
 	reserve, _ = new(big.Rat).SetString(reserve.FloatString(12))
 	payable := new(big.Rat).Sub(afterCommission, reserve)
+	commissionDecimal, err := domain.ParseDecimal(commission.FloatString(12))
+	if err != nil {
+		return SplitResult{}, err
+	}
+	reserveDecimal, err := domain.ParseDecimal(reserve.FloatString(12))
+	if err != nil {
+		return SplitResult{}, err
+	}
+	payableDecimal, err := domain.ParseDecimal(payable.FloatString(12))
+	if err != nil {
+		return SplitResult{}, err
+	}
 	return SplitResult{
-		Gross: gross, Commission: domain.Decimal(commission.FloatString(12)),
-		Reserve: domain.Decimal(reserve.FloatString(12)), Payable: domain.Decimal(payable.FloatString(12)),
+		Gross: validated, Commission: commissionDecimal, Reserve: reserveDecimal, Payable: payableDecimal,
 	}, nil
 }

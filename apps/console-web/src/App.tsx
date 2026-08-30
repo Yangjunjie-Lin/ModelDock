@@ -21,6 +21,9 @@ import { ContactPage, EnterprisePage, HomePage, ModelsCatalogPage, PricingPage, 
 import { PublicSettingsProvider } from './lib/public-settings'
 import { SupplierOnboardingPage } from './pages/SupplierOnboardingPage'
 import { SupplierSettlementsPage } from './pages/SupplierSettlementsPage'
+import { ProviderAccountsPage } from './pages/ProviderAccountsPage'
+import { ProviderHealthPage } from './pages/ProviderHealthPage'
+import { WorkspacePage } from './pages/WorkspacePage'
 
 export function App() {
   return <PublicSettingsProvider><Routes>
@@ -45,11 +48,14 @@ export function App() {
     <Route path="/invitations/:token" element={<InvitationPage />} />
     <Route path="/console" element={<ProjectScopeProvider><ConsoleShell /></ProjectScopeProvider>}>
       <Route index element={<OverviewPage />} />
+      <Route path="workspace" element={<WorkspacePage />} />
       <Route path="onboarding" element={<OnboardingPage />} />
       <Route path="supplier" element={<SupplierOnboardingPage />} />
       <Route path="supplier-settlements" element={<SupplierSettlementsPage />} />
       <Route path="api-keys" element={<ApiKeysPage />} />
       <Route path="byok" element={<ByokPage />} />
+      <Route path="provider-accounts" element={<ProviderAccountsPage />} />
+      <Route path="provider-health" element={<ProviderHealthPage />} />
       <Route path="models" element={<ModelsPage />} />
       <Route path="usage" element={<UsagePage />} />
       <Route path="logs" element={<LogsPage />} />
@@ -64,7 +70,7 @@ export function App() {
       <Route path="support" element={<SupportPage />} />
       <Route path="*" element={<NotFoundPage />} />
     </Route>
-    {['api-keys', 'byok', 'usage', 'logs', 'recharge', 'subscription', 'billing', 'playground', 'account', 'support'].map((path) => <Route key={path} path={`/${path}`} element={<Navigate to={`/console/${path}`} replace />} />)}
+    {['workspace', 'api-keys', 'byok', 'provider-accounts', 'provider-health', 'usage', 'logs', 'recharge', 'subscription', 'billing', 'playground', 'account', 'support'].map((path) => <Route key={path} path={`/${path}`} element={<Navigate to={`/console/${path}`} replace />} />)}
     <Route path="/payments/success" element={<Navigate to="/console/payments/success" replace />} />
   </Routes></PublicSettingsProvider>
 }
