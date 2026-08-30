@@ -4,7 +4,7 @@
   "repository": "Yangjunjie-Lin/ModelDock",
   "reviewed_commit": "REPLACE_WITH_FULL_COMMIT_SHA",
   "reviewed_tree": "REPLACE_WITH_FULL_TREE_SHA",
-  "version": "3.0.0-beta.2",
+  "version": "3.0.0-beta.3",
   "migration_version": "0027_openrouter_operating_model",
   "evidence_origin": "TEMPLATE_NOT_RELEASE_EVIDENCE",
   "external_attestations": [],

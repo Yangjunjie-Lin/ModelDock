@@ -26,7 +26,7 @@ readiness. A limitation described here is not an approval to accept it.
 
 The former engineering blockers for legacy monetary floats and conflicting
 version identities are closed by migration 0024, the exact-money scanner, and
-the `VERSION` source (`3.0.0-beta.2`). This is engineering evidence only and
+the `VERSION` source (`3.0.0-beta.3`). This is engineering evidence only and
 does not change the commercial `NO-GO` decision.
 
 ## Environment and integration limits
