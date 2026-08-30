@@ -24,6 +24,7 @@ FROM build AS test
 RUN go test -timeout 60s ./...
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+RUN apk add --no-cache --upgrade 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0'
 ARG VERSION=3.0.0-beta.1
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown

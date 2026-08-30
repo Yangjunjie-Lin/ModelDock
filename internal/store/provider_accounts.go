@@ -124,16 +124,16 @@ func (s *Store) CreateProviderAccountBinding(ctx context.Context, request Create
 	}
 	if request.CredentialID != nil {
 		var credentialAllowed bool
-		credentialQuery := `SELECT EXISTS(SELECT 1 FROM provider_credentials WHERE id=$1 AND provider_id=$2)`
+		ownershipSQL := `SELECT EXISTS(SELECT 1 FROM provider_credentials WHERE id=$1 AND provider_id=$2)`
 		if request.ProvisioningMode == "BYOK" {
-			credentialQuery = `SELECT EXISTS(SELECT 1 FROM provider_credentials WHERE id=$1 AND provider_id=$2
+			ownershipSQL = `SELECT EXISTS(SELECT 1 FROM provider_credentials WHERE id=$1 AND provider_id=$2
 				AND credential_owner='CUSTOMER' AND owner_organization_id=$3)`
 		}
 		args := []any{*request.CredentialID, request.ProviderID}
 		if request.ProvisioningMode == "BYOK" {
 			args = append(args, request.OrganizationID)
 		}
-		if err = tx.QueryRow(ctx, credentialQuery, args...).Scan(&credentialAllowed); err != nil {
+		if err = tx.QueryRow(ctx, ownershipSQL, args...).Scan(&credentialAllowed); err != nil {
 			return domain.ProviderAccountBinding{}, nil, false, err
 		}
 		if !credentialAllowed {
@@ -357,14 +357,14 @@ func (s *Store) SaveProviderBindingProvisioned(ctx context.Context, jobID, claim
 		if credentialType == "" {
 			credentialType = "api_key"
 		}
-		credentialName := completion.CredentialName
-		if credentialName == "" {
-			credentialName = "RelayDock provisioned service account"
+		displayName := completion.CredentialName
+		if displayName == "" {
+			displayName = "RelayDock provisioned service account"
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO provider_credentials(id,provider_id,name,credential_type,encrypted_secret,secret_last4,
 			organization_id,project_id,status,priority,weight,max_concurrency,current_health,credential_owner,member_filters)
 			VALUES($1,$2,$3,$4,$5,$6,$7,NULL,'ACTIVE',0,100,10,'UNKNOWN','PLATFORM',$8)`, newCredentialID, providerID,
-			credentialName, credentialType, completion.EncryptedSecret, completion.SecretLast4, organizationID, jsonBytes([]string{userID}))
+			displayName, credentialType, completion.EncryptedSecret, completion.SecretLast4, organizationID, jsonBytes([]string{userID}))
 		if err != nil {
 			return domain.ProviderAccountBinding{}, err
 		}
