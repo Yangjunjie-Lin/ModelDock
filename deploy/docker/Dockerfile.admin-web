@@ -8,7 +8,7 @@ ARG SOURCE_DATE_EPOCH=0
 ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build && find dist -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
 
-FROM nginx:1.30.4-alpine3.24@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
+FROM nginx:1.31.5-alpine3.24@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3
 RUN apk add --no-cache --upgrade 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0'
 ARG VERSION=3.0.0-beta.4
 ARG COMMIT=unknown
