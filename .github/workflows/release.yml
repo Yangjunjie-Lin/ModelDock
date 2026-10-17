@@ -48,7 +48,7 @@ jobs:
       owner: ${{ steps.metadata.outputs.owner }}
     steps:
       - name: Check out exact tag and complete history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Set up Node.js
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out exact tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Package source-only preview
         run: git archive --format=tar.gz --output=modeldock-engineering-preview-${{ github.sha }}.tar.gz HEAD
       - name: Upload explicitly non-production preview
@@ -136,7 +136,7 @@ jobs:
             image_suffix: modeldock-console-web
     steps:
       - name: Check out exact tag source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Set up Buildx
@@ -245,7 +245,7 @@ jobs:
       packages: read
     steps:
       - name: Check out exact tag source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Set up Go
@@ -321,7 +321,7 @@ jobs:
       actions: read
     steps:
       - name: Check out exact tag source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Set up Node.js
