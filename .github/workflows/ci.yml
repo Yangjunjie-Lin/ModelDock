@@ -250,7 +250,7 @@ jobs:
           output-file: .cache/console.spdx.json
           upload-artifact: false
       - name: Scan server image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: modeldock/ci-server:${{ github.sha }}
           format: table
@@ -258,7 +258,7 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
       - name: Scan admin image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: modeldock/ci-admin-web:${{ github.sha }}
           format: table
@@ -266,7 +266,7 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
       - name: Scan console image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: modeldock/ci-console-web:${{ github.sha }}
           format: table
@@ -387,7 +387,7 @@ jobs:
           output-file: .cache/ci-candidates/sbom-console.spdx.json
           upload-artifact: false
       - name: Trivy same-Digest Server image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: relaydock/server:local
           format: table
@@ -395,7 +395,7 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
       - name: Trivy same-Digest Admin image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: relaydock/admin-web:local
           format: table
@@ -403,7 +403,7 @@ jobs:
           vuln-type: os,library
           severity: CRITICAL,HIGH
       - name: Trivy same-Digest Console image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: relaydock/console-web:local
           format: table
